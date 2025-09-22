@@ -44,6 +44,39 @@ function getNoteTitle() {
   );
 }
 
+// 获取作者信息
+function getAuthorInfo() {
+  try {
+    // 查找作者信息容器
+    const infoEl = document.querySelector('.info');
+    if (!infoEl) return null;
+
+    // 提取作者名称
+    const usernameEl = infoEl.querySelector('.username');
+    const authorName = usernameEl ? usernameEl.innerText.trim() : '';
+
+    // 提取作者头像URL
+    const avatarEl = infoEl.querySelector('.avatar-item');
+    const avatarUrl = avatarEl ? avatarEl.getAttribute('src') : '';
+
+    // 提取作者主页链接
+    const profileLinkEl = infoEl.querySelector('a[href*="/user/profile/"]');
+    const profileUrl = profileLinkEl ? profileLinkEl.getAttribute('href') : '';
+
+    if (authorName) {
+      return {
+        name: authorName,
+        avatar: avatarUrl,
+        profile: profileUrl
+      };
+    }
+    return null;
+  } catch (err) {
+    console.error('[XHS-DEBUG] 获取作者信息失败:', err);
+    return null;
+  }
+}
+
 // 获取正文段落，兼容多种结构
 function getNoteTextEls() {
   let els = Array.from(document.querySelectorAll('#detail-desc .note-text'));
@@ -135,6 +168,10 @@ async function scrapeAndPackZip() {
     const fullText = paragraphs.join('\n\n');
     console.log('[XHS-DEBUG] 正文内容预览:', fullText.slice(0, 100));
 
+    // 获取作者信息
+    const authorInfo = getAuthorInfo();
+    console.log('[XHS-DEBUG] 作者信息:', authorInfo);
+
     // 只抓取当前笔记的图片
     const imgEls = getCurrentNoteImgEls();
     let imgUrls = imgEls
@@ -154,8 +191,24 @@ async function scrapeAndPackZip() {
 
     // 初始化 JSZip
     const zip = new JSZip();
-    // 添加正文txt
-    const txtContent = `${rawTitle}\n\n${fullText}`;
+    
+    // 构建文本内容，包含作者信息
+    let txtContent = `${rawTitle}\n\n${fullText}`;
+    
+    // 如果有作者信息，添加到文档末尾
+    if (authorInfo) {
+      txtContent += '\n\n---\n\nAuthor:';
+      if (authorInfo.name) {
+        txtContent += `\n姓名: ${authorInfo.name}`;
+      }
+      if (authorInfo.avatar) {
+        txtContent += `\n头像: ${authorInfo.avatar}`;
+      }
+      if (authorInfo.profile) {
+        txtContent += `\n主页: ${authorInfo.profile}`;
+      }
+    }
+    
     zip.file(`${title}.txt`, txtContent);
     // 添加图片
     const imgFolder = zip.folder('images');

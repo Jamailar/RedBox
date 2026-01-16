@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <title>AI 仿写设置</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <style>
+    /* ------- 全局重置与字体 ------- */
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+    html, body {
+      width: 100%;
+      height: 100%;
+      background-color: #fff;
+      font-family: "Poppins", "PingFang SC", Arial, sans-serif;
+      color: #333;
+    }
+
+    /* ------- 顶部 Header ------- */
+    header {
+      width: 100%;
+      background: linear-gradient(135deg, #F6451D 0%, #FF8A3A 100%);
+      color: #fff;
+      padding: 14px 16px;
+      font-size: 18px;
+      font-weight: 700;
+      text-align: center;
+      border-bottom: 1px solid #eee;
+      margin-bottom: 16px;
+    }
+
+    /* ------- 容器与居中 ------- */
+    .container {
+      max-width: 360px;
+      margin: 0 auto;
+      padding: 0 16px 24px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+
+    h2 {
+      font-size: 20px;
+      font-weight: 700;
+      color: #F6451D;
+      margin-bottom: 24px;
+      text-align: center;
+    }
+
+    form {
+      width: 100%;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+
+    label {
+      width: 100%;
+      display: flex;
+      flex-direction: column;
+      font-weight: 600;
+      margin-bottom: 16px;
+      font-size: 15px;
+    }
+
+    /* 输入框、多行文本、下拉选择样式 */
+    input[type="text"],
+    textarea,
+    select {
+      width: 100%;
+      margin-top: 6px;
+      padding: 8px 10px;
+      font-size: 15px;
+      border: 1px solid #eee;
+      border-radius: 6px;
+      background-color: #fafafa;
+      transition: border-color 0.2s;
+    }
+    input[type="text"]:focus,
+    textarea:focus,
+    select:focus {
+      outline: none;
+      border-color: #F6451D;
+    }
+    textarea {
+      resize: vertical;
+      min-height: 48px;
+    }
+
+    /* 保存按钮 */
+    .btn-save {
+      margin-top: 24px;
+      width: 100%;
+      background: linear-gradient(135deg, #F6451D 0%, #FF8A3A 100%);
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      padding: 12px 0;
+      font-size: 16px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: opacity 0.2s;
+    }
+    .btn-save:active {
+      opacity: 0.8;
+    }
+
+    /* 提示状态文本 */
+    .status {
+      margin-top: 12px;
+      font-size: 14px;
+      color: #0a0;
+      text-align: center;
+      min-height: 18px;
+    }
+  </style>
+</head>
+
+<body>
+  <header>RC 小红书辅助创作 AI</header>
+
+  <div class="container">
+    <h2>AI 仿写设置</h2>
+    <form id="ai-settings-form">
+      <label>
+        AI 接口端口（API Base URL）
+        <div style="display:flex;align-items:center;gap:8px;">
+          <input type="text" id="api-base-url" placeholder="如：https://api.openai.com/v1" required style="flex:1;" />
+          <button type="button" id="btn-test-api" style="padding:4px 10px;font-size:13px;">测试</button>
+          <span id="api-test-status" style="margin-left:6px;font-size:15px;"></span>
+        </div>
+      </label>
+
+      <label>
+        API Key
+        <input type="text" id="api-key" placeholder="sk-..." required />
+      </label>
+
+      <label>
+        模型名
+        <select id="model" required style="width:100%;margin-top:4px;padding:6px;font-size:15px;border:1px solid #eee;border-radius:4px;"></select>
+      </label>
+
+      <label>
+        目标领域
+        <input
+          type="text"
+          id="target-domain"
+          placeholder="如：母婴、健身、教育..."
+        />
+      </label>
+
+      <label>
+        改写要求
+        <textarea
+          id="rewrite-requirement"
+          rows="2"
+          placeholder="如：风格更口语化，突出卖点..."
+        ></textarea>
+      </label>
+
+      <label>
+        模仿语气风格（可选）
+        <textarea
+          id="example-format"
+          rows="2"
+          placeholder="在这里放入示例内容，AI会模仿其语气风格..."
+        ></textarea>
+      </label>
+
+      <label>
+        个性化（可选）
+        <textarea
+          id="personalization"
+          rows="2"
+          placeholder="填入作者的个人信息，AI会参考其经历和数据知识库进行创作"
+        ></textarea>
+      </label>
+
+      <button type="submit" class="btn-save">保存设置</button>
+      <div class="status" id="save-status"></div>
+    </form>
+  </div>
+
+  <script src="options.js"></script>
+</body>
+</html>

@@ -1,0 +1,60 @@
+{
+  "name": "RC 小红书辅助创作 AI",
+  "version": "1.0.0",
+  "manifest_version": 3,
+  "description": "一键下载当前小红书笔记，并将标题/正文 & 图片打包成 ZIP 文件",
+  "permissions": [
+    "downloads",
+    "activeTab",
+    "scripting",
+    "storage"
+  ],
+  "author": "Jamba Hailar",
+  "homepage_url": "https://github.com/Jamailar",
+  "host_permissions": [
+    "https://www.xiaohongshu.com/*",
+    "https://sns-webpic-qc.xhscdn.com/*",
+    "https://github.com/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.xiaohongshu.com/discovery/item/*",
+        "https://www.xiaohongshu.com/explore/*"
+      ],
+      "run_at": "document_idle",
+      "js": [
+        "libs/jszip.min.js",
+        "content-script.js"
+      ]
+    }
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "下载小红书笔记",
+    "default_icon": {
+      "16": "icons/16.png",
+      "48": "icons/48.png",
+      "128": "icons/128.png"
+    },
+    "default_popup": "popup.html"
+  },
+  "icons": {
+      "128": "icons/128.png",
+      "256": "icons/256.png",
+      "32": "icons/32.png",
+      "48": "icons/48.png",
+      "64": "icons/64.png"
+   },
+  "options_page": "options.html",
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "image-tool.html"
+      ],
+      "matches": ["<all_urls>"]
+    }
+  ]
+}

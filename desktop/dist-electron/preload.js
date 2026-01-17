@@ -1,1 +1,30 @@
-"use strict";const n=require("electron");n.contextBridge.exposeInMainWorld("ipcRenderer",{on(...e){const[r,i]=e;return n.ipcRenderer.on(r,(t,...c)=>i(t,...c))},off(...e){const[r,...i]=e;return n.ipcRenderer.off(r,...i)},send(...e){const[r,...i]=e;return n.ipcRenderer.send(r,...i)},invoke(...e){const[r,...i]=e;return n.ipcRenderer.invoke(r,...i)},saveSettings:e=>n.ipcRenderer.invoke("db:save-settings",e),getSettings:()=>n.ipcRenderer.invoke("db:get-settings"),fetchModels:e=>n.ipcRenderer.invoke("ai:fetch-models",e),startChat:(e,r)=>n.ipcRenderer.send("ai:start-chat",e,r),cancelChat:()=>n.ipcRenderer.send("ai:cancel"),confirmTool:(e,r)=>n.ipcRenderer.send("ai:confirm-tool",e,r),listSkills:()=>n.ipcRenderer.invoke("skills:list")});
+"use strict";
+const electron = require("electron");
+electron.contextBridge.exposeInMainWorld("ipcRenderer", {
+  on(...args) {
+    const [channel, listener] = args;
+    return electron.ipcRenderer.on(channel, (event, ...args2) => listener(event, ...args2));
+  },
+  off(...args) {
+    const [channel, ...omit] = args;
+    return electron.ipcRenderer.off(channel, ...omit);
+  },
+  send(...args) {
+    const [channel, ...omit] = args;
+    return electron.ipcRenderer.send(channel, ...omit);
+  },
+  invoke(...args) {
+    const [channel, ...omit] = args;
+    return electron.ipcRenderer.invoke(channel, ...omit);
+  },
+  // Database / Settings
+  saveSettings: (settings) => electron.ipcRenderer.invoke("db:save-settings", settings),
+  getSettings: () => electron.ipcRenderer.invoke("db:get-settings"),
+  // AI
+  fetchModels: (config) => electron.ipcRenderer.invoke("ai:fetch-models", config),
+  startChat: (message, modelConfig) => electron.ipcRenderer.send("ai:start-chat", message, modelConfig),
+  cancelChat: () => electron.ipcRenderer.send("ai:cancel"),
+  confirmTool: (callId, confirmed) => electron.ipcRenderer.send("ai:confirm-tool", callId, confirmed),
+  // Skills
+  listSkills: () => electron.ipcRenderer.invoke("skills:list")
+});

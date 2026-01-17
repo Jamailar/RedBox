@@ -14,7 +14,8 @@
   "host_permissions": [
     "https://www.xiaohongshu.com/*",
     "https://sns-webpic-qc.xhscdn.com/*",
-    "https://github.com/*"
+    "https://github.com/*",
+    "http://127.0.0.1:23456/*"
   ],
   "content_scripts": [
     {
@@ -42,19 +43,21 @@
     "default_popup": "popup.html"
   },
   "icons": {
-      "128": "icons/128.png",
-      "256": "icons/256.png",
-      "32": "icons/32.png",
-      "48": "icons/48.png",
-      "64": "icons/64.png"
-   },
+    "128": "icons/128.png",
+    "256": "icons/256.png",
+    "32": "icons/32.png",
+    "48": "icons/48.png",
+    "64": "icons/64.png"
+  },
   "options_page": "options.html",
   "web_accessible_resources": [
     {
       "resources": [
         "image-tool.html"
       ],
-      "matches": ["<all_urls>"]
+      "matches": [
+        "<all_urls>"
+      ]
     }
   ]
 }

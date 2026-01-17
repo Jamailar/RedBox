@@ -153,6 +153,53 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     sendResponse({ text: fullText });
     return;
   }
+
+  // 获取完整笔记数据（用于保存到工作台）
+  if (msg.action === 'GET_FULL_NOTE_DATA') {
+    try {
+      const title = getNoteTitle();
+      const textEls = getNoteTextEls();
+      const content = textEls.map(span => span.innerText.trim()).filter(Boolean).join('\n\n');
+      const authorInfo = getAuthorInfo();
+
+      // 获取图片URL列表
+      const imgEls = getCurrentNoteImgEls();
+      const images = imgEls
+        .map(img => img.getAttribute('src'))
+        .filter(src => src && src.startsWith('https://'))
+        .slice(0, 9); // 最多9张图
+
+      // 尝试获取互动数据
+      let stats = { likes: 0, comments: 0 };
+      try {
+        const likeEl = document.querySelector('.like-wrapper .count') ||
+          document.querySelector('[class*="like"] .count');
+        const commentEl = document.querySelector('.comment-wrapper .count') ||
+          document.querySelector('[class*="comment"] .count');
+        if (likeEl) stats.likes = parseInt(likeEl.innerText.replace(/[^\d]/g, '')) || 0;
+        if (commentEl) stats.comments = parseInt(commentEl.innerText.replace(/[^\d]/g, '')) || 0;
+      } catch (e) { }
+
+      // 生成唯一ID
+      const noteId = 'xhs_' + Date.now() + '_' + Math.random().toString(36).substr(2, 6);
+
+      sendResponse({
+        success: true,
+        data: {
+          noteId,
+          title,
+          author: authorInfo?.name || '未知',
+          content,
+          images,
+          stats,
+          source: window.location.href
+        }
+      });
+    } catch (err) {
+      sendResponse({ success: false, error: err.message });
+    }
+    return true; // 表示异步响应
+  }
 });
 
 // 主函数：打包正文和图片为ZIP
@@ -191,10 +238,10 @@ async function scrapeAndPackZip() {
 
     // 初始化 JSZip
     const zip = new JSZip();
-    
+
     // 构建文本内容，包含作者信息
     let txtContent = `${rawTitle}\n\n${fullText}`;
-    
+
     // 如果有作者信息，添加到文档末尾
     if (authorInfo) {
       txtContent += '\n\n---\n\nAuthor:';
@@ -208,7 +255,7 @@ async function scrapeAndPackZip() {
         txtContent += `\n主页: ${authorInfo.profile}`;
       }
     }
-    
+
     zip.file(`${title}.txt`, txtContent);
     // 添加图片
     const imgFolder = zip.folder('images');

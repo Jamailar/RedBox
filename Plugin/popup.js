@@ -20,8 +20,8 @@ window.onload = () => {
         detectEl.style.display = 'none';
         // 标题处理：若过长截断
         const rawTitle = resp.title || '笔记';
-        const displayTitle = rawTitle.length > 30 
-          ? rawTitle.slice(0, 27) + '...' 
+        const displayTitle = rawTitle.length > 30
+          ? rawTitle.slice(0, 27) + '...'
           : rawTitle;
         titleSpan.innerText = displayTitle;
         infoEl.style.display = 'block';
@@ -44,6 +44,65 @@ window.onload = () => {
       // 关闭 Popup（MVP 选择直接关闭）
       window.close();
     });
+  });
+
+  // 3.5 保存到工作台按钮
+  const btnSaveWorkstation = document.getElementById('btn-save-workstation');
+  const saveStatus = document.getElementById('save-status');
+  const WORKSTATION_API = 'http://127.0.0.1:23456/api/notes';
+
+  btnSaveWorkstation.addEventListener('click', async () => {
+    btnSaveWorkstation.disabled = true;
+    btnSaveWorkstation.innerText = '正在保存...';
+    saveStatus.innerText = '正在获取笔记数据...';
+    saveStatus.style.color = '#667eea';
+
+    try {
+      // 获取当前tab
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+
+      // 获取笔记数据
+      const noteData = await new Promise((resolve, reject) => {
+        chrome.tabs.sendMessage(tab.id, { action: 'GET_FULL_NOTE_DATA' }, (resp) => {
+          if (chrome.runtime.lastError) {
+            reject(new Error(chrome.runtime.lastError.message));
+          } else if (resp && resp.success) {
+            resolve(resp.data);
+          } else {
+            reject(new Error(resp?.error || '获取笔记数据失败'));
+          }
+        });
+      });
+
+      saveStatus.innerText = '正在连接AI工作台...';
+
+      // 发送到桌面端API
+      const response = await fetch(WORKSTATION_API, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(noteData)
+      });
+
+      if (!response.ok) {
+        throw new Error('工作台连接失败，请确保桌面应用已启动');
+      }
+
+      const result = await response.json();
+
+      if (result.success) {
+        saveStatus.innerText = '✅ 已保存到知识库！';
+        saveStatus.style.color = '#22c55e';
+        btnSaveWorkstation.innerText = '✅ 保存成功';
+      } else {
+        throw new Error(result.error || '保存失败');
+      }
+    } catch (err) {
+      console.error('[SAVE-ERROR]', err);
+      saveStatus.innerText = '❌ ' + err.message;
+      saveStatus.style.color = '#ef4444';
+      btnSaveWorkstation.innerText = '💾 保存到AI工作台';
+      btnSaveWorkstation.disabled = false;
+    }
   });
 
   // 4. 点击 OCR 按钮事件
@@ -186,7 +245,7 @@ window.onload = () => {
         console.log('[AI-DEBUG] AI接口响应内容:', text);
         if (!resp.ok) throw new Error('AI接口请求失败');
         let data;
-        try { data = JSON.parse(text); } catch(e) { data = null; }
+        try { data = JSON.parse(text); } catch (e) { data = null; }
         let aiText = '';
         if (data && data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) {
           aiText = data.choices[0].message.content.trim();

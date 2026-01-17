@@ -1,0 +1,7 @@
+.cursor
+firstrestrict.md
+dev_plan.md
+*.py
+desktop/node_modules
+desktop/dist
+desktop/example

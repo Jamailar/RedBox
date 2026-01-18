@@ -53,5 +53,16 @@ electron.contextBridge.exposeInMainWorld("ipcRenderer", {
   listSkills: () => electron.ipcRenderer.invoke("skills:list"),
   // Embedding Index
   getIndexStatus: (advisorId) => electron.ipcRenderer.invoke("advisors:get-index-status", { advisorId }),
-  syncEmbeddings: (advisorId) => electron.ipcRenderer.invoke("advisors:sync-embeddings", { advisorId })
+  syncEmbeddings: (advisorId) => electron.ipcRenderer.invoke("advisors:sync-embeddings", { advisorId }),
+  // YouTube Import
+  checkYtdlp: () => electron.ipcRenderer.invoke("youtube:check-ytdlp"),
+  installYtdlp: () => electron.ipcRenderer.invoke("youtube:install"),
+  updateYtdlp: () => electron.ipcRenderer.invoke("youtube:update"),
+  fetchYoutubeInfo: (channelUrl) => electron.ipcRenderer.invoke("advisors:fetch-youtube-info", { channelUrl }),
+  downloadYoutubeSubtitles: (params) => electron.ipcRenderer.invoke("advisors:download-youtube-subtitles", params),
+  // Video Management
+  refreshVideos: (advisorId, limit) => electron.ipcRenderer.invoke("advisors:refresh-videos", { advisorId, limit }),
+  getVideos: (advisorId) => electron.ipcRenderer.invoke("advisors:get-videos", { advisorId }),
+  downloadVideo: (advisorId, videoId) => electron.ipcRenderer.invoke("advisors:download-video", { advisorId, videoId }),
+  retryFailedVideos: (advisorId) => electron.ipcRenderer.invoke("advisors:retry-failed", { advisorId })
 });

@@ -6,4 +6,6 @@ desktop/node_modules
 desktop/dist
 desktop/example
 example
+node_modules
+
 

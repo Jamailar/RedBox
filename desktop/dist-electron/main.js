@@ -1,7 +1,8 @@
 "use strict";
 require("electron");
 require("node:path");
-require("./main-Dk1qoHKe.js");
+require("node:url");
+require("./main-BnZNO9nI.js");
 require("fs/promises");
 require("path");
 require("events");

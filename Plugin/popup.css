@@ -135,3 +135,14 @@ body {
     color: #fff;
     transform: scale(1.03);
   }
+
+  .status-line {
+    margin-top: 8px;
+    min-height: 20px;
+    font-size: 12px;
+    text-align: center;
+    padding: 6px 8px;
+    border-radius: 6px;
+    border: 1px solid #eee;
+    background: #fafafa;
+  }

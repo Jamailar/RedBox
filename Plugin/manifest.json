@@ -1,8 +1,8 @@
 {
   "name": "RC 小红书辅助创作 AI",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "manifest_version": 3,
-  "description": "一键下载当前小红书笔记，并将标题/正文 & 图片打包成 ZIP 文件",
+  "description": "一键下载小红书笔记和YouTube视频，保存到知识库",
   "permissions": [
     "downloads",
     "activeTab",
@@ -14,6 +14,8 @@
   "host_permissions": [
     "https://www.xiaohongshu.com/*",
     "https://sns-webpic-qc.xhscdn.com/*",
+    "https://www.youtube.com/*",
+    "https://i.ytimg.com/*",
     "https://github.com/*",
     "http://127.0.0.1:23456/*"
   ],
@@ -27,6 +29,15 @@
       "js": [
         "libs/jszip.min.js",
         "content-script.js"
+      ]
+    },
+    {
+      "matches": [
+        "https://www.youtube.com/watch*"
+      ],
+      "run_at": "document_idle",
+      "js": [
+        "youtube-content.js"
       ]
     }
   ],

@@ -2,7 +2,7 @@
 require("electron");
 require("node:path");
 require("node:url");
-require("./main-BnZNO9nI.js");
+require("./main-fa3Y2bDw.js");
 require("fs/promises");
 require("path");
 require("events");

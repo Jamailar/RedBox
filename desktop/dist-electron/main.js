@@ -2,8 +2,8 @@
 require("electron");
 require("node:path");
 require("node:url");
-require("./main-fa3Y2bDw.js");
-require("fs/promises");
-require("path");
+require("./main-BZjCswiR.js");
 require("events");
+require("path");
+require("fs/promises");
 require("http");

@@ -2,7 +2,7 @@
 require("electron");
 require("node:path");
 require("node:url");
-require("./main-DAaN-_rx.js");
+require("./main-BLhPgAAc.js");
 require("events");
 require("path");
 require("fs/promises");

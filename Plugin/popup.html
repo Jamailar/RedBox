@@ -2,155 +2,113 @@
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8">
-  <title>RC 小红书复制AI</title>
+  <title>红盒子</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <link rel="stylesheet" href="popup.css">
   <style>
     html, body {
-      width: 360px;
-      background-color: #fff;
-      margin: 0;
-      padding: 0;
-      font-family: "Poppins", "PingFang SC", Arial, sans-serif;
-    }
-    .small-btn {
-      font-size: 13px;
-      padding: 6px 12px;
-      border-radius: 6px;
-      background: #f5f5f5;
-      color: #333;
-      border: 1px solid #eee;
-      margin-right: 8px;
+      width: 320px;
+      min-height: 200px;
     }
 
-    #ai-rewrite-status .ai-result-box {
-      background: #f7f8fa;
-      border-radius: 10px;
-      border: 1px solid #e3e6eb;
-      padding: 14px 12px;
-      margin-top: 8px;
-      color: #222;
-      font-size: 15px;
-      line-height: 1.7;
-      word-break: break-all;
-      box-shadow: 0 1px 4px rgba(0,0,0,0.03);
+    /* 顶部标题栏 */
+    .header {
+      background: var(--brand-red);
+      color: #fff;
+      padding: 12px 16px;
+      font-size: 14px;
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .header-icon {
+      width: 20px;
+      height: 20px;
+    }
+
+    /* 内容容器 */
+    .container {
+      padding: 16px;
+      min-height: 160px;
+    }
+
+    /* 按钮组 */
+    .btn-group {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      margin-top: 12px;
+    }
+
+    /* 提示文本 */
+    .hint-text {
+      margin-top: 12px;
+      font-size: 11px;
+      color: var(--text-tertiary);
+      text-align: center;
+    }
+
+    /* 版本号 */
+    .version {
+      position: fixed;
+      right: 16px;
+      bottom: 8px;
+      font-size: 11px;
+      color: var(--text-tertiary);
     }
   </style>
 </head>
 <body>
   <!-- 顶部标题栏 -->
-  <header style="
-    background: linear-gradient(135deg, #F6451D 0%, #FF8A3A 100%);
-    color: #fff;
-    padding: 14px 16px;
-    font-size: 18px;
-    font-weight: 700;
-    text-align: center;
-    border-bottom: 1px solid #eee;
-  ">
-    RC 小红书辅助创作AI
+  <header class="header">
+    <img src="icons/Box.png" alt="RedBox" class="header-icon">
+    <span>红盒子</span>
   </header>
 
-  <div id="popup-container" style="padding: 16px 16px 56px 16px; position: relative; min-height: 320px;">
+  <div class="container">
     <!-- 初始状态 -->
     <div id="note-detect-status">正在检测页面...</div>
 
     <!-- 检测到笔记时显示 -->
     <div id="note-info" style="display: none;">
-      <div id="note-title" style="
-        font-size: 14px;
-        font-weight: 500;
-        color: #333;
-        margin-bottom: 12px;
-        line-height: 1.4;
-      ">
-        当前笔记标题：<br><span id="title-text" style="color: #F6451D; font-weight: 600;"></span>
+      <div id="note-title">
+        当前笔记：<br><span id="title-text"></span>
       </div>
 
-      <!-- 下载+OCR按钮横向并排 -->
-      <div style="display: flex; flex-direction: row; gap: 8px; justify-content: center; align-items: center; margin-bottom: 4px;">
-        <button id="btn-download" class="small-btn">⬇️ 一键打包下载</button>
-        <button id="btn-ocr" class="small-btn" style="margin-top:0;">🔍 提取图片内容OCR*</button>
+      <div class="btn-group">
+        <button id="btn-download" class="small-btn">⬇️ 打包下载</button>
+        <button id="btn-save-workstation" class="big-btn">📦 存入红盒子</button>
       </div>
-
-      <div style="margin: 10px 0 6px; font-size: 12px; color: #666;">保存到个人档案</div>
-      <select id="archive-select" style="width: 100%; padding: 8px 10px; border-radius: 8px; border: 1px solid #eee; background: #fafafa; font-size: 13px;">
-        <option value="">正在加载档案...</option>
-      </select>
-
-      <!-- 保存到个人档案按钮 -->
-      <button id="btn-save-archive" class="big-btn" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: #fff; border: none;">
-        💾 保存到个人档案
-      </button>
-      <div id="archive-save-status" class="status-line" style="color:#667eea;"></div>
-
-      <!-- 保存到工作台按钮 -->
-      <button id="btn-save-workstation" class="big-btn" style="background: linear-gradient(135deg, #10b981 0%, #059669 100%); color: #fff; border: none;">
-        💾 保存到AI工作台
-      </button>
-      <div id="save-status" class="status-line" style="color:#10b981;"></div>
-
-      <!-- OCR进度/结果展示区 -->
-      <div id="ocr-status" style="margin-top:10px;min-height:24px;font-size:13px;color:#F6451D;"></div>
-      <!-- AI仿写按钮 -->
-      <button id="btn-ai-rewrite" class="big-btn">✏️ AI文字仿写</button>
-      <button id="btn-ai-rewrite-image" class="big-btn">✨ AI图文仿写*</button>
-      <button id="btn-generate-cover" class="big-btn">🖼️ 生成相似封面图*</button>
-      <!-- AI仿写进度/结果展示区 -->
-      <div id="ai-rewrite-status" style="margin-top:10px;min-height:24px;font-size:13px;color:#1a73e8;"></div>
-
-      <!-- 预留区 -->
-      <div style="margin-top: 24px; font-size: 12px; color: #999;">
-        （更多功能即将上线...）
-      </div>
+      <div id="save-status" class="status-line"></div>
     </div>
 
     <!-- 非笔记页提示 -->
-    <div id="note-notice" style="display: none; text-align: center; color: #B10000; font-size: 13px; margin-top: 20px;">
-      未检测到笔记，请在笔记页面使用，或刷新页面
+    <div id="note-notice" style="display: none;">
+      未检测到笔记，请在笔记页面使用
     </div>
 
     <!-- YouTube 视频检测到时显示 -->
     <div id="youtube-info" style="display: none;">
-      <div id="youtube-title" style="
-        font-size: 14px;
-        font-weight: 500;
-        color: #333;
-        margin-bottom: 12px;
-        line-height: 1.4;
-      ">
-        当前视频：<br><span id="youtube-title-text" style="color: #FF0000; font-weight: 600;"></span>
+      <div id="youtube-title">
+        当前视频：<br><span id="youtube-title-text"></span>
       </div>
 
-      <!-- 保存到知识库按钮 -->
-      <button id="btn-save-youtube" class="big-btn" style="background: linear-gradient(135deg, #FF0000 0%, #CC0000 100%); color: #fff; border: none;">
-        📺 保存视频到知识库
-      </button>
-      <div id="youtube-save-status" class="status-line" style="color:#FF0000;"></div>
+      <div class="btn-group">
+        <button id="btn-save-youtube" class="big-btn">📦 存入红盒子</button>
+      </div>
+      <div id="youtube-save-status" class="status-line"></div>
 
-      <div style="margin-top: 16px; font-size: 12px; color: #999;">
+      <div class="hint-text">
         保存后将自动下载字幕和封面图
       </div>
     </div>
   </div>
 
-  <!-- 左下角设置按钮 -->
-  <button id="btn-settings" style="position: fixed; left: 16px; bottom: 12px; font-size: 15px; background: none; border: none; color: #888; cursor: pointer; z-index: 10;">⚙️ 设置</button>
-  <!-- 右下角版本号 -->
-  <div id="version-info" style="position: fixed; right: 16px; bottom: 12px; color: #bbb; font-size: 12px; z-index: 10;"></div>
+  <!-- 版本号 -->
+  <div id="version-info" class="version"></div>
 
   <script src="popup.js"></script>
-  <script>
-    document.getElementById('btn-ocr').onclick = function() {
-      window.open('image-tool.html', '_blank');
-    };
-    document.getElementById('btn-ai-rewrite-image').onclick = function() {
-      window.open('image-tool.html', '_blank');
-    };
-    document.getElementById('btn-generate-cover').onclick = function() {
-      window.open('image-tool.html', '_blank');
-    };
-
-  </script>
 </body>
 </html>

@@ -34,6 +34,23 @@ function getImageExtension(url) {
   return 'jpg';
 }
 
+function parseCountText(value) {
+  if (!value) return 0;
+  const text = String(value).trim();
+  const cleaned = text.replace(/[,\s]/g, '').replace(/[^0-9.\u4e07\u4ebf]/g, '');
+  if (!cleaned) return 0;
+  if (cleaned.includes('亿')) {
+    const num = parseFloat(cleaned.replace('亿', ''));
+    return Number.isNaN(num) ? 0 : Math.round(num * 100000000);
+  }
+  if (cleaned.includes('万')) {
+    const num = parseFloat(cleaned.replace('万', ''));
+    return Number.isNaN(num) ? 0 : Math.round(num * 10000);
+  }
+  const num = parseFloat(cleaned);
+  return Number.isNaN(num) ? 0 : Math.round(num);
+}
+
 // 获取标题，兼容多种结构
 function getNoteTitle() {
   return (
@@ -42,6 +59,16 @@ function getNoteTitle() {
     document.querySelector('.note-title')?.innerText.trim() ||
     '笔记'
   );
+}
+
+function hasNoteDataInState() {
+  try {
+    const state = getInitialState();
+    const detailMap = state?.note?.noteDetailMap || {};
+    return Object.keys(detailMap).length > 0;
+  } catch (e) {
+    return false;
+  }
 }
 
 // 获取作者信息
@@ -98,8 +125,35 @@ function getCurrentNoteImgEls() {
   return els;
 }
 
+function getCoverImageUrl() {
+  const metaOg = document.querySelector('meta[property="og:image"], meta[name="og:image"]');
+  if (metaOg && metaOg.getAttribute('content')) {
+    return metaOg.getAttribute('content');
+  }
+  const videoEl = document.querySelector('video');
+  if (videoEl && videoEl.getAttribute('poster')) {
+    return videoEl.getAttribute('poster');
+  }
+  const firstImg = getCurrentNoteImgEls()[0];
+  if (firstImg) {
+    return firstImg.getAttribute('src');
+  }
+  return null;
+}
+
 // 获取当前笔记的视频URL（支持多种结构）
 function getCurrentNoteVideoUrl() {
+  // 0. 优先尝试从 __INITIAL_STATE__ 获取无水印直链
+  try {
+    const stateUrl = getVideoUrlFromState();
+    if (stateUrl) {
+      console.log('[XHS-DEBUG] 从 State 获取到视频 URL:', stateUrl);
+      return stateUrl;
+    }
+  } catch (e) {
+    console.error('[XHS-DEBUG] 从 State 获取视频失败:', e);
+  }
+
   // 1. 直接查找 <video src="...">
   let videoEl = document.querySelector('video');
   if (videoEl && videoEl.src) return videoEl.src;
@@ -119,6 +173,89 @@ function getCurrentNoteVideoUrl() {
   return null;
 }
 
+// 辅助函数：从页面 Script 标签提取 __INITIAL_STATE__
+function getInitialState() {
+  const scripts = document.querySelectorAll('script');
+  for (const script of scripts) {
+    if (script.textContent && script.textContent.includes('window.__INITIAL_STATE__=')) {
+      try {
+        // 提取 JSON 部分
+        const jsonText = script.textContent
+          .replace('window.__INITIAL_STATE__=', '')
+          .replace(/undefined/g, 'null') // 处理 undefined
+          .replace(/;$/, ''); // 去除末尾分号
+        
+        return JSON.parse(jsonText);
+      } catch (e) {
+        console.warn('[XHS-DEBUG] 解析 State JSON 失败', e);
+      }
+    }
+  }
+  return null;
+}
+
+// 辅助函数：从 State 中查找 masterUrl
+function getVideoUrlFromState() {
+  const state = getInitialState();
+  if (!state) return null;
+
+  // 1. 尝试直接路径匹配
+  // 路径通常是 note.noteDetailMap[noteId].note.video.media.stream.h264[0].masterUrl
+  try {
+    const noteData = state.note || {};
+    // 获取当前笔记ID，或者取第一个key
+    const detailMap = noteData.noteDetailMap || {};
+    const keys = Object.keys(detailMap);
+    if (keys.length > 0) {
+      // 优先匹配当前 URL 中的 ID
+      const currentId = location.pathname.split('/').pop();
+      const targetId = keys.find(k => k === currentId) || keys[0];
+      const noteItem = detailMap[targetId];
+      
+      if (noteItem && noteItem.note && noteItem.note.video) {
+        const stream = noteItem.note.video.media?.stream?.h264;
+        if (Array.isArray(stream) && stream.length > 0) {
+          // 优先取 masterUrl
+          if (stream[0].masterUrl) return stream[0].masterUrl;
+          // 其次取 backupUrls
+          if (stream[0].backupUrls && stream[0].backupUrls.length > 0) {
+            return stream[0].backupUrls[0];
+          }
+        }
+      }
+    }
+  } catch (e) {
+    console.warn('[XHS-DEBUG] State 路径解析失败，尝试 DFS');
+  }
+
+  // 2. 深度优先搜索 masterUrl
+  // 如果路径变了，尝试暴力搜索包含 masterUrl 的键值
+  let url = findKeyInObject(state, 'masterUrl');
+  if (url) return url;
+
+  // 3. 深度优先搜索 backupUrls
+  const backups = findKeyInObject(state, 'backupUrls');
+  if (Array.isArray(backups) && backups.length > 0) {
+    return backups[0];
+  }
+
+  return null;
+}
+
+function findKeyInObject(obj, key) {
+  if (!obj || typeof obj !== 'object') return null;
+  
+  if (obj[key]) return obj[key];
+  
+  for (const k in obj) {
+    if (Object.prototype.hasOwnProperty.call(obj, k)) {
+      const result = findKeyInObject(obj[k], key);
+      if (result) return result;
+    }
+  }
+  return null;
+}
+
 // 消息监听
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.action === 'CHECK_IF_NOTE_PAGE') {
@@ -127,9 +264,19 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       '.desc .note-text',
       '.note-content .note-text'
     ];
-    const found = textSelectors.some(sel => document.querySelector(sel));
+    const found = textSelectors.some(sel => document.querySelector(sel)) ||
+      getCurrentNoteImgEls().length > 0 ||
+      !!getCurrentNoteVideoUrl() ||
+      hasNoteDataInState();
     const title = found ? getNoteTitle() : '';
-    sendResponse({ isNote: found, title });
+
+    // Determine note type
+    let noteType = 'image'; // default
+    if (getCurrentNoteVideoUrl()) {
+      noteType = 'video';
+    }
+
+    sendResponse({ isNote: found, title, noteType });
   }
 
   if (msg.action === 'MANUAL_SCRAPE') {
@@ -169,15 +316,20 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         .filter(src => src && src.startsWith('https://'))
         .slice(0, 9); // 最多9张图
 
+      const coverUrl = getCoverImageUrl();
+
+      // 获取视频URL
+      const videoUrl = getCurrentNoteVideoUrl();
+
       // 尝试获取互动数据
-      let stats = { likes: 0, comments: 0 };
+      let stats = { likes: 0, collects: 0 };
       try {
-        const likeEl = document.querySelector('.like-wrapper .count') ||
-          document.querySelector('[class*="like"] .count');
-        const commentEl = document.querySelector('.comment-wrapper .count') ||
-          document.querySelector('[class*="comment"] .count');
-        if (likeEl) stats.likes = parseInt(likeEl.innerText.replace(/[^\d]/g, '')) || 0;
-        if (commentEl) stats.comments = parseInt(commentEl.innerText.replace(/[^\d]/g, '')) || 0;
+        const likeEl = Array.from(document.querySelectorAll('.like-wrapper .count,[class*="like-wrapper"] .count,[class*="like"] .count'))
+          .find(el => !el.closest('.comments-el') && !el.closest('[class*="comments-el"]'));
+        const collectEl = Array.from(document.querySelectorAll('.collect-wrapper .count,[class*="collect-wrapper"] .count,[class*="collect"] .count'))
+          .find(el => !el.closest('.comments-el') && !el.closest('[class*="comments-el"]'));
+        if (likeEl) stats.likes = parseCountText(likeEl.innerText);
+        if (collectEl) stats.collects = parseCountText(collectEl.innerText);
       } catch (e) { }
 
       // 生成唯一ID
@@ -191,6 +343,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           author: authorInfo?.name || '未知',
           content,
           images,
+          coverUrl,
+          videoUrl,
           stats,
           source: window.location.href
         }

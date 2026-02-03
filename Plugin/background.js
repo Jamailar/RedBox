@@ -113,3 +113,52 @@ async function checkForUpdate() {
 checkForUpdate();
 // 每24小时检查一次
 setInterval(checkForUpdate, 24 * 60 * 60 * 1000);
+
+// Context Menu for Saving Text
+chrome.runtime.onInstalled.addListener(() => {
+  chrome.contextMenus.create({
+    id: "save-to-redconvert",
+    title: "保存选中文本到知识库",
+    contexts: ["selection"]
+  });
+});
+
+chrome.contextMenus.onClicked.addListener((info, tab) => {
+  if (info.menuItemId === "save-to-redconvert" && info.selectionText) {
+    const text = info.selectionText;
+    const url = tab.url;
+    const title = tab.title;
+
+    fetch('http://127.0.0.1:23456/api/save-text', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        text: text,
+        url: url,
+        title: title
+      })
+    })
+    .then(response => response.json())
+    .then(data => {
+      console.log('Text saved:', data);
+      // Optional: Show a notification
+      chrome.notifications.create({
+        type: 'basic',
+        iconUrl: 'icons/48.png',
+        title: '已保存到 RedConvert',
+        message: '文本已成功保存到您的知识库。'
+      });
+    })
+    .catch(error => {
+      console.error('Error saving text:', error);
+       chrome.notifications.create({
+        type: 'basic',
+        iconUrl: 'icons/48.png',
+        title: '保存失败',
+        message: '无法连接到 RedConvert 应用，请确保应用已启动。'
+      });
+    });
+  }
+});

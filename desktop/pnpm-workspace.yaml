@@ -1,0 +1,8 @@
+packages:
+  - .
+
+ignoredBuiltDependencies:
+  - electron
+
+onlyBuiltDependencies:
+  - better-sqlite3

@@ -1,0 +1,1337 @@
+import Database from 'better-sqlite3';
+import path from 'path';
+import { app } from 'electron';
+import fs from 'fs';
+
+const dbPath = path.join(app.getPath('userData'), 'redconvert.db');
+const db = new Database(dbPath);
+
+const DEFAULT_SPACE_ID = 'default';
+const DEFAULT_SPACE_NAME = '默认空间';
+
+const hasColumn = (tableName: string, columnName: string): boolean => {
+  try {
+    const rows = db.prepare(`PRAGMA table_info(${tableName})`).all() as Array<{ name: string }>;
+    return rows.some((row) => row.name === columnName);
+  } catch {
+    return false;
+  }
+};
+
+// Initialize tables
+const initDb = () => {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS settings (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      api_endpoint TEXT,
+      api_key TEXT,
+      model_name TEXT,
+      role_mapping TEXT,
+      workspace_dir TEXT,
+      active_space_id TEXT,
+      transcription_model TEXT,
+      transcription_endpoint TEXT,
+      transcription_key TEXT,
+      image_provider TEXT,
+      image_endpoint TEXT,
+      image_api_key TEXT,
+      image_model TEXT,
+      image_size TEXT,
+      image_quality TEXT
+    );
+  `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS spaces (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+  `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS archive_profiles (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      platform TEXT,
+      goal TEXT,
+      domain TEXT,
+      audience TEXT,
+      tone_tags TEXT,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS archive_samples (
+      id TEXT PRIMARY KEY,
+      profile_id TEXT NOT NULL,
+      title TEXT,
+      content TEXT,
+      excerpt TEXT,
+      tags TEXT,
+      images TEXT,
+      platform TEXT,
+      source_url TEXT,
+      sample_date TEXT,
+      is_featured INTEGER DEFAULT 0,
+      created_at INTEGER NOT NULL,
+      FOREIGN KEY (profile_id) REFERENCES archive_profiles(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_archive_samples_profile_id
+      ON archive_samples(profile_id);
+    CREATE INDEX IF NOT EXISTS idx_archive_samples_created_at
+      ON archive_samples(created_at);
+  `);
+
+  // Chat history tables
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS chat_sessions (
+      id TEXT PRIMARY KEY,
+      title TEXT,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      metadata TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS chat_messages (
+      id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL,
+      role TEXT NOT NULL,
+      content TEXT NOT NULL,
+      tool_calls TEXT,
+      tool_call_id TEXT,
+      timestamp INTEGER NOT NULL,
+      FOREIGN KEY (session_id) REFERENCES chat_sessions(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_chat_messages_session_id
+      ON chat_messages(session_id);
+    CREATE INDEX IF NOT EXISTS idx_chat_messages_timestamp
+      ON chat_messages(timestamp);
+
+    CREATE TABLE IF NOT EXISTS knowledge_vectors (
+      id TEXT PRIMARY KEY,
+      source_id TEXT NOT NULL,
+      source_type TEXT NOT NULL,
+      chunk_index INTEGER NOT NULL,
+      content TEXT NOT NULL,
+      embedding BLOB NOT NULL,
+      metadata TEXT,
+      content_hash TEXT,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_vectors_source ON knowledge_vectors(source_id);
+  `);
+
+  // User Memory tables
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS user_memories (
+      id TEXT PRIMARY KEY,
+      space_id TEXT NOT NULL DEFAULT '${DEFAULT_SPACE_ID}',
+      content TEXT NOT NULL,
+      type TEXT DEFAULT 'general',
+      tags TEXT,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      last_accessed INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_memories_created_at ON user_memories(created_at);
+  `);
+
+  // Migration: add workspace_dir column if missing
+  try {
+    db.exec(`ALTER TABLE settings ADD COLUMN workspace_dir TEXT;`);
+  } catch {
+    // Column already exists
+  }
+  try {
+    db.exec(`ALTER TABLE settings ADD COLUMN active_space_id TEXT;`);
+  } catch { /* Column already exists */ }
+
+  // Migration: add embedding columns if missing
+  try {
+    db.exec(`ALTER TABLE settings ADD COLUMN embedding_endpoint TEXT;`);
+  } catch { /* Column already exists */ }
+  try {
+    db.exec(`ALTER TABLE settings ADD COLUMN embedding_key TEXT;`);
+  } catch { /* Column already exists */ }
+  try {
+    db.exec(`ALTER TABLE settings ADD COLUMN embedding_model TEXT;`);
+  } catch { /* Column already exists */ }
+
+  try {
+    db.exec(`ALTER TABLE settings ADD COLUMN transcription_model TEXT;`);
+  } catch { /* Column already exists */ }
+  try {
+    db.exec(`ALTER TABLE settings ADD COLUMN transcription_endpoint TEXT;`);
+  } catch { /* Column already exists */ }
+  try {
+    db.exec(`ALTER TABLE settings ADD COLUMN transcription_key TEXT;`);
+  } catch { /* Column already exists */ }
+  try {
+    db.exec(`ALTER TABLE settings ADD COLUMN image_provider TEXT;`);
+  } catch { /* Column already exists */ }
+  try {
+    db.exec(`ALTER TABLE settings ADD COLUMN image_endpoint TEXT;`);
+  } catch { /* Column already exists */ }
+  try {
+    db.exec(`ALTER TABLE settings ADD COLUMN image_api_key TEXT;`);
+  } catch { /* Column already exists */ }
+  try {
+    db.exec(`ALTER TABLE settings ADD COLUMN image_model TEXT;`);
+  } catch { /* Column already exists */ }
+  try {
+    db.exec(`ALTER TABLE settings ADD COLUMN image_size TEXT;`);
+  } catch { /* Column already exists */ }
+  try {
+    db.exec(`ALTER TABLE settings ADD COLUMN image_quality TEXT;`);
+  } catch { /* Column already exists */ }
+
+  try {
+    db.exec(`ALTER TABLE archive_samples ADD COLUMN images TEXT;`);
+  } catch { /* Column already exists */ }
+
+  // Migration: add display_content and attachment columns for chat_messages
+  try {
+    db.exec(`ALTER TABLE chat_messages ADD COLUMN display_content TEXT;`);
+  } catch { /* Column already exists */ }
+  try {
+    db.exec(`ALTER TABLE chat_messages ADD COLUMN attachment TEXT;`);
+  } catch { /* Column already exists */ }
+
+  // Migration: add content_hash column for knowledge_vectors
+  try {
+    db.exec(`ALTER TABLE knowledge_vectors ADD COLUMN content_hash TEXT;`);
+  } catch { /* Column already exists */ }
+
+  // Migration: add space_id for user memories
+  try {
+    db.exec(`ALTER TABLE user_memories ADD COLUMN space_id TEXT;`);
+  } catch { /* Column already exists */ }
+  if (hasColumn('user_memories', 'space_id')) {
+    db.exec(`
+      UPDATE user_memories
+      SET space_id = COALESCE(
+        (SELECT NULLIF(active_space_id, '') FROM settings WHERE id = 1),
+        '${DEFAULT_SPACE_ID}'
+      )
+      WHERE space_id IS NULL OR space_id = ''
+    `);
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_memories_space_created_at ON user_memories(space_id, created_at);`);
+  }
+
+  const now = Date.now();
+  db.prepare(`
+    INSERT INTO spaces (id, name, created_at, updated_at)
+    VALUES (?, ?, ?, ?)
+    ON CONFLICT(id) DO NOTHING
+  `).run(DEFAULT_SPACE_ID, DEFAULT_SPACE_NAME, now, now);
+
+  db.exec(`
+    UPDATE settings
+    SET active_space_id = '${DEFAULT_SPACE_ID}'
+    WHERE id = 1 AND (active_space_id IS NULL OR active_space_id = '')
+  `);
+};
+
+initDb();
+
+// Default workspace directory
+export const getDefaultWorkspaceDir = () => {
+  return path.join(app.getPath('home'), '.redconvert');
+};
+
+export const saveSettings = (settings: {
+  api_endpoint: string;
+  api_key: string;
+  model_name: string;
+  role_mapping?: string;
+  workspace_dir?: string;
+  active_space_id?: string;
+  transcription_model?: string;
+  transcription_endpoint?: string;
+  transcription_key?: string;
+  embedding_endpoint?: string;
+  embedding_key?: string;
+  embedding_model?: string;
+  image_provider?: string;
+  image_endpoint?: string;
+  image_api_key?: string;
+  image_model?: string;
+  image_size?: string;
+  image_quality?: string;
+}) => {
+  const stmt = db.prepare(`
+    INSERT INTO settings (id, api_endpoint, api_key, model_name, role_mapping, workspace_dir, active_space_id, transcription_model, transcription_endpoint, transcription_key, embedding_endpoint, embedding_key, embedding_model, image_provider, image_endpoint, image_api_key, image_model, image_size, image_quality)
+    VALUES (1, @api_endpoint, @api_key, @model_name, @role_mapping, @workspace_dir, @active_space_id, @transcription_model, @transcription_endpoint, @transcription_key, @embedding_endpoint, @embedding_key, @embedding_model, @image_provider, @image_endpoint, @image_api_key, @image_model, @image_size, @image_quality)
+    ON CONFLICT(id) DO UPDATE SET
+      api_endpoint = @api_endpoint,
+      api_key = @api_key,
+      model_name = @model_name,
+      role_mapping = @role_mapping,
+      workspace_dir = @workspace_dir,
+      active_space_id = @active_space_id,
+      transcription_model = @transcription_model,
+      transcription_endpoint = @transcription_endpoint,
+      transcription_key = @transcription_key,
+      embedding_endpoint = @embedding_endpoint,
+      embedding_key = @embedding_key,
+      embedding_model = @embedding_model,
+      image_provider = @image_provider,
+      image_endpoint = @image_endpoint,
+      image_api_key = @image_api_key,
+      image_model = @image_model,
+      image_size = @image_size,
+      image_quality = @image_quality
+  `);
+  const current = getSettings() as { active_space_id?: string } | undefined;
+  return stmt.run({
+    ...settings,
+    role_mapping: typeof settings.role_mapping === 'object' ? JSON.stringify(settings.role_mapping) : (settings.role_mapping || '{}'),
+    workspace_dir: settings.workspace_dir || getDefaultWorkspaceDir(),
+    active_space_id: settings.active_space_id || current?.active_space_id || DEFAULT_SPACE_ID,
+    transcription_model: settings.transcription_model || '',
+    transcription_endpoint: settings.transcription_endpoint || '',
+    transcription_key: settings.transcription_key || '',
+    embedding_endpoint: settings.embedding_endpoint || '',
+    embedding_key: settings.embedding_key || '',
+    embedding_model: settings.embedding_model || '',
+    image_provider: settings.image_provider || '',
+    image_endpoint: settings.image_endpoint || '',
+    image_api_key: settings.image_api_key || '',
+    image_model: settings.image_model || '',
+    image_size: settings.image_size || '',
+    image_quality: settings.image_quality || ''
+  });
+};
+
+export const getSettings = () => {
+  const stmt = db.prepare('SELECT * FROM settings WHERE id = 1');
+  const result = stmt.get() as {
+    api_endpoint?: string;
+    api_key?: string;
+    model_name?: string;
+    role_mapping?: string;
+    workspace_dir?: string;
+    active_space_id?: string;
+    transcription_model?: string;
+    transcription_endpoint?: string;
+    transcription_key?: string;
+    embedding_endpoint?: string;
+    embedding_key?: string;
+    embedding_model?: string;
+    image_provider?: string;
+    image_endpoint?: string;
+    image_api_key?: string;
+    image_model?: string;
+    image_size?: string;
+    image_quality?: string;
+  } | undefined;
+  // Ensure workspace_dir has a default value
+  if (result && !result.workspace_dir) {
+    result.workspace_dir = getDefaultWorkspaceDir();
+  }
+  if (result && !result.active_space_id) {
+    result.active_space_id = DEFAULT_SPACE_ID;
+  }
+  return result;
+};
+
+// Helper to get current workspace paths
+const hasLegacyWorkspaceContent = (baseDir: string): boolean => {
+  const legacyDirs = ['knowledge', 'manuscripts', 'advisors', 'archives', 'chatrooms', 'skills'];
+  return legacyDirs.some((dirName) => fs.existsSync(path.join(baseDir, dirName)));
+};
+
+const resolveSpaceBaseDir = (workspaceRoot: string, spaceId: string): string => {
+  const normalizedSpaceId = spaceId || DEFAULT_SPACE_ID;
+  const spaceDir = path.join(workspaceRoot, 'spaces', normalizedSpaceId);
+  if (
+    normalizedSpaceId === DEFAULT_SPACE_ID &&
+    !fs.existsSync(spaceDir) &&
+    hasLegacyWorkspaceContent(workspaceRoot)
+  ) {
+    return workspaceRoot;
+  }
+  return spaceDir;
+};
+
+export const getWorkspacePathsForSpace = (spaceId: string) => {
+  const settings = getSettings() as { workspace_dir?: string } | undefined;
+  const baseDir = settings?.workspace_dir || getDefaultWorkspaceDir();
+  const activeSpaceId = spaceId || DEFAULT_SPACE_ID;
+  const spaceBaseDir = resolveSpaceBaseDir(baseDir, activeSpaceId);
+  return {
+    workspaceRoot: baseDir,
+    activeSpaceId,
+    spacesRoot: path.join(baseDir, 'spaces'),
+    base: spaceBaseDir,
+    skills: path.join(spaceBaseDir, 'skills'),
+    knowledge: path.join(spaceBaseDir, 'knowledge'),
+    knowledgeRedbook: path.join(spaceBaseDir, 'knowledge', 'redbook'),
+    knowledgeYoutube: path.join(spaceBaseDir, 'knowledge', 'youtube'),
+    advisors: path.join(spaceBaseDir, 'advisors'),
+    manuscripts: path.join(spaceBaseDir, 'manuscripts'),
+    media: path.join(spaceBaseDir, 'media'),
+    redclaw: path.join(spaceBaseDir, 'redclaw'),
+  };
+};
+
+export const getWorkspacePaths = () => {
+  const settings = getSettings() as { active_space_id?: string } | undefined;
+  const activeSpaceId = settings?.active_space_id || DEFAULT_SPACE_ID;
+  return getWorkspacePathsForSpace(activeSpaceId);
+};
+
+export interface WorkspaceSpace {
+  id: string;
+  name: string;
+  created_at: number;
+  updated_at: number;
+}
+
+const generateSpaceId = (name: string): string => {
+  const base = name
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9\u4e00-\u9fa5]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 32);
+  const candidate = base || `space-${Date.now()}`;
+
+  const exists = db.prepare('SELECT 1 FROM spaces WHERE id = ? LIMIT 1');
+  if (!exists.get(candidate)) return candidate;
+
+  let index = 2;
+  while (exists.get(`${candidate}-${index}`)) {
+    index += 1;
+  }
+  return `${candidate}-${index}`;
+};
+
+export const listSpaces = (): WorkspaceSpace[] => {
+  const stmt = db.prepare(`
+    SELECT * FROM spaces
+    ORDER BY CASE WHEN id = ? THEN 0 ELSE 1 END, updated_at DESC
+  `);
+  return stmt.all(DEFAULT_SPACE_ID) as WorkspaceSpace[];
+};
+
+export const createSpace = (name: string): WorkspaceSpace => {
+  const trimmedName = name.trim();
+  const displayName = trimmedName || '新空间';
+  const id = generateSpaceId(displayName);
+  const now = Date.now();
+  db.prepare(`
+    INSERT INTO spaces (id, name, created_at, updated_at)
+    VALUES (?, ?, ?, ?)
+  `).run(id, displayName, now, now);
+  return { id, name: displayName, created_at: now, updated_at: now };
+};
+
+export const renameSpace = (id: string, name: string): WorkspaceSpace | null => {
+  const trimmedName = name.trim();
+  if (!trimmedName) return null;
+
+  const existing = db.prepare('SELECT * FROM spaces WHERE id = ?').get(id) as WorkspaceSpace | undefined;
+  if (!existing) return null;
+
+  const now = Date.now();
+  const stmt = db.prepare('UPDATE spaces SET name = ?, updated_at = ? WHERE id = ?');
+  stmt.run(trimmedName, now, id);
+  return { ...existing, name: trimmedName, updated_at: now };
+};
+
+export const getActiveSpaceId = (): string => {
+  const settings = getSettings() as { active_space_id?: string } | undefined;
+  const id = settings?.active_space_id || DEFAULT_SPACE_ID;
+  const exists = db.prepare('SELECT 1 FROM spaces WHERE id = ? LIMIT 1').get(id) as { '1': number } | undefined;
+  return exists ? id : DEFAULT_SPACE_ID;
+};
+
+export const setActiveSpace = (spaceId: string): WorkspaceSpace => {
+  const space = db.prepare('SELECT * FROM spaces WHERE id = ?').get(spaceId) as WorkspaceSpace | undefined;
+  if (!space) {
+    throw new Error('空间不存在');
+  }
+
+  const existing = getSettings();
+  if (existing) {
+    db.prepare('UPDATE settings SET active_space_id = ? WHERE id = 1').run(spaceId);
+  } else {
+    saveSettings({
+      api_endpoint: '',
+      api_key: '',
+      model_name: '',
+      role_mapping: '{}',
+      workspace_dir: getDefaultWorkspaceDir(),
+      active_space_id: spaceId,
+    });
+  }
+
+  const now = Date.now();
+  db.prepare('UPDATE spaces SET updated_at = ? WHERE id = ?').run(now, spaceId);
+  return { ...space, updated_at: now };
+};
+
+// ========== User Memory Functions ==========
+
+export interface UserMemory {
+  id: string;
+  space_id?: string;
+  content: string;
+  type: 'general' | 'preference' | 'fact';
+  tags: string[];
+  created_at: number;
+  updated_at: number;
+  last_accessed?: number;
+}
+
+const resolveSpaceId = (spaceId?: string): string => {
+  return spaceId || getActiveSpaceId();
+};
+
+export const addUserMemory = (
+  content: string,
+  type: 'general' | 'preference' | 'fact' = 'general',
+  tags: string[] = [],
+  spaceId?: string
+): UserMemory => {
+  const now = Date.now();
+  const id = `mem_${now}_${Math.random().toString(36).substr(2, 5)}`;
+  const scopedSpaceId = resolveSpaceId(spaceId);
+
+  const stmt = db.prepare(`
+    INSERT INTO user_memories (id, space_id, content, type, tags, created_at, updated_at, last_accessed)
+    VALUES (@id, @space_id, @content, @type, @tags, @created_at, @updated_at, @last_accessed)
+  `);
+
+  const memory: UserMemory = {
+    id,
+    space_id: scopedSpaceId,
+    content,
+    type,
+    tags,
+    created_at: now,
+    updated_at: now,
+    last_accessed: now
+  };
+
+  stmt.run({
+    ...memory,
+    tags: JSON.stringify(tags)
+  });
+
+  return memory;
+};
+
+export const deleteUserMemory = (id: string): void => {
+  const stmt = db.prepare('DELETE FROM user_memories WHERE id = ? AND space_id = ?');
+  stmt.run(id, resolveSpaceId());
+};
+
+export const updateUserMemory = (id: string, updates: Partial<Pick<UserMemory, 'content' | 'type' | 'tags'>>): void => {
+  const now = Date.now();
+  const sets: string[] = ['updated_at = @updated_at'];
+  const params: any = { id, updated_at: now, space_id: resolveSpaceId() };
+
+  if (updates.content !== undefined) {
+    sets.push('content = @content');
+    params.content = updates.content;
+  }
+  if (updates.type !== undefined) {
+    sets.push('type = @type');
+    params.type = updates.type;
+  }
+  if (updates.tags !== undefined) {
+    sets.push('tags = @tags');
+    params.tags = JSON.stringify(updates.tags);
+  }
+
+  const stmt = db.prepare(`UPDATE user_memories SET ${sets.join(', ')} WHERE id = @id AND space_id = @space_id`);
+  stmt.run(params);
+};
+
+export const getUserMemories = (): UserMemory[] => {
+  const stmt = db.prepare('SELECT * FROM user_memories WHERE space_id = ? ORDER BY created_at DESC');
+  return (stmt.all(resolveSpaceId()) as any[]).map(row => ({
+    ...row,
+    tags: row.tags ? JSON.parse(row.tags) : []
+  }));
+};
+
+// ========== Archive Profiles & Samples ==========
+
+export interface ArchiveProfile {
+  id: string;
+  name: string;
+  platform?: string;
+  goal?: string;
+  domain?: string;
+  audience?: string;
+  tone_tags: string[];
+  created_at: number;
+  updated_at: number;
+}
+
+export interface ArchiveSample {
+  id: string;
+  profile_id: string;
+  title?: string;
+  content?: string;
+  excerpt?: string;
+  tags: string[];
+  images: string[];
+  platform?: string;
+  source_url?: string;
+  sample_date?: string;
+  is_featured: number;
+  created_at: number;
+}
+
+const parseJsonArray = (value?: string): string[] => {
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+};
+
+export const listArchiveProfiles = (): ArchiveProfile[] => {
+  const stmt = db.prepare(`
+    SELECT * FROM archive_profiles
+    ORDER BY updated_at DESC
+  `);
+  return (stmt.all() as ArchiveProfile[]).map((row) => ({
+    ...row,
+    tone_tags: parseJsonArray(row.tone_tags as unknown as string)
+  }));
+};
+
+export const createArchiveProfile = (profile: Omit<ArchiveProfile, 'created_at' | 'updated_at'>): ArchiveProfile => {
+  const now = Date.now();
+  const stmt = db.prepare(`
+    INSERT INTO archive_profiles (id, name, platform, goal, domain, audience, tone_tags, created_at, updated_at)
+    VALUES (@id, @name, @platform, @goal, @domain, @audience, @tone_tags, @created_at, @updated_at)
+  `);
+  stmt.run({
+    ...profile,
+    tone_tags: JSON.stringify(profile.tone_tags || []),
+    created_at: now,
+    updated_at: now
+  });
+  return { ...profile, tone_tags: profile.tone_tags || [], created_at: now, updated_at: now };
+};
+
+export const updateArchiveProfile = (profile: Omit<ArchiveProfile, 'created_at' | 'updated_at'>): ArchiveProfile => {
+  const now = Date.now();
+  const existing = db.prepare('SELECT created_at FROM archive_profiles WHERE id = ?').get(profile.id) as { created_at?: number } | undefined;
+  const createdAt = existing?.created_at ?? now;
+  const stmt = db.prepare(`
+    UPDATE archive_profiles
+    SET name = @name,
+        platform = @platform,
+        goal = @goal,
+        domain = @domain,
+        audience = @audience,
+        tone_tags = @tone_tags,
+        updated_at = @updated_at
+    WHERE id = @id
+  `);
+  stmt.run({
+    ...profile,
+    tone_tags: JSON.stringify(profile.tone_tags || []),
+    updated_at: now
+  });
+  return { ...profile, created_at: createdAt, updated_at: now, tone_tags: profile.tone_tags || [] };
+};
+
+export const deleteArchiveProfile = (id: string): void => {
+  const stmt = db.prepare('DELETE FROM archive_profiles WHERE id = ?');
+  stmt.run(id);
+};
+
+export const listArchiveSamples = (profileId: string): ArchiveSample[] => {
+  const stmt = db.prepare(`
+    SELECT * FROM archive_samples
+    WHERE profile_id = ?
+    ORDER BY created_at DESC
+  `);
+  return (stmt.all(profileId) as ArchiveSample[]).map((row) => ({
+    ...row,
+    tags: parseJsonArray(row.tags as unknown as string),
+    images: parseJsonArray(row.images as unknown as string),
+    is_featured: row.is_featured ? 1 : 0
+  }));
+};
+
+export const createArchiveSample = (sample: Omit<ArchiveSample, 'created_at'>): ArchiveSample => {
+  const now = Date.now();
+  const stmt = db.prepare(`
+    INSERT INTO archive_samples (id, profile_id, title, content, excerpt, tags, images, platform, source_url, sample_date, is_featured, created_at)
+    VALUES (@id, @profile_id, @title, @content, @excerpt, @tags, @images, @platform, @source_url, @sample_date, @is_featured, @created_at)
+  `);
+  stmt.run({
+    ...sample,
+    tags: JSON.stringify(sample.tags || []),
+    images: JSON.stringify(sample.images || []),
+    is_featured: sample.is_featured ? 1 : 0,
+    created_at: now
+  });
+  return { ...sample, tags: sample.tags || [], images: sample.images || [], is_featured: sample.is_featured ? 1 : 0, created_at: now };
+};
+
+export const updateArchiveSample = (sample: Omit<ArchiveSample, 'created_at'>): ArchiveSample => {
+  const existing = db.prepare('SELECT created_at FROM archive_samples WHERE id = ?').get(sample.id) as { created_at?: number } | undefined;
+  const createdAt = existing?.created_at ?? Date.now();
+  const stmt = db.prepare(`
+    UPDATE archive_samples
+    SET title = @title,
+        content = @content,
+        excerpt = @excerpt,
+        tags = @tags,
+        images = @images,
+        platform = @platform,
+        source_url = @source_url,
+        sample_date = @sample_date,
+        is_featured = @is_featured
+    WHERE id = @id
+  `);
+  stmt.run({
+    ...sample,
+    tags: JSON.stringify(sample.tags || []),
+    images: JSON.stringify(sample.images || []),
+    is_featured: sample.is_featured ? 1 : 0
+  });
+  return {
+    ...sample,
+    tags: sample.tags || [],
+    images: sample.images || [],
+    is_featured: sample.is_featured ? 1 : 0,
+    created_at: createdAt
+  };
+};
+
+export const deleteArchiveSample = (id: string): void => {
+  const stmt = db.prepare('DELETE FROM archive_samples WHERE id = ?');
+  stmt.run(id);
+};
+
+// ========== Chat History Functions ==========
+
+export interface ChatSession {
+  id: string;
+  title: string;
+  created_at: number;
+  updated_at: number;
+  metadata?: string;
+}
+
+export interface ChatMessage {
+  id: string;
+  session_id: string;
+  role: 'user' | 'assistant' | 'tool' | 'system';
+  content: string;
+  tool_calls?: string;
+  tool_call_id?: string;
+  timestamp: number;
+}
+
+/**
+ * 创建新的聊天会话
+ */
+export const createChatSession = (id: string, title?: string, metadata?: Record<string, any>): ChatSession => {
+  const now = Date.now();
+  const metadataStr = metadata ? JSON.stringify(metadata) : null;
+  const stmt = db.prepare(`
+    INSERT INTO chat_sessions (id, title, created_at, updated_at, metadata)
+    VALUES (@id, @title, @created_at, @updated_at, @metadata)
+  `);
+  stmt.run({ id, title: title || 'New Chat', created_at: now, updated_at: now, metadata: metadataStr });
+  return { id, title: title || 'New Chat', created_at: now, updated_at: now, metadata: metadataStr || undefined };
+};
+
+/**
+ * 根据关联文件路径获取会话
+ */
+export const getChatSessionByFile = (filePath: string): ChatSession | null => {
+  // 简单的遍历查找，因为 SQLite JSON 查询语法可能因版本而异
+  const stmt = db.prepare('SELECT * FROM chat_sessions');
+  const sessions = stmt.all() as ChatSession[];
+
+  return sessions.find(session => {
+    if (!session.metadata) return false;
+    try {
+      const meta = JSON.parse(session.metadata);
+      return meta.associatedFilePath === filePath;
+    } catch {
+      return false;
+    }
+  }) || null;
+};
+
+/**
+ * 根据关联文件 ID 获取会话
+ */
+export const getChatSessionByFileId = (fileId: string): ChatSession | null => {
+  const stmt = db.prepare('SELECT * FROM chat_sessions');
+  const sessions = stmt.all() as ChatSession[];
+
+  return sessions.find(session => {
+    if (!session.metadata) return false;
+    try {
+      const meta = JSON.parse(session.metadata);
+      return meta.associatedFileId === fileId;
+    } catch {
+      return false;
+    }
+  }) || null;
+};
+
+/**
+ * 根据关联上下文 ID 获取会话 (通用)
+ */
+export const getChatSessionByContext = (contextId: string, contextType: string): ChatSession | null => {
+  const stmt = db.prepare('SELECT * FROM chat_sessions');
+  const sessions = stmt.all() as ChatSession[];
+
+  return sessions.find(session => {
+    if (!session.metadata) return false;
+    try {
+      const meta = JSON.parse(session.metadata);
+      return meta.contextId === contextId && meta.contextType === contextType;
+    } catch {
+      return false;
+    }
+  }) || null;
+};
+
+/**
+ * 更新会话元数据
+ */
+export const updateChatSessionMetadata = (id: string, metadata: Record<string, any>): void => {
+  const stmt = db.prepare(`
+    UPDATE chat_sessions SET metadata = ?, updated_at = ? WHERE id = ?
+  `);
+  stmt.run(JSON.stringify(metadata), Date.now(), id);
+};
+
+/**
+ * 获取所有聊天会话（按更新时间倒序）
+ */
+export const getChatSessions = (): ChatSession[] => {
+  const stmt = db.prepare(`
+    SELECT * FROM chat_sessions ORDER BY updated_at DESC
+  `);
+  return stmt.all() as ChatSession[];
+};
+
+/**
+ * 获取单个聊天会话
+ */
+export const getChatSession = (id: string): ChatSession | null => {
+  const stmt = db.prepare('SELECT * FROM chat_sessions WHERE id = ?');
+  return (stmt.get(id) as ChatSession) || null;
+};
+
+/**
+ * 更新会话标题
+ */
+export const updateChatSessionTitle = (id: string, title: string): void => {
+  const stmt = db.prepare(`
+    UPDATE chat_sessions SET title = ?, updated_at = ? WHERE id = ?
+  `);
+  stmt.run(title, Date.now(), id);
+};
+
+/**
+ * 删除聊天会话（级联删除消息）
+ */
+export const deleteChatSession = (id: string): void => {
+  const stmt = db.prepare('DELETE FROM chat_sessions WHERE id = ?');
+  stmt.run(id);
+};
+
+/**
+ * 添加聊天消息
+ */
+export const addChatMessage = (message: Omit<ChatMessage, 'timestamp'> & { display_content?: string; attachment?: string }): void => {
+  const stmt = db.prepare(`
+    INSERT INTO chat_messages (id, session_id, role, content, tool_calls, tool_call_id, display_content, attachment, timestamp)
+    VALUES (@id, @session_id, @role, @content, @tool_calls, @tool_call_id, @display_content, @attachment, @timestamp)
+  `);
+  // 为可选参数提供默认值，避免 "Missing named parameter" 错误
+  stmt.run({
+    id: message.id,
+    session_id: message.session_id,
+    role: message.role,
+    content: message.content,
+    tool_calls: message.tool_calls ?? null,
+    tool_call_id: message.tool_call_id ?? null,
+    display_content: message.display_content ?? null,
+    attachment: message.attachment ?? null,
+    timestamp: Date.now(),
+  });
+
+  // 更新会话的 updated_at
+  const updateSession = db.prepare(`
+    UPDATE chat_sessions SET updated_at = ? WHERE id = ?
+  `);
+  updateSession.run(Date.now(), message.session_id);
+};
+
+/**
+ * 获取会话的所有消息
+ */
+export const getChatMessages = (sessionId: string): ChatMessage[] => {
+  const stmt = db.prepare(`
+    SELECT * FROM chat_messages WHERE session_id = ? ORDER BY timestamp ASC
+  `);
+  return stmt.all(sessionId) as ChatMessage[];
+};
+
+/**
+ * 清空会话消息
+ */
+export const clearChatMessages = (sessionId: string): void => {
+  const stmt = db.prepare('DELETE FROM chat_messages WHERE session_id = ?');
+  stmt.run(sessionId);
+};
+
+// ========== Manuscript Embedding Cache ==========
+
+// Create manuscript_embeddings table
+try {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS manuscript_embeddings (
+      file_path TEXT PRIMARY KEY,
+      content_hash TEXT NOT NULL,
+      embedding BLOB NOT NULL,
+      created_at INTEGER NOT NULL
+    );
+  `);
+} catch { /* Table already exists */ }
+
+export interface ManuscriptEmbedding {
+  file_path: string;
+  content_hash: string;
+  embedding: Buffer;
+  created_at: number;
+}
+
+export const getManuscriptEmbedding = (filePath: string): { embedding: number[]; contentHash: string } | null => {
+  const stmt = db.prepare('SELECT content_hash, embedding FROM manuscript_embeddings WHERE file_path = ?');
+  const row = stmt.get(filePath) as { content_hash: string; embedding: Buffer } | undefined;
+  if (!row) return null;
+
+  // Convert Buffer to number array
+  const floatArray = new Float32Array(row.embedding.buffer, row.embedding.byteOffset, row.embedding.byteLength / 4);
+  return {
+    embedding: Array.from(floatArray),
+    contentHash: row.content_hash
+  };
+};
+
+export const saveManuscriptEmbedding = (filePath: string, contentHash: string, embedding: number[]): void => {
+  const stmt = db.prepare(`
+    INSERT INTO manuscript_embeddings (file_path, content_hash, embedding, created_at)
+    VALUES (@file_path, @content_hash, @embedding, @created_at)
+    ON CONFLICT(file_path) DO UPDATE SET
+      content_hash = @content_hash,
+      embedding = @embedding,
+      created_at = @created_at
+  `);
+
+  // Convert number array to Buffer
+  const floatArray = new Float32Array(embedding);
+  const buffer = Buffer.from(floatArray.buffer);
+
+  stmt.run({
+    file_path: filePath,
+    content_hash: contentHash,
+    embedding: buffer,
+    created_at: Date.now()
+  });
+};
+
+export const deleteManuscriptEmbedding = (filePath: string): void => {
+  const stmt = db.prepare('DELETE FROM manuscript_embeddings WHERE file_path = ?');
+  stmt.run(filePath);
+};
+
+// ========== Manuscript Similarity Cache ==========
+
+// Create manuscript_similarity_cache table
+try {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS manuscript_similarity_cache (
+      manuscript_id TEXT PRIMARY KEY,
+      content_hash TEXT NOT NULL,
+      knowledge_version INTEGER NOT NULL,
+      sorted_ids TEXT NOT NULL,
+      created_at INTEGER NOT NULL
+    );
+  `);
+} catch { /* Table already exists */ }
+
+// 知识库版本号（每次知识库变化时递增）
+let knowledgeVersion = Date.now();
+
+export const getKnowledgeVersion = (): number => knowledgeVersion;
+
+export const incrementKnowledgeVersion = (): number => {
+  knowledgeVersion = Date.now();
+  return knowledgeVersion;
+};
+
+export interface SimilarityCache {
+  manuscriptId: string;
+  contentHash: string;
+  knowledgeVersion: number;
+  sortedIds: string[];
+  createdAt: number;
+}
+
+export const getSimilarityCache = (manuscriptId: string): SimilarityCache | null => {
+  const stmt = db.prepare('SELECT * FROM manuscript_similarity_cache WHERE manuscript_id = ?');
+  const row = stmt.get(manuscriptId) as any;
+  if (!row) return null;
+
+  return {
+    manuscriptId: row.manuscript_id,
+    contentHash: row.content_hash,
+    knowledgeVersion: row.knowledge_version,
+    sortedIds: JSON.parse(row.sorted_ids),
+    createdAt: row.created_at
+  };
+};
+
+export const saveSimilarityCache = (cache: Omit<SimilarityCache, 'createdAt'>): void => {
+  const stmt = db.prepare(`
+    INSERT INTO manuscript_similarity_cache (manuscript_id, content_hash, knowledge_version, sorted_ids, created_at)
+    VALUES (@manuscript_id, @content_hash, @knowledge_version, @sorted_ids, @created_at)
+    ON CONFLICT(manuscript_id) DO UPDATE SET
+      content_hash = @content_hash,
+      knowledge_version = @knowledge_version,
+      sorted_ids = @sorted_ids,
+      created_at = @created_at
+  `);
+
+  stmt.run({
+    manuscript_id: cache.manuscriptId,
+    content_hash: cache.contentHash,
+    knowledge_version: cache.knowledgeVersion,
+    sorted_ids: JSON.stringify(cache.sortedIds),
+    created_at: Date.now()
+  });
+};
+
+export const deleteSimilarityCache = (manuscriptId: string): void => {
+  const stmt = db.prepare('DELETE FROM manuscript_similarity_cache WHERE manuscript_id = ?');
+  stmt.run(manuscriptId);
+};
+
+// ========== Wander History Functions ==========
+
+export interface WanderHistory {
+  id: string;
+  space_id?: string;
+  items: string; // JSON array of WanderItem
+  result: string; // JSON of WanderResult
+  created_at: number;
+}
+
+// Create wander_history table
+try {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS wander_history (
+      id TEXT PRIMARY KEY,
+      space_id TEXT NOT NULL DEFAULT '${DEFAULT_SPACE_ID}',
+      items TEXT NOT NULL,
+      result TEXT NOT NULL,
+      created_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_wander_history_created_at ON wander_history(created_at);
+  `);
+} catch { /* Table already exists */ }
+
+try {
+  db.exec(`ALTER TABLE wander_history ADD COLUMN space_id TEXT;`);
+} catch { /* Column already exists */ }
+if (hasColumn('wander_history', 'space_id')) {
+  db.exec(`
+    UPDATE wander_history
+    SET space_id = COALESCE(
+      (SELECT NULLIF(active_space_id, '') FROM settings WHERE id = 1),
+      '${DEFAULT_SPACE_ID}'
+    )
+    WHERE space_id IS NULL OR space_id = ''
+  `);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_wander_history_space_created_at ON wander_history(space_id, created_at);`);
+}
+
+export const saveWanderHistory = (id: string, items: any[], result: any): WanderHistory => {
+  const now = Date.now();
+  const scopedSpaceId = resolveSpaceId();
+  const stmt = db.prepare(`
+    INSERT INTO wander_history (id, space_id, items, result, created_at)
+    VALUES (@id, @space_id, @items, @result, @created_at)
+  `);
+  stmt.run({
+    id,
+    space_id: scopedSpaceId,
+    items: JSON.stringify(items),
+    result: JSON.stringify(result),
+    created_at: now
+  });
+  return { id, space_id: scopedSpaceId, items: JSON.stringify(items), result: JSON.stringify(result), created_at: now };
+};
+
+export const listWanderHistory = (): WanderHistory[] => {
+  const stmt = db.prepare('SELECT * FROM wander_history WHERE space_id = ? ORDER BY created_at DESC');
+  return stmt.all(resolveSpaceId()) as WanderHistory[];
+};
+
+export const getWanderHistory = (id: string): WanderHistory | null => {
+  const stmt = db.prepare('SELECT * FROM wander_history WHERE id = ? AND space_id = ?');
+  return (stmt.get(id, resolveSpaceId()) as WanderHistory) || null;
+};
+
+export const deleteWanderHistory = (id: string): void => {
+  const stmt = db.prepare('DELETE FROM wander_history WHERE id = ? AND space_id = ?');
+  stmt.run(id, resolveSpaceId());
+};
+
+// ========== Vector Store Functions ==========
+
+export interface KnowledgeVector {
+  id: string;
+  source_id: string;
+  source_type: 'note' | 'video' | 'file';
+  chunk_index: number;
+  content: string;
+  embedding: Buffer; // Stored as BLOB
+  metadata?: Record<string, any>;
+  content_hash?: string;
+  created_at?: string;
+}
+
+const isVectorInSpace = (metadata: Record<string, any> | undefined, activeSpaceId: string): boolean => {
+  const vectorSpaceId = metadata?.spaceId;
+  if (!vectorSpaceId) {
+    return activeSpaceId === DEFAULT_SPACE_ID;
+  }
+  return vectorSpaceId === activeSpaceId;
+};
+
+export const upsertVectors = (vectors: Omit<KnowledgeVector, 'created_at'>[]): void => {
+  const insert = db.prepare(`
+    INSERT INTO knowledge_vectors (id, source_id, source_type, chunk_index, content, embedding, metadata, content_hash)
+    VALUES (@id, @source_id, @source_type, @chunk_index, @content, @embedding, @metadata, @content_hash)
+    ON CONFLICT(id) DO UPDATE SET
+      content = @content,
+      embedding = @embedding,
+      metadata = @metadata,
+      content_hash = @content_hash
+  `);
+
+  const transaction = db.transaction((vectors) => {
+    for (const v of vectors) {
+      insert.run({
+        ...v,
+        metadata: v.metadata ? JSON.stringify(v.metadata) : null,
+        content_hash: v.content_hash || null
+      });
+    }
+  });
+
+  transaction(vectors);
+};
+
+export const deleteVectors = (sourceId: string): void => {
+  const activeSpaceId = getActiveSpaceId();
+  const rows = db.prepare('SELECT id, metadata FROM knowledge_vectors WHERE source_id = ?').all(sourceId) as { id: string; metadata?: string }[];
+  const removeStmt = db.prepare('DELETE FROM knowledge_vectors WHERE id = ?');
+  const transaction = db.transaction((candidates: { id: string; metadata?: string }[]) => {
+    for (const row of candidates) {
+      let metadata: Record<string, any> | undefined;
+      try {
+        metadata = row.metadata ? JSON.parse(row.metadata) : undefined;
+      } catch {
+        metadata = undefined;
+      }
+      if (isVectorInSpace(metadata, activeSpaceId)) {
+        removeStmt.run(row.id);
+      }
+    }
+  });
+  transaction(rows);
+};
+
+export const getVectorHash = (sourceId: string): string | null => {
+  const activeSpaceId = getActiveSpaceId();
+  const rows = db.prepare('SELECT content_hash, metadata FROM knowledge_vectors WHERE source_id = ?').all(sourceId) as { content_hash?: string; metadata?: string }[];
+  for (const row of rows) {
+    let metadata: Record<string, any> | undefined;
+    try {
+      metadata = row.metadata ? JSON.parse(row.metadata) : undefined;
+    } catch {
+      metadata = undefined;
+    }
+    if (isVectorInSpace(metadata, activeSpaceId)) {
+      return row.content_hash || null;
+    }
+  }
+  return null;
+};
+
+export const getAllVectors = (): KnowledgeVector[] => {
+  const activeSpaceId = getActiveSpaceId();
+  const stmt = db.prepare('SELECT * FROM knowledge_vectors');
+  return (stmt.all() as any[])
+    .map(row => ({
+      ...row,
+      metadata: row.metadata ? JSON.parse(row.metadata) : undefined
+    }))
+    .filter(row => isVectorInSpace(row.metadata, activeSpaceId));
+};
+
+export const getVectorStats = () => {
+  const vectors = getAllVectors();
+  const sourceIds = new Set(vectors.map(v => v.source_id));
+  return {
+    totalVectors: vectors.length,
+    totalDocuments: sourceIds.size
+  };
+};
+
+export const clearAllVectors = () => {
+  db.exec('DELETE FROM knowledge_vectors');
+};
+
+// ========== Vector Search Logic (In-Memory Cosine Similarity) ==========
+
+/**
+ * 计算两个向量的余弦相似度
+ */
+function cosineSimilarity(vecA: Float32Array, vecB: Float32Array): number {
+  if (vecA.length !== vecB.length) return 0;
+  let dotProduct = 0;
+  let normA = 0;
+  let normB = 0;
+  for (let i = 0; i < vecA.length; i++) {
+    dotProduct += vecA[i] * vecB[i];
+    normA += vecA[i] * vecA[i];
+    normB += vecB[i] * vecB[i];
+  }
+  return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
+}
+
+export interface SearchResult {
+  id: string;
+  content: string;
+  score: number;
+  metadata: any;
+  sourceId: string;
+}
+
+/**
+ * 纯向量检索
+ * @param queryEmbedding 查询向量
+ * @param limit 返回数量
+ * @param filter 过滤条件 (advisorId)
+ */
+export const searchVectors = (
+  queryEmbedding: number[],
+  limit: number = 5,
+  filter?: { advisorId?: string; scope?: 'user' | 'advisor' }
+): SearchResult[] => {
+  const activeSpaceId = getActiveSpaceId();
+  // 1. 获取所有向量 (或者根据 source_type 初步过滤以减少计算量)
+  // 为了性能，我们尽量只读取必要的字段。embedding 是 BLOB。
+  const stmt = db.prepare('SELECT id, content, embedding, metadata, source_id FROM knowledge_vectors');
+  const rows = stmt.all() as any[];
+
+  const queryVec = new Float32Array(queryEmbedding);
+  const results: SearchResult[] = [];
+
+  for (const row of rows) {
+    // Parse metadata to check filters
+    let metadata: any = {};
+    try {
+      metadata = row.metadata ? JSON.parse(row.metadata) : {};
+    } catch {}
+
+    // Apply filters
+    if (filter) {
+      if (filter.advisorId && metadata.advisorId !== filter.advisorId) continue;
+      // if (filter.scope && metadata.scope !== filter.scope) continue; // Optional scope filter
+    }
+    if (!isVectorInSpace(metadata, activeSpaceId)) continue;
+
+    // Convert Buffer back to Float32Array
+    const embedding = new Float32Array(row.embedding.buffer, row.embedding.byteOffset, row.embedding.byteLength / 4);
+
+    // Calculate similarity
+    const score = cosineSimilarity(queryVec, embedding);
+
+    // Threshold (optional, e.g. > 0.7)
+    if (score > 0.5) {
+      results.push({
+        id: row.id,
+        content: row.content,
+        score,
+        metadata,
+        sourceId: row.source_id
+      });
+    }
+  }
+
+  // Sort by score desc
+  return results.sort((a, b) => b.score - a.score).slice(0, limit);
+};
+
+/**
+ * 获取所有知识库条目的相似度排序
+ * @param queryEmbedding 查询向量
+ * @returns 按相似度排序的 source_id 列表
+ */
+export const getSimilaritySortedSourceIds = (queryEmbedding: number[]): { sourceId: string; score: number }[] => {
+  const activeSpaceId = getActiveSpaceId();
+  const stmt = db.prepare('SELECT source_id, embedding, metadata FROM knowledge_vectors');
+  const rows = stmt.all() as any[];
+
+  const queryVec = new Float32Array(queryEmbedding);
+  const sourceScores = new Map<string, number>();
+
+  for (const row of rows) {
+    if (!row.embedding) continue;
+    let metadata: any = {};
+    try {
+      metadata = row.metadata ? JSON.parse(row.metadata) : {};
+    } catch {}
+    if (!isVectorInSpace(metadata, activeSpaceId)) continue;
+
+    // Convert Buffer back to Float32Array
+    const embedding = new Float32Array(row.embedding.buffer, row.embedding.byteOffset, row.embedding.byteLength / 4);
+
+    // Calculate similarity
+    const score = cosineSimilarity(queryVec, embedding);
+
+    // Keep max score for each source
+    const existing = sourceScores.get(row.source_id) || 0;
+    if (score > existing) {
+      sourceScores.set(row.source_id, score);
+    }
+  }
+
+  // Sort by score desc
+  return Array.from(sourceScores.entries())
+    .map(([sourceId, score]) => ({ sourceId, score }))
+    .sort((a, b) => b.score - a.score);
+};

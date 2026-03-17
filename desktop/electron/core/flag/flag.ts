@@ -1,0 +1,4 @@
+export const Flag = {
+    OPENCODE_DISABLE_LSP_DOWNLOAD: process.env.OPENCODE_DISABLE_LSP_DOWNLOAD === 'true',
+    OPENCODE_EXPERIMENTAL_LSP_TY: process.env.OPENCODE_EXPERIMENTAL_LSP_TY === 'true',
+};

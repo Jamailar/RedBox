@@ -335,6 +335,9 @@ async function fetchLatestGithubRelease(): Promise<{
       },
       signal: controller.signal,
     });
+    if (response.status === 404) {
+      throw new Error('GitHub latest release not found');
+    }
     if (!response.ok) {
       throw new Error(`GitHub latest release request failed: HTTP ${response.status}`);
     }
@@ -446,11 +449,19 @@ async function checkForAppUpdate(force = false, forceNotify = false): Promise<Ap
       notice,
     };
   } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message === 'GitHub latest release not found') {
+      return {
+        success: true,
+        hasUpdate: false,
+        message: 'No published release found',
+      };
+    }
     console.warn('[AppUpdate] check failed:', error);
     return {
       success: false,
       hasUpdate: false,
-      message: error instanceof Error ? error.message : String(error),
+      message,
     };
   } finally {
     appUpdateCheckInFlight = false;

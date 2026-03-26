@@ -1,4 +1,6 @@
 import type { IpcMain, Shell } from 'electron';
+import fs from 'node:fs';
+import path from 'node:path';
 
 export interface OfficialFeatureSettingsContext {
   getSettings: () => Record<string, unknown> | undefined;
@@ -34,16 +36,40 @@ export interface OfficialFeatureModule {
 
 let cachedOfficialFeatureModulePromise: Promise<OfficialFeatureModule | null> | null = null;
 
+const getOfficialRuntimeCandidates = (): string[] => {
+  const relativeRuntimePath = path.join('.private-runtime', 'private', 'electron', 'registerOfficialFeatures.js');
+  return [
+    path.resolve(__dirname, '..', relativeRuntimePath),
+    path.resolve(process.cwd(), relativeRuntimePath),
+    path.resolve(process.cwd(), 'desktop', relativeRuntimePath),
+  ];
+};
+
 export const loadOfficialFeatureModule = async (): Promise<OfficialFeatureModule | null> => {
   if (!cachedOfficialFeatureModulePromise) {
     cachedOfficialFeatureModulePromise = (async () => {
-      try {
-        const modulePath = '../private/electron/registerOfficialFeatures';
-        const loaded = await import(modulePath);
-        return loaded as OfficialFeatureModule;
-      } catch {
-        return null;
+      const attemptedErrors: string[] = [];
+      for (const candidatePath of getOfficialRuntimeCandidates()) {
+        try {
+          if (!fs.existsSync(candidatePath)) {
+            attemptedErrors.push(`missing:${candidatePath}`);
+            continue;
+          }
+          // eslint-disable-next-line @typescript-eslint/no-var-requires
+          const loaded = require(candidatePath) as OfficialFeatureModule & { default?: OfficialFeatureModule };
+          const resolvedModule = loaded?.default || loaded;
+          if (resolvedModule && typeof resolvedModule === 'object') {
+            return resolvedModule;
+          }
+          attemptedErrors.push(`${candidatePath}: module loaded but no usable export found`);
+        } catch (error) {
+          attemptedErrors.push(`${candidatePath}: ${error instanceof Error ? error.message : String(error)}`);
+        }
       }
+      if (attemptedErrors.length) {
+        console.warn('[official-features] runtime module unavailable', attemptedErrors);
+      }
+      return null;
     })();
   }
   return cachedOfficialFeatureModulePromise;

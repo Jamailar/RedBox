@@ -151,6 +151,8 @@ export const isLikelyLocalEndpoint = (baseURL: string): boolean => {
 };
 
 export const AI_PRESET_LOGO_BY_ID: Record<string, string> = {
+  'redbox-official': 'redbox.png',
+  redbox_official_auto: 'redbox.png',
   openai: 'provider-logos/openai.svg',
   anthropic: 'provider-logos/anthropic.svg',
   gemini: 'provider-logos/gemini.svg',
@@ -262,9 +264,16 @@ export const AiPresetLogo = ({ presetId, label }: { presetId: string; label: str
 export const AiSourceLogo = ({
   source,
 }: {
-  source: Pick<AiSourceConfig, 'name' | 'baseURL' | 'presetId'>;
+  source: Pick<AiSourceConfig, 'id' | 'name' | 'baseURL' | 'presetId'>;
 }) => {
-  return <AiPresetLogo presetId={source.presetId} label={source.name || 'AI'} />;
+  const normalizedId = String(source.id || '').trim().toLowerCase();
+  const normalizedName = String(source.name || '').trim().toLowerCase();
+  const resolvedPresetId = (
+    normalizedId === 'redbox_official_auto' || normalizedName === 'redbox official'
+      ? 'redbox-official'
+      : source.presetId
+  );
+  return <AiPresetLogo presetId={resolvedPresetId} label={source.name || 'AI'} />;
 };
 
 export interface AiPresetGroup {

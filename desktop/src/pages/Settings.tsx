@@ -20,6 +20,7 @@ import {
   AiPresetLogo,
   AiPresetSelect,
   AiModelSelect,
+  AiSourceLogo,
   AiSourceSelect,
   DASHSCOPE_LOCKED_IMAGE_MODEL,
   IMAGE_ASPECT_RATIO_OPTIONS,
@@ -99,6 +100,7 @@ export function Settings() {
   const [activeAiSourceId, setActiveAiSourceId] = useState('');
   const [detectedAiProtocol, setDetectedAiProtocol] = useState<AiProtocol>('openai');
   const [aiSourceExpandState, setAiSourceExpandState] = useState<Record<string, boolean>>({});
+  const [aiSourceModelExpandState, setAiSourceModelExpandState] = useState<Record<string, boolean>>({});
   const [sourceModelDrafts, setSourceModelDrafts] = useState<Record<string, string>>({});
   const [addModelModalSourceId, setAddModelModalSourceId] = useState('');
   const [isCreateAiSourceModalOpen, setIsCreateAiSourceModalOpen] = useState(false);
@@ -394,6 +396,18 @@ export function Settings() {
     );
   }, []);
 
+  const isOfficialManagedSource = useCallback((source?: {
+    id?: string;
+    name?: string;
+    presetId?: string;
+  } | null): boolean => {
+    if (!source) return false;
+    const sourceId = String(source.id || '').trim().toLowerCase();
+    const sourceName = String(source.name || '').trim().toLowerCase();
+    const presetId = String(source.presetId || '').trim().toLowerCase();
+    return sourceId === 'redbox_official_auto' || sourceName === 'redbox official' || presetId === 'redbox-official';
+  }, []);
+
   const getLocalGuideForSource = useCallback((source?: AiSourceConfig | null): LocalAiGuide | null => {
     if (!source) return null;
     switch (source.presetId) {
@@ -550,6 +564,11 @@ export function Settings() {
       delete next[sourceId];
       return next;
     });
+    setAiSourceModelExpandState((prev) => {
+      const next = { ...prev };
+      delete next[sourceId];
+      return next;
+    });
     setSourceModelDrafts((prev) => {
       const next = { ...prev };
       delete next[sourceId];
@@ -565,7 +584,7 @@ export function Settings() {
 
   const handleToggleAiSourceExpand = (sourceId: string) => {
     setAiSourceExpandState((prev) => {
-      const currentExpanded = prev[sourceId] ?? sourceId === activeAiSourceId;
+      const currentExpanded = prev[sourceId] ?? false;
       if (currentExpanded) {
         return { ...prev, [sourceId]: false };
       }
@@ -575,6 +594,13 @@ export function Settings() {
       }, {});
     });
     setActiveAiSourceId(sourceId);
+  };
+
+  const handleToggleAiSourceModelExpand = (sourceId: string) => {
+    setAiSourceModelExpandState((prev) => ({
+      ...prev,
+      [sourceId]: !(prev[sourceId] ?? false),
+    }));
   };
 
   const handleSetSourceDefaultModel = (sourceId: string, modelId: string) => {
@@ -1519,7 +1545,9 @@ export function Settings() {
                       {aiSources.map((source) => {
                         const preset = findAiPresetById(source.presetId);
                         const isDefaultSource = source.id === defaultAiSourceId;
-                        const isExpanded = aiSourceExpandState[source.id] ?? source.id === activeAiSourceId;
+                        const isExpanded = aiSourceExpandState[source.id] ?? false;
+                        const isOfficialSource = isOfficialManagedSource(source);
+                        const isModelListExpanded = aiSourceModelExpandState[source.id] ?? false;
                         const sourceModels = getSourceModelList(source);
                         const localGuide = getLocalGuideForSource(source);
                         const allowEmptyKey = isLocalAiSource(source);
@@ -1537,7 +1565,7 @@ export function Settings() {
                               </button>
                               <div className="min-w-0 flex-1">
                                 <div className="flex items-center gap-2 min-w-0">
-                                  <AiPresetLogo presetId={source.presetId} label={preset?.label || 'Custom'} />
+                                  <AiSourceLogo source={source} />
                                   <span className="text-sm font-medium text-text-primary truncate">{source.name || '未命名模型源'}</span>
                                   {isDefaultSource && (
                                     <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] bg-amber-500/10 text-amber-600">
@@ -1547,7 +1575,9 @@ export function Settings() {
                                   )}
                                 </div>
                                 <p className="text-[11px] text-text-tertiary mt-0.5 truncate">
-                                  {`${preset?.label || 'Custom'} · 默认模型：${source.model || '(未设置)'} · ${sourceModels.length} 个模型`}
+                                  {isOfficialSource
+                                    ? `已托管登录态 · 默认模型：${source.model || '(未设置)'} · ${sourceModels.length} 个模型`
+                                    : `${preset?.label || 'Custom'} · 默认模型：${source.model || '(未设置)'} · ${sourceModels.length} 个模型`}
                                 </p>
                               </div>
                               <button
@@ -1577,6 +1607,11 @@ export function Settings() {
 
                             {isExpanded && (
                               <div className="p-3 space-y-3">
+                                {isOfficialSource ? (
+                                  <div className="rounded border border-emerald-500/20 bg-emerald-500/5 px-3 py-2 text-[11px] text-text-secondary">
+                                    <div className="font-medium text-emerald-600">已登陆</div>
+                                  </div>
+                                ) : (
                                   <>
                                     <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
                                       <input
@@ -1652,10 +1687,18 @@ export function Settings() {
                                       className="w-full bg-surface-secondary/30 rounded border border-border px-3 py-2 text-sm focus:outline-none focus:border-accent-primary transition-colors"
                                     />
                                   </>
+                                )}
 
                                 <div className="rounded border border-border bg-surface-secondary/20 p-2.5 space-y-2">
                                   <div className="flex items-center justify-between">
-                                    <div className="text-xs font-medium text-text-primary">模型列表</div>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleToggleAiSourceModelExpand(source.id)}
+                                      className="flex items-center gap-2 text-xs font-medium text-text-primary"
+                                    >
+                                      <ChevronDown className={clsx('w-3.5 h-3.5 transition-transform', !isModelListExpanded && '-rotate-90')} />
+                                      模型列表
+                                    </button>
                                     <div className="flex items-center gap-2">
                                       <button
                                         type="button"
@@ -1679,43 +1722,45 @@ export function Settings() {
                                     </div>
                                   </div>
 
-                                  {sourceModels.length ? (
-                                    <div className="space-y-1">
-                                      {sourceModels.map((modelId) => {
-                                        const isDefaultModel = source.model === modelId;
-                                        return (
-                                          <div key={modelId} className="flex items-center justify-between gap-2 rounded border border-border bg-surface-primary px-2.5 py-1.5">
-                                            <div className="min-w-0 flex items-center gap-2">
+                                  {isModelListExpanded && (
+                                    sourceModels.length ? (
+                                      <div className="space-y-1">
+                                        {sourceModels.map((modelId) => {
+                                          const isDefaultModel = source.model === modelId;
+                                          return (
+                                            <div key={modelId} className="flex items-center justify-between gap-2 rounded border border-border bg-surface-primary px-2.5 py-1.5">
+                                              <div className="min-w-0 flex items-center gap-2">
+                                                <button
+                                                  type="button"
+                                                  onClick={() => handleSetSourceDefaultModel(source.id, modelId)}
+                                                  className={clsx(
+                                                    'text-[10px] px-1.5 py-0.5 rounded border',
+                                                    isDefaultModel
+                                                      ? 'border-amber-500/40 text-amber-600 bg-amber-500/10'
+                                                      : 'border-border text-text-tertiary hover:text-text-primary'
+                                                  )}
+                                                >
+                                                  默认
+                                                </button>
+                                                <span className="text-xs text-text-primary truncate">{modelId}</span>
+                                              </div>
                                               <button
                                                 type="button"
-                                                onClick={() => handleSetSourceDefaultModel(source.id, modelId)}
-                                                className={clsx(
-                                                  'text-[10px] px-1.5 py-0.5 rounded border',
-                                                  isDefaultModel
-                                                    ? 'border-amber-500/40 text-amber-600 bg-amber-500/10'
-                                                    : 'border-border text-text-tertiary hover:text-text-primary'
-                                                )}
+                                                onClick={() => handleRemoveSourceModel(source.id, modelId)}
+                                                className="p-1 text-text-tertiary hover:text-red-500 hover:bg-red-500/10 rounded transition-colors"
+                                                title="删除模型"
                                               >
-                                                默认
+                                                <Trash2 className="w-3 h-3" />
                                               </button>
-                                              <span className="text-xs text-text-primary truncate">{modelId}</span>
                                             </div>
-                                            <button
-                                              type="button"
-                                              onClick={() => handleRemoveSourceModel(source.id, modelId)}
-                                              className="p-1 text-text-tertiary hover:text-red-500 hover:bg-red-500/10 rounded transition-colors"
-                                              title="删除模型"
-                                            >
-                                              <Trash2 className="w-3 h-3" />
-                                            </button>
-                                          </div>
-                                        );
-                                      })}
-                                    </div>
-                                  ) : (
-                                    <div className="text-[11px] text-text-tertiary rounded border border-dashed border-border px-2.5 py-2">
-                                      暂无模型，请先拉取或手动添加。
-                                    </div>
+                                          );
+                                        })}
+                                      </div>
+                                    ) : (
+                                      <div className="text-[11px] text-text-tertiary rounded border border-dashed border-border px-2.5 py-2">
+                                        暂无模型，请先拉取或手动添加。
+                                      </div>
+                                    )
                                   )}
                                 </div>
 

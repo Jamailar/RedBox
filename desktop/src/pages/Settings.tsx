@@ -15,6 +15,8 @@ import {
   type AiPresetGroup,
   type CreateAiSourceDraft,
   type LocalAiGuide,
+  type MemoryHistoryEntry,
+  type MemoryMaintenanceStatus,
   type McpServerConfig,
   type UserMemory,
   AiPresetLogo,
@@ -347,6 +349,9 @@ export function Settings() {
 
   // Memory State
   const [memories, setMemories] = useState<UserMemory[]>([]);
+  const [archivedMemories, setArchivedMemories] = useState<UserMemory[]>([]);
+  const [memoryHistory, setMemoryHistory] = useState<MemoryHistoryEntry[]>([]);
+  const [memoryMaintenanceStatus, setMemoryMaintenanceStatus] = useState<MemoryMaintenanceStatus | null>(null);
   const [newMemoryContent, setNewMemoryContent] = useState('');
   const [newMemoryType, setNewMemoryType] = useState<'general' | 'preference' | 'fact'>('general');
   const [isMemoryLoading, setIsMemoryLoading] = useState(false);
@@ -451,13 +456,22 @@ export function Settings() {
     checkTools();
     loadVectorStats();
     loadAppVersion();
-    if (activeTab === 'memory') loadMemories();
+    let memoryPollTimer: number | null = null;
+    if (activeTab === 'memory') {
+      void loadMemories();
+      memoryPollTimer = window.setInterval(() => {
+        void loadMemories();
+      }, 15000);
+    }
 
     const handleProgress = (_: unknown, progress: number) => {
       setInstallProgress(progress);
     };
     window.ipcRenderer.on('youtube:install-progress', handleProgress);
     return () => {
+      if (memoryPollTimer) {
+        window.clearInterval(memoryPollTimer);
+      }
       window.ipcRenderer.off('youtube:install-progress', handleProgress);
     };
   }, [activeTab]);
@@ -1015,12 +1029,30 @@ export function Settings() {
   const loadMemories = async () => {
     setIsMemoryLoading(true);
     try {
-      const data = await window.ipcRenderer.invoke('memory:list') as UserMemory[];
+      const [data, archived, history, maintenanceStatus] = await Promise.all([
+        window.ipcRenderer.invoke('memory:list') as Promise<UserMemory[]>,
+        window.ipcRenderer.invoke('memory:archived') as Promise<UserMemory[]>,
+        window.ipcRenderer.invoke('memory:history') as Promise<MemoryHistoryEntry[]>,
+        window.ipcRenderer.invoke('memory:maintenance-status') as Promise<MemoryMaintenanceStatus>,
+      ]);
       setMemories(data);
+      setArchivedMemories(archived);
+      setMemoryHistory(history);
+      setMemoryMaintenanceStatus(maintenanceStatus);
     } catch (e) {
       console.error("Failed to load memories", e);
     } finally {
       setIsMemoryLoading(false);
+    }
+  };
+
+  const handleRunMemoryMaintenance = async () => {
+    try {
+      const status = await window.ipcRenderer.invoke('memory:maintenance-run') as MemoryMaintenanceStatus;
+      setMemoryMaintenanceStatus(status);
+      await loadMemories();
+    } catch (e) {
+      console.error('Failed to run memory maintenance', e);
     }
   };
 
@@ -2035,6 +2067,10 @@ export function Settings() {
                 handleAddMemory={handleAddMemory}
                 isMemoryLoading={isMemoryLoading}
                 memories={memories}
+                archivedMemories={archivedMemories}
+                memoryHistory={memoryHistory}
+                maintenanceStatus={memoryMaintenanceStatus}
+                onRunMaintenance={handleRunMemoryMaintenance}
                 handleDeleteMemory={handleDeleteMemory}
               />
             )}

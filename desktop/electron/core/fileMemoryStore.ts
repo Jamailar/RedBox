@@ -3,6 +3,9 @@ import fs from 'node:fs/promises';
 import { getWorkspacePaths, getUserMemories as getDbUserMemories } from '../db';
 
 export type MemoryType = 'general' | 'preference' | 'fact';
+export type MemoryStatus = 'active' | 'archived';
+export type MemoryHistoryAction = 'create' | 'update' | 'dedupe' | 'archive' | 'delete' | 'access';
+export type MemoryMutationSource = 'user' | 'system' | 'maintenance';
 
 export interface FileUserMemory {
   id: string;
@@ -12,24 +15,61 @@ export interface FileUserMemory {
   created_at: number;
   updated_at: number;
   last_accessed?: number;
+  status?: MemoryStatus;
+  archived_at?: number;
+  archive_reason?: string;
+  origin_id?: string;
+  canonical_key?: string;
+  revision?: number;
+  last_conflict_at?: number;
+}
+
+export interface MemoryHistoryEntry {
+  id: string;
+  memory_id: string;
+  origin_id: string;
+  action: MemoryHistoryAction;
+  reason?: string;
+  timestamp: number;
+  before?: Partial<FileUserMemory>;
+  after?: Partial<FileUserMemory>;
+  archived_memory_id?: string;
+}
+
+export interface MemoryMutationEvent {
+  action: Exclude<MemoryHistoryAction, 'access'>;
+  source: MemoryMutationSource;
+  memoryId?: string;
+  originId?: string;
+  reason?: string;
+  timestamp: number;
 }
 
 interface MemoryFileData {
   version: number;
   updatedAt: number;
   memories: FileUserMemory[];
+  history: MemoryHistoryEntry[];
 }
 
 const MEMORY_DIR = 'memory';
 const MEMORY_FILE = 'user-memories.json';
 const CURATED_MEMORY_FILE = 'MEMORY.md';
-const MAX_MEMORY_ITEMS = 500;
+const ARCHIVE_MEMORY_FILE = 'MEMORY_ARCHIVE.md';
+const MAX_ACTIVE_MEMORY_ITEMS = 500;
+const MAX_ARCHIVED_MEMORY_ITEMS = 1000;
+const MAX_HISTORY_ITEMS = 3000;
+const memoryMutationListeners = new Set<(event: MemoryMutationEvent) => void>();
 
 const now = (): number => Date.now();
 
 const normalizeType = (type: unknown): MemoryType => {
   if (type === 'preference' || type === 'fact') return type;
   return 'general';
+};
+
+const normalizeStatus = (status: unknown): MemoryStatus => {
+  return status === 'archived' ? 'archived' : 'active';
 };
 
 const uniqueTags = (tags: unknown): string[] => {
@@ -53,10 +93,16 @@ const curatedMemoryFilePath = (): string => {
   return path.join(base, MEMORY_DIR, CURATED_MEMORY_FILE);
 };
 
+const archiveMemoryFilePath = (): string => {
+  const base = getWorkspacePaths().base;
+  return path.join(base, MEMORY_DIR, ARCHIVE_MEMORY_FILE);
+};
+
 const defaultData = (): MemoryFileData => ({
-  version: 1,
+  version: 2,
   updatedAt: now(),
   memories: [],
+  history: [],
 });
 
 const ensureDir = async (): Promise<void> => {
@@ -92,6 +138,7 @@ const extractMemoryKey = (content: string): string => {
 };
 
 const memoryWeight = (memory: FileUserMemory): number => {
+  if (memory.status === 'archived') return -10;
   if (memory.type === 'preference' || memory.type === 'fact') return 2;
   return 1;
 };
@@ -104,18 +151,125 @@ const sortMemories = (memories: FileUserMemory[]): FileUserMemory[] => {
   return [...memories].sort((a, b) => {
     const w = memoryWeight(b) - memoryWeight(a);
     if (w !== 0) return w;
-    return b.updated_at - a.updated_at;
+    const leftTime = b.status === 'archived' ? (b.archived_at || b.updated_at) : b.updated_at;
+    const rightTime = a.status === 'archived' ? (a.archived_at || a.updated_at) : a.updated_at;
+    return leftTime - rightTime;
   });
 };
 
-const dedupeAndPruneMemories = (memories: FileUserMemory[]): FileUserMemory[] => {
+const activeMemoriesOf = (memories: FileUserMemory[]): FileUserMemory[] => {
+  return memories.filter((memory) => normalizeStatus(memory.status) !== 'archived');
+};
+
+const archivedMemoriesOf = (memories: FileUserMemory[]): FileUserMemory[] => {
+  return memories.filter((memory) => normalizeStatus(memory.status) === 'archived');
+};
+
+const createHistoryId = (): string => {
+  return `mev_${now()}_${Math.random().toString(36).slice(2, 8)}`;
+};
+
+const generateMemoryId = (): string => {
+  return `mem_${now()}_${Math.random().toString(36).slice(2, 8)}`;
+};
+
+const createArchiveSnapshot = (memory: FileUserMemory, reason: string): FileUserMemory => {
+  const timestamp = now();
+  const originId = memory.origin_id || memory.id;
+  return {
+    ...memory,
+    id: `${originId}__arch_${timestamp}_${Math.random().toString(36).slice(2, 6)}`,
+    status: 'archived',
+    archived_at: timestamp,
+    archive_reason: reason,
+    origin_id: originId,
+  };
+};
+
+const appendHistory = (
+  data: MemoryFileData,
+  entry: Omit<MemoryHistoryEntry, 'id' | 'timestamp'> & Partial<Pick<MemoryHistoryEntry, 'timestamp'>>
+): void => {
+  data.history.push({
+    id: createHistoryId(),
+    timestamp: entry.timestamp || now(),
+    ...entry,
+  });
+  if (data.history.length > MAX_HISTORY_ITEMS) {
+    data.history = data.history.slice(-MAX_HISTORY_ITEMS);
+  }
+};
+
+const emitMemoryMutation = (event: MemoryMutationEvent): void => {
+  for (const listener of memoryMutationListeners) {
+    try {
+      listener(event);
+    } catch (error) {
+      console.warn('[MemoryStore] memory mutation listener failed:', error);
+    }
+  }
+};
+
+export function addMemoryMutationListener(listener: (event: MemoryMutationEvent) => void): () => void {
+  memoryMutationListeners.add(listener);
+  return () => {
+    memoryMutationListeners.delete(listener);
+  };
+}
+
+const normalizeMemory = (item: any): FileUserMemory | null => {
+  const content = String(item?.content || '').trim();
+  if (!content) return null;
+  const canonicalKey = extractMemoryKey(content);
+  const status = normalizeStatus(item?.status);
+  const id = String(item?.id || generateMemoryId());
+  const originId = String(item?.origin_id || (status === 'archived' ? id.split('__arch_')[0] || id : id));
+
+  return {
+    id,
+    content,
+    type: normalizeType(item?.type),
+    tags: uniqueTags(item?.tags),
+    created_at: Number(item?.created_at || now()),
+    updated_at: Number(item?.updated_at || now()),
+    last_accessed: item?.last_accessed ? Number(item.last_accessed) : undefined,
+    status,
+    archived_at: item?.archived_at ? Number(item.archived_at) : undefined,
+    archive_reason: item?.archive_reason ? String(item.archive_reason) : undefined,
+    origin_id: originId,
+    canonical_key: String(item?.canonical_key || canonicalKey || ''),
+    revision: Math.max(1, Number(item?.revision || 1)),
+    last_conflict_at: item?.last_conflict_at ? Number(item.last_conflict_at) : undefined,
+  };
+};
+
+const normalizeHistoryEntry = (item: any): MemoryHistoryEntry | null => {
+  const action = String(item?.action || '').trim() as MemoryHistoryAction;
+  const memoryId = String(item?.memory_id || '').trim();
+  const originId = String(item?.origin_id || '').trim() || memoryId;
+  if (!memoryId || !originId) return null;
+  if (!['create', 'update', 'dedupe', 'archive', 'delete', 'access'].includes(action)) return null;
+  return {
+    id: String(item?.id || createHistoryId()),
+    memory_id: memoryId,
+    origin_id: originId,
+    action,
+    reason: item?.reason ? String(item.reason) : undefined,
+    timestamp: Number(item?.timestamp || now()),
+    before: item?.before && typeof item.before === 'object' ? item.before : undefined,
+    after: item?.after && typeof item.after === 'object' ? item.after : undefined,
+    archived_memory_id: item?.archived_memory_id ? String(item.archived_memory_id) : undefined,
+  };
+};
+
+const dedupeActiveMemories = (activeMemories: FileUserMemory[], data: MemoryFileData): FileUserMemory[] => {
   const byExact = new Map<string, FileUserMemory>();
   const byKey = new Map<string, FileUserMemory>();
 
-  for (const raw of sortMemories(memories)) {
+  for (const raw of sortMemories(activeMemories)) {
     const contentNorm = normalizeContentForDedup(raw.content);
     const scopedType = normalizeType(raw.type);
-    const key = extractMemoryKey(raw.content);
+    const key = raw.canonical_key || extractMemoryKey(raw.content);
     const keyBucket = (scopedType === 'fact' || scopedType === 'preference') && key
       ? `${scopedType}::${key}`
       : '';
@@ -125,21 +279,41 @@ const dedupeAndPruneMemories = (memories: FileUserMemory[]): FileUserMemory[] =>
       exactHit.tags = mergeTags(exactHit.tags, raw.tags);
       exactHit.updated_at = Math.max(exactHit.updated_at, raw.updated_at);
       exactHit.last_accessed = Math.max(exactHit.last_accessed || 0, raw.last_accessed || 0);
+      exactHit.revision = Math.max(exactHit.revision || 1, raw.revision || 1);
       if (exactHit.type === 'general' && scopedType !== 'general') {
         exactHit.type = scopedType;
       }
       if (keyBucket) {
         byKey.set(keyBucket, exactHit);
       }
+      appendHistory(data, {
+        memory_id: exactHit.id,
+        origin_id: exactHit.origin_id || exactHit.id,
+        action: 'dedupe',
+        reason: 'normalized-exact-merge',
+        before: { id: raw.id, content: raw.content, type: raw.type, tags: raw.tags },
+        after: { id: exactHit.id, content: exactHit.content, type: exactHit.type, tags: exactHit.tags },
+      });
       continue;
     }
 
     if (keyBucket && byKey.has(keyBucket)) {
       const keyHit = byKey.get(keyBucket)!;
-      keyHit.content = raw.content;
+      const archivedSnapshot = createArchiveSnapshot(raw, 'startup-key-merge');
       keyHit.tags = mergeTags(keyHit.tags, raw.tags);
       keyHit.updated_at = Math.max(keyHit.updated_at, raw.updated_at);
       keyHit.last_accessed = Math.max(keyHit.last_accessed || 0, raw.last_accessed || 0);
+      keyHit.revision = Math.max(keyHit.revision || 1, raw.revision || 1);
+      data.memories.push(archivedSnapshot);
+      appendHistory(data, {
+        memory_id: keyHit.id,
+        origin_id: keyHit.origin_id || keyHit.id,
+        action: 'archive',
+        reason: 'startup-key-conflict-normalized',
+        before: { id: raw.id, content: raw.content, type: raw.type, tags: raw.tags },
+        after: { id: keyHit.id, content: keyHit.content, type: keyHit.type, tags: keyHit.tags },
+        archived_memory_id: archivedSnapshot.id,
+      });
       if (contentNorm) {
         byExact.set(contentNorm, keyHit);
       }
@@ -150,6 +324,10 @@ const dedupeAndPruneMemories = (memories: FileUserMemory[]): FileUserMemory[] =>
       ...raw,
       type: scopedType,
       tags: uniqueTags(raw.tags),
+      status: 'active',
+      origin_id: raw.origin_id || raw.id,
+      canonical_key: key || '',
+      revision: Math.max(1, raw.revision || 1),
     };
     if (contentNorm) {
       byExact.set(contentNorm, next);
@@ -159,7 +337,42 @@ const dedupeAndPruneMemories = (memories: FileUserMemory[]): FileUserMemory[] =>
     }
   }
 
-  return sortMemories(Array.from(new Set(byExact.values()))).slice(0, MAX_MEMORY_ITEMS);
+  const deduped = sortMemories(Array.from(new Set(byExact.values())));
+  const kept = deduped.slice(0, MAX_ACTIVE_MEMORY_ITEMS);
+  const overflow = deduped.slice(MAX_ACTIVE_MEMORY_ITEMS);
+  for (const item of overflow) {
+    const archivedSnapshot = createArchiveSnapshot(item, 'capacity-prune');
+    data.memories.push(archivedSnapshot);
+    appendHistory(data, {
+      memory_id: archivedSnapshot.id,
+      origin_id: archivedSnapshot.origin_id || item.id,
+      action: 'archive',
+      reason: 'capacity-prune',
+      after: { ...archivedSnapshot },
+    });
+  }
+  return kept;
+};
+
+const normalizeAndPruneData = (data: MemoryFileData): MemoryFileData => {
+  const history = Array.isArray(data.history)
+    ? data.history.map(normalizeHistoryEntry).filter((item): item is MemoryHistoryEntry => Boolean(item)).slice(-MAX_HISTORY_ITEMS)
+    : [];
+
+  const normalizedMemories = Array.isArray(data.memories)
+    ? data.memories.map(normalizeMemory).filter((item): item is FileUserMemory => Boolean(item))
+    : [];
+
+  const archived = sortMemories(archivedMemoriesOf(normalizedMemories)).slice(0, MAX_ARCHIVED_MEMORY_ITEMS);
+  const nextData: MemoryFileData = {
+    version: 2,
+    updatedAt: now(),
+    memories: archived,
+    history,
+  };
+  const active = dedupeActiveMemories(activeMemoriesOf(normalizedMemories), nextData);
+  nextData.memories = [...active, ...sortMemories(archivedMemoriesOf(nextData.memories)).slice(0, MAX_ARCHIVED_MEMORY_ITEMS)];
+  return nextData;
 };
 
 const buildCuratedMemoryMarkdown = (memories: FileUserMemory[]): string => {
@@ -177,7 +390,8 @@ const buildCuratedMemoryMarkdown = (memories: FileUserMemory[]): string => {
       `## ${title}`,
       ...items.map((item) => {
         const tags = item.tags.length > 0 ? ` [${item.tags.join(', ')}]` : '';
-        return `- ${item.content}${tags} (updated: ${formatDateTime(item.updated_at)})`;
+        const revision = (item.revision || 1) > 1 ? ` · rev ${item.revision}` : '';
+        return `- ${item.content}${tags}${revision} (updated: ${formatDateTime(item.updated_at)})`;
       }),
     ];
   };
@@ -185,7 +399,7 @@ const buildCuratedMemoryMarkdown = (memories: FileUserMemory[]): string => {
   return [
     '# MEMORY.md',
     '',
-    '这个文件是用户长期记忆摘要（可人工编辑）。',
+    '这个文件是用户长期记忆摘要（当前有效版本，可人工编辑）。',
     '自动生成时间：' + new Date().toISOString(),
     '',
     ...renderSection('偏好 Preferences', preference),
@@ -194,17 +408,48 @@ const buildCuratedMemoryMarkdown = (memories: FileUserMemory[]): string => {
     '',
     ...renderSection('其他 General', general),
     '',
-    '> 说明：本文件由系统自动维护，同时支持人工调整。若与最新用户明确指令冲突，以最新指令为准。',
+    '> 说明：本文件只展示当前有效记忆。若同一主题发生更新或冲突，系统会保留旧版本到 MEMORY_ARCHIVE.md，并以最新明确指令为准。',
   ].join('\n');
 };
 
-const syncCuratedMemoryMarkdown = async (memories: FileUserMemory[]): Promise<void> => {
+const buildArchiveMemoryMarkdown = (memories: FileUserMemory[], history: MemoryHistoryEntry[]): string => {
+  const archived = sortMemories(memories).slice(0, 200);
+  const recentHistory = [...history].sort((a, b) => b.timestamp - a.timestamp).slice(0, 80);
+
+  return [
+    '# MEMORY_ARCHIVE.md',
+    '',
+    '这个文件记录已归档的旧版本记忆、冲突覆盖与去重轨迹。',
+    '自动生成时间：' + new Date().toISOString(),
+    '',
+    '## Archived Memories',
+    ...(archived.length === 0 ? ['(暂无)'] : archived.map((item) => {
+      const tags = item.tags.length > 0 ? ` [${item.tags.join(', ')}]` : '';
+      const reason = item.archive_reason ? ` · reason=${item.archive_reason}` : '';
+      return `- ${item.content}${tags}${reason} (origin: ${item.origin_id || item.id}, archived: ${formatDateTime(item.archived_at || item.updated_at)})`;
+    })),
+    '',
+    '## Recent History',
+    ...(recentHistory.length === 0 ? ['(暂无)'] : recentHistory.map((entry) => {
+      return `- ${formatDateTime(entry.timestamp)} · ${entry.action} · origin=${entry.origin_id}${entry.reason ? ` · ${entry.reason}` : ''}`;
+    })),
+  ].join('\n');
+};
+
+const syncCuratedMemoryMarkdown = async (memories: FileUserMemory[], history: MemoryHistoryEntry[]): Promise<void> => {
   await ensureDir();
-  const filePath = curatedMemoryFilePath();
-  const tempPath = `${filePath}.tmp`;
-  const markdown = buildCuratedMemoryMarkdown(memories);
-  await fs.writeFile(tempPath, markdown, 'utf-8');
-  await fs.rename(tempPath, filePath);
+
+  const activeFilePath = curatedMemoryFilePath();
+  const activeTempPath = `${activeFilePath}.tmp`;
+  const activeMarkdown = buildCuratedMemoryMarkdown(activeMemoriesOf(memories));
+  await fs.writeFile(activeTempPath, activeMarkdown, 'utf-8');
+  await fs.rename(activeTempPath, activeFilePath);
+
+  const archiveFilePath = archiveMemoryFilePath();
+  const archiveTempPath = `${archiveFilePath}.tmp`;
+  const archiveMarkdown = buildArchiveMemoryMarkdown(archivedMemoriesOf(memories), history);
+  await fs.writeFile(archiveTempPath, archiveMarkdown, 'utf-8');
+  await fs.rename(archiveTempPath, archiveFilePath);
 };
 
 const readData = async (): Promise<MemoryFileData> => {
@@ -212,22 +457,12 @@ const readData = async (): Promise<MemoryFileData> => {
   try {
     const raw = await fs.readFile(filePath, 'utf-8');
     const parsed = JSON.parse(raw) as Partial<MemoryFileData>;
-    const list = Array.isArray(parsed.memories) ? parsed.memories : [];
-    const memories: FileUserMemory[] = list.map((item: any) => ({
-      id: String(item.id || `mem_${now()}`),
-      content: String(item.content || '').trim(),
-      type: normalizeType(item.type),
-      tags: uniqueTags(item.tags),
-      created_at: Number(item.created_at || now()),
-      updated_at: Number(item.updated_at || now()),
-      last_accessed: item.last_accessed ? Number(item.last_accessed) : undefined,
-    })).filter((m) => m.content.length > 0);
-
-    return {
+    return normalizeAndPruneData({
       version: Number(parsed.version || 1),
       updatedAt: Number(parsed.updatedAt || now()),
-      memories: dedupeAndPruneMemories(memories),
-    };
+      memories: Array.isArray(parsed.memories) ? parsed.memories as FileUserMemory[] : [],
+      history: Array.isArray(parsed.history) ? parsed.history as MemoryHistoryEntry[] : [],
+    });
   } catch {
     return defaultData();
   }
@@ -236,15 +471,11 @@ const readData = async (): Promise<MemoryFileData> => {
 const writeData = async (data: MemoryFileData): Promise<void> => {
   await ensureDir();
   const filePath = memoryFilePath();
-  const payload: MemoryFileData = {
-    version: 1,
-    updatedAt: now(),
-    memories: dedupeAndPruneMemories(data.memories),
-  };
+  const payload = normalizeAndPruneData(data);
   const tempPath = `${filePath}.tmp`;
   await fs.writeFile(tempPath, JSON.stringify(payload, null, 2), 'utf-8');
   await fs.rename(tempPath, filePath);
-  await syncCuratedMemoryMarkdown(payload.memories);
+  await syncCuratedMemoryMarkdown(payload.memories, payload.history);
 };
 
 const migrateFromDbIfNeeded = async (): Promise<void> => {
@@ -270,132 +501,345 @@ const migrateFromDbIfNeeded = async (): Promise<void> => {
     created_at: m.created_at,
     updated_at: m.updated_at,
     last_accessed: m.last_accessed,
+    status: 'active',
+    origin_id: m.id,
+    canonical_key: extractMemoryKey(m.content),
+    revision: 1,
   }));
   await writeData({
-    version: 1,
+    version: 2,
     updatedAt: now(),
     memories: migrated,
+    history: [],
   });
 };
 
-const generateMemoryId = (): string => {
-  return `mem_${now()}_${Math.random().toString(36).slice(2, 8)}`;
+const looksSensitiveMemory = (content: string): boolean => {
+  const text = String(content || '');
+  if (!text) return false;
+  const patterns = [
+    /sk-[a-z0-9]{16,}/i,
+    /Bearer\s+[A-Za-z0-9\-_.=]{16,}/i,
+    /ghp_[A-Za-z0-9]{20,}/i,
+    /AKIA[0-9A-Z]{16}/,
+    /sessionid[=:]\s*[A-Za-z0-9%_.\-]{10,}/i,
+    /api[_ -]?key[=:：]\s*[A-Za-z0-9_\-]{10,}/i,
+    /token[=:：]\s*[A-Za-z0-9_\-]{10,}/i,
+  ];
+  return patterns.some((pattern) => pattern.test(text));
+};
+
+const ensureMemoryContentAllowed = (content: string): void => {
+  const normalized = String(content || '').trim();
+  if (!normalized) {
+    throw new Error('记忆内容不能为空');
+  }
+  if (looksSensitiveMemory(normalized)) {
+    throw new Error('检测到疑似敏感凭据，拒绝写入长期记忆');
+  }
+};
+
+const findActiveMemoryById = (data: MemoryFileData, id: string): FileUserMemory | undefined => {
+  return data.memories.find((item) => item.id === id && normalizeStatus(item.status) !== 'archived');
 };
 
 export async function listUserMemoriesFromFile(): Promise<FileUserMemory[]> {
   await migrateFromDbIfNeeded();
   const data = await readData();
-  await syncCuratedMemoryMarkdown(data.memories);
-  return sortMemories(data.memories);
+  await syncCuratedMemoryMarkdown(data.memories, data.history);
+  return sortMemories(activeMemoriesOf(data.memories));
+}
+
+export async function listArchivedMemoriesFromFile(): Promise<FileUserMemory[]> {
+  await migrateFromDbIfNeeded();
+  const data = await readData();
+  await syncCuratedMemoryMarkdown(data.memories, data.history);
+  return sortMemories(archivedMemoriesOf(data.memories));
+}
+
+export async function listMemoryHistoryFromFile(originId?: string): Promise<MemoryHistoryEntry[]> {
+  await migrateFromDbIfNeeded();
+  const data = await readData();
+  const history = [...data.history].sort((a, b) => b.timestamp - a.timestamp);
+  if (!originId) return history;
+  return history.filter((item) => item.origin_id === originId || item.memory_id === originId);
 }
 
 export async function addUserMemoryToFile(
   content: string,
   type: MemoryType = 'general',
-  tags: string[] = []
+  tags: string[] = [],
+  options?: { source?: MemoryMutationSource; reason?: string }
 ): Promise<FileUserMemory> {
   await migrateFromDbIfNeeded();
   const data = await readData();
+  const timestamp = now();
+  const normalizedContent = String(content || '').trim();
+  ensureMemoryContentAllowed(normalizedContent);
+
   const item: FileUserMemory = {
     id: generateMemoryId(),
-    content: String(content || '').trim(),
+    content: normalizedContent,
     type: normalizeType(type),
     tags: uniqueTags(tags),
-    created_at: now(),
-    updated_at: now(),
-    last_accessed: now(),
+    created_at: timestamp,
+    updated_at: timestamp,
+    last_accessed: timestamp,
+    status: 'active',
+    origin_id: '',
+    canonical_key: extractMemoryKey(normalizedContent),
+    revision: 1,
   };
+  item.origin_id = item.id;
 
-  if (!item.content) {
-    throw new Error('记忆内容不能为空');
-  }
-
+  const activeMemories = activeMemoriesOf(data.memories);
   const normalized = normalizeContentForDedup(item.content);
-  const key = extractMemoryKey(item.content);
-  const exactIndex = normalized
-    ? data.memories.findIndex((existing) => normalizeContentForDedup(existing.content) === normalized)
-    : -1;
+  const exactHit = normalized
+    ? activeMemories.find((existing) => normalizeContentForDedup(existing.content) === normalized)
+    : undefined;
 
-  if (exactIndex >= 0) {
-    const existing = data.memories[exactIndex];
-    existing.tags = mergeTags(existing.tags, item.tags);
-    existing.updated_at = now();
-    existing.last_accessed = now();
-    if (existing.type === 'general' && item.type !== 'general') {
-      existing.type = item.type;
+  if (exactHit) {
+    const before = { ...exactHit };
+    exactHit.tags = mergeTags(exactHit.tags, item.tags);
+    exactHit.updated_at = timestamp;
+    exactHit.last_accessed = timestamp;
+    exactHit.revision = Math.max(1, exactHit.revision || 1);
+    if (exactHit.type === 'general' && item.type !== 'general') {
+      exactHit.type = item.type;
     }
+    appendHistory(data, {
+      memory_id: exactHit.id,
+      origin_id: exactHit.origin_id || exactHit.id,
+      action: 'dedupe',
+      reason: 'exact-duplicate-merge',
+      before,
+      after: { ...exactHit },
+    });
     await writeData(data);
-    return existing;
+    emitMemoryMutation({
+      action: 'dedupe',
+      source: options?.source || 'user',
+      memoryId: exactHit.id,
+      originId: exactHit.origin_id || exactHit.id,
+      reason: options?.reason || 'exact-duplicate-merge',
+      timestamp,
+    });
+    return exactHit;
   }
 
-  const canMergeByKey = (item.type === 'preference' || item.type === 'fact') && key.length >= 2;
+  const canMergeByKey = (item.type === 'preference' || item.type === 'fact') && (item.canonical_key || '').length >= 2;
   if (canMergeByKey) {
-    const byKeyIndex = data.memories.findIndex((existing) => {
-      if (existing.type !== item.type) return false;
-      return extractMemoryKey(existing.content) === key;
+    const existing = activeMemories.find((candidate) => {
+      if (candidate.type !== item.type) return false;
+      return (candidate.canonical_key || extractMemoryKey(candidate.content)) === item.canonical_key;
     });
 
-    if (byKeyIndex >= 0) {
-      const existing = data.memories[byKeyIndex];
+    if (existing) {
+      const before = { ...existing };
+      const archivedSnapshot = createArchiveSnapshot(existing, 'superseded-by-latest');
+      data.memories.push(archivedSnapshot);
       existing.content = item.content;
       existing.tags = mergeTags(existing.tags, item.tags);
-      existing.updated_at = now();
-      existing.last_accessed = now();
+      existing.updated_at = timestamp;
+      existing.last_accessed = timestamp;
+      existing.canonical_key = item.canonical_key;
+      existing.revision = Math.max(1, existing.revision || 1) + 1;
+      existing.last_conflict_at = timestamp;
+      appendHistory(data, {
+        memory_id: existing.id,
+        origin_id: existing.origin_id || existing.id,
+        action: 'update',
+        reason: 'same-key-latest-wins',
+        before,
+        after: { ...existing },
+        archived_memory_id: archivedSnapshot.id,
+      });
+      appendHistory(data, {
+        memory_id: archivedSnapshot.id,
+        origin_id: archivedSnapshot.origin_id || existing.id,
+        action: 'archive',
+        reason: 'same-key-superseded',
+        after: { ...archivedSnapshot },
+      });
       await writeData(data);
+      emitMemoryMutation({
+        action: 'update',
+        source: options?.source || 'user',
+        memoryId: existing.id,
+        originId: existing.origin_id || existing.id,
+        reason: options?.reason || 'same-key-latest-wins',
+        timestamp,
+      });
       return existing;
     }
   }
 
   data.memories.push(item);
+  appendHistory(data, {
+    memory_id: item.id,
+    origin_id: item.origin_id || item.id,
+    action: 'create',
+    reason: 'new-memory',
+    after: { ...item },
+  });
   await writeData(data);
+  emitMemoryMutation({
+    action: 'create',
+    source: options?.source || 'user',
+    memoryId: item.id,
+    originId: item.origin_id || item.id,
+    reason: options?.reason || 'new-memory',
+    timestamp,
+  });
   return item;
 }
 
-export async function deleteUserMemoryFromFile(id: string): Promise<void> {
+export async function deleteUserMemoryFromFile(
+  id: string,
+  options?: { source?: MemoryMutationSource; reason?: string }
+): Promise<void> {
   await migrateFromDbIfNeeded();
   const data = await readData();
+  const existing = data.memories.find((item) => item.id === id);
+  if (!existing) return;
   data.memories = data.memories.filter((item) => item.id !== id);
+  appendHistory(data, {
+    memory_id: existing.id,
+    origin_id: existing.origin_id || existing.id,
+    action: 'delete',
+    reason: 'manual-delete',
+    before: { ...existing },
+  });
   await writeData(data);
+  emitMemoryMutation({
+    action: 'delete',
+    source: options?.source || 'user',
+    memoryId: existing.id,
+    originId: existing.origin_id || existing.id,
+    reason: options?.reason || 'manual-delete',
+    timestamp: now(),
+  });
 }
 
 export async function updateUserMemoryInFile(
   id: string,
-  updates: Partial<Pick<FileUserMemory, 'content' | 'type' | 'tags'>>
+  updates: Partial<Pick<FileUserMemory, 'content' | 'type' | 'tags'>>,
+  options?: { source?: MemoryMutationSource; reason?: string }
 ): Promise<void> {
   await migrateFromDbIfNeeded();
   const data = await readData();
-  const idx = data.memories.findIndex((item) => item.id === id);
-  if (idx < 0) return;
+  const current = findActiveMemoryById(data, id);
+  if (!current) return;
 
-  const current = data.memories[idx];
-  const next: FileUserMemory = {
-    ...current,
-    content: updates.content !== undefined ? String(updates.content || '').trim() : current.content,
-    type: updates.type !== undefined ? normalizeType(updates.type) : current.type,
-    tags: updates.tags !== undefined ? uniqueTags(updates.tags) : current.tags,
-    updated_at: now(),
-  };
+  const nextContent = updates.content !== undefined ? String(updates.content || '').trim() : current.content;
+  ensureMemoryContentAllowed(nextContent);
+  const nextType = updates.type !== undefined ? normalizeType(updates.type) : current.type;
+  const nextTags = updates.tags !== undefined ? uniqueTags(updates.tags) : current.tags;
+  const timestamp = now();
+  const before = { ...current };
+  const contentChanged = nextContent !== current.content;
+  const typeChanged = nextType !== current.type;
+  const tagsChanged = JSON.stringify(nextTags) !== JSON.stringify(current.tags);
 
-  if (!next.content) {
-    throw new Error('记忆内容不能为空');
+  if (!contentChanged && !typeChanged && !tagsChanged) {
+    return;
   }
 
-  data.memories[idx] = next;
+  if (contentChanged) {
+    const archivedSnapshot = createArchiveSnapshot(current, 'manual-update');
+    data.memories.push(archivedSnapshot);
+    appendHistory(data, {
+      memory_id: archivedSnapshot.id,
+      origin_id: archivedSnapshot.origin_id || current.id,
+      action: 'archive',
+      reason: 'manual-update-snapshot',
+      after: { ...archivedSnapshot },
+    });
+  }
+
+  current.content = nextContent;
+  current.type = nextType;
+  current.tags = nextTags;
+  current.updated_at = timestamp;
+  current.last_accessed = timestamp;
+  current.canonical_key = extractMemoryKey(nextContent);
+  current.revision = Math.max(1, current.revision || 1) + (contentChanged ? 1 : 0);
+  if (contentChanged) {
+    current.last_conflict_at = timestamp;
+  }
+
+  appendHistory(data, {
+    memory_id: current.id,
+    origin_id: current.origin_id || current.id,
+    action: 'update',
+    reason: options?.reason || (contentChanged ? 'manual-content-update' : 'manual-metadata-update'),
+    before,
+    after: { ...current },
+  });
+
   await writeData(data);
+  emitMemoryMutation({
+    action: 'update',
+    source: options?.source || 'user',
+    memoryId: current.id,
+    originId: current.origin_id || current.id,
+    reason: options?.reason || (contentChanged ? 'manual-content-update' : 'manual-metadata-update'),
+    timestamp,
+  });
+}
+
+export async function archiveUserMemoryInFile(
+  id: string,
+  reason = 'manual-archive',
+  options?: { source?: MemoryMutationSource }
+): Promise<void> {
+  await migrateFromDbIfNeeded();
+  const data = await readData();
+  const current = findActiveMemoryById(data, id);
+  if (!current) return;
+
+  const archivedSnapshot = createArchiveSnapshot(current, reason);
+  data.memories = data.memories.filter((item) => item.id !== current.id);
+  data.memories.push(archivedSnapshot);
+  appendHistory(data, {
+    memory_id: archivedSnapshot.id,
+    origin_id: archivedSnapshot.origin_id || current.id,
+    action: 'archive',
+    reason,
+    before: { ...current },
+    after: { ...archivedSnapshot },
+  });
+  await writeData(data);
+  emitMemoryMutation({
+    action: 'archive',
+    source: options?.source || 'user',
+    memoryId: archivedSnapshot.id,
+    originId: archivedSnapshot.origin_id || current.id,
+    reason,
+    timestamp: now(),
+  });
 }
 
 export async function markMemoryAccessed(id: string): Promise<void> {
   await migrateFromDbIfNeeded();
   const data = await readData();
-  const item = data.memories.find((m) => m.id === id);
+  const item = findActiveMemoryById(data, id);
   if (!item) return;
   item.last_accessed = now();
   item.updated_at = now();
+  appendHistory(data, {
+    memory_id: item.id,
+    origin_id: item.origin_id || item.id,
+    action: 'access',
+    reason: 'prompt-read',
+    after: { id: item.id, last_accessed: item.last_accessed, updated_at: item.updated_at },
+  });
   await writeData(data);
 }
 
 export async function getLongTermMemoryPrompt(maxItems = 30): Promise<string> {
-  const memories = await listUserMemoriesFromFile();
+  const data = await readData();
+  const memories = sortMemories(activeMemoriesOf(data.memories));
   const curatedMemoryMarkdown = await (async () => {
     try {
       return await fs.readFile(curatedMemoryFilePath(), 'utf-8');
@@ -408,7 +852,8 @@ export async function getLongTermMemoryPrompt(maxItems = 30): Promise<string> {
   const selected = memories.slice(0, Math.max(1, maxItems));
   const listPrompt = selected.map((m, index) => {
     const tagText = m.tags.length ? ` [tags: ${m.tags.join(', ')}]` : '';
-    return `${index + 1}. [${m.type}] ${m.content}${tagText}`;
+    const revision = (m.revision || 1) > 1 ? ` [rev: ${m.revision}]` : '';
+    return `${index + 1}. [${m.type}] ${m.content}${tagText}${revision}`;
   }).join('\n');
 
   if (!curatedMemoryMarkdown.trim()) {
@@ -423,5 +868,9 @@ export async function getLongTermMemoryPrompt(maxItems = 30): Promise<string> {
     '<memory_index>',
     listPrompt,
     '</memory_index>',
+    '',
+    '<memory_policy>',
+    '同一主题若出现冲突，以最新明确指令为准；旧版本会进入归档与历史，不应再当作当前事实使用。',
+    '</memory_policy>',
   ].join('\n');
 }

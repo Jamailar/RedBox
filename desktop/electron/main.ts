@@ -57,6 +57,8 @@ import { ulid } from 'ulid'
 import { SkillManager } from './core/skillManager';
 import {
   listUserMemoriesFromFile,
+  listArchivedMemoriesFromFile,
+  listMemoryHistoryFromFile,
   addUserMemoryToFile,
   deleteUserMemoryFromFile,
   updateUserMemoryInFile,
@@ -82,6 +84,7 @@ import { getRedClawBackgroundRunner } from './core/redclawBackgroundRunner';
 import { getAdvisorYoutubeBackgroundRunner, getDefaultAdvisorYoutubeChannelConfig } from './core/advisorYoutubeRunner';
 import { detectAiProtocol, fetchModelsForAiSource, testAiSourceConnection } from './core/aiSourceService';
 import { loadOfficialFeatureModule } from './officialFeatureBridge';
+import { getMemoryMaintenanceService } from './core/memoryMaintenanceService';
 
 if (typeof (globalThis as any).Blob === 'undefined' && typeof NodeBlob !== 'undefined') {
   (globalThis as any).Blob = NodeBlob;
@@ -837,6 +840,7 @@ async function refreshForSpaceChange() {
   const { vectorStore } = await import('./core/vector/VectorStore');
   await vectorStore.refreshCache();
   await getRedClawBackgroundRunner().reloadForWorkspaceChange();
+  await getMemoryMaintenanceService().reloadForWorkspaceChange();
 
   win?.webContents.send('space:changed', { activeSpaceId: getActiveSpaceId() });
 }
@@ -908,6 +912,12 @@ app.whenReady().then(async () => {
       await initializeRedClawBackgroundRunner();
     } catch (e) {
       console.error('[RedClawRunner] Init failed:', e);
+    }
+
+    try {
+      getMemoryMaintenanceService().start();
+    } catch (e) {
+      console.error('[MemoryMaintenance] Init failed:', e);
     }
 
     try {
@@ -1111,6 +1121,22 @@ ipcMain.handle('spaces:switch', async (_, spaceId: string) => {
 // Memory
 ipcMain.handle('memory:list', async () => {
   return listUserMemoriesFromFile();
+});
+
+ipcMain.handle('memory:archived', async () => {
+  return listArchivedMemoriesFromFile();
+});
+
+ipcMain.handle('memory:history', async (_, originId?: string) => {
+  return listMemoryHistoryFromFile(typeof originId === 'string' ? originId : undefined);
+});
+
+ipcMain.handle('memory:maintenance-status', async () => {
+  return getMemoryMaintenanceService().getStatus();
+});
+
+ipcMain.handle('memory:maintenance-run', async () => {
+  return getMemoryMaintenanceService().runNow();
 });
 
 ipcMain.handle('memory:add', async (_, { content, type, tags }) => {

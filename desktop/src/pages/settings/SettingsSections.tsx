@@ -1,7 +1,7 @@
 import type { Dispatch, SetStateAction } from 'react';
 import { AlertCircle, Database, Download, FolderOpen, Info, RefreshCw, Save, Trash2 } from 'lucide-react';
 import clsx from 'clsx';
-import type { McpServerConfig, UserMemory } from './shared';
+import type { McpServerConfig, MemoryHistoryEntry, MemoryMaintenanceStatus, UserMemory } from './shared';
 
 type SettingsFormData = {
     workspace_dir: string;
@@ -91,8 +91,34 @@ interface MemorySettingsSectionProps {
     handleAddMemory: () => Promise<void>;
     isMemoryLoading: boolean;
     memories: UserMemory[];
+    archivedMemories: UserMemory[];
+    memoryHistory: MemoryHistoryEntry[];
+    maintenanceStatus: MemoryMaintenanceStatus | null;
+    onRunMaintenance: () => Promise<void>;
     handleDeleteMemory: (id: string) => void;
 }
+
+const memoryTypeTone = (type: UserMemory['type']) => (
+    type === 'preference' ? 'bg-purple-500/10 text-purple-500'
+        : type === 'fact' ? 'bg-blue-500/10 text-blue-500'
+            : 'bg-gray-500/10 text-text-tertiary'
+);
+
+const memoryTypeLabel = (type: UserMemory['type']) => (
+    type === 'preference' ? '偏好' : type === 'fact' ? '事实' : '一般'
+);
+
+const historyActionLabel = (action: MemoryHistoryEntry['action']) => {
+    switch (action) {
+        case 'create': return '创建';
+        case 'update': return '更新';
+        case 'dedupe': return '去重合并';
+        case 'archive': return '归档';
+        case 'delete': return '删除';
+        case 'access': return '访问';
+        default: return action;
+    }
+};
 
 export function MemorySettingsSection({
     newMemoryType,
@@ -102,6 +128,10 @@ export function MemorySettingsSection({
     handleAddMemory,
     isMemoryLoading,
     memories,
+    archivedMemories,
+    memoryHistory,
+    maintenanceStatus,
+    onRunMaintenance,
     handleDeleteMemory,
 }: MemorySettingsSectionProps) {
     return (
@@ -148,7 +178,79 @@ export function MemorySettingsSection({
                 </div>
             </div>
 
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div className="bg-surface-secondary/20 rounded-lg border border-border p-4">
+                    <div className="text-[11px] text-text-tertiary mb-1">当前有效记忆</div>
+                    <div className="text-2xl font-semibold text-text-primary">{memories.length}</div>
+                </div>
+                <div className="bg-surface-secondary/20 rounded-lg border border-border p-4">
+                    <div className="text-[11px] text-text-tertiary mb-1">归档版本</div>
+                    <div className="text-2xl font-semibold text-text-primary">{archivedMemories.length}</div>
+                </div>
+                <div className="bg-surface-secondary/20 rounded-lg border border-border p-4">
+                    <div className="text-[11px] text-text-tertiary mb-1">历史事件</div>
+                    <div className="text-2xl font-semibold text-text-primary">{memoryHistory.length}</div>
+                </div>
+            </div>
+
+            <div className="bg-surface-secondary/20 rounded-lg border border-border p-4 space-y-3">
+                <div className="flex items-center justify-between gap-3">
+                    <div>
+                        <h3 className="text-sm font-medium text-text-primary">后台记忆整理器</h3>
+                        <p className="text-[11px] text-text-tertiary mt-1">
+                            独立于对话循环之外，周期性使用 LLM 整理、去重、归档和更新长期记忆。
+                        </p>
+                    </div>
+                    <button
+                        type="button"
+                        onClick={() => void onRunMaintenance()}
+                        className="inline-flex items-center gap-2 px-3 py-1.5 border border-border rounded text-xs font-medium text-text-primary hover:bg-surface-secondary"
+                    >
+                        <RefreshCw className={clsx('w-3.5 h-3.5', maintenanceStatus?.running && 'animate-spin')} />
+                        立即整理
+                    </button>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+                    <div className="bg-surface-primary/60 rounded border border-border p-3">
+                        <div className="text-[10px] text-text-tertiary mb-1">状态</div>
+                        <div className="text-sm font-medium text-text-primary">
+                            {maintenanceStatus?.running ? '整理中' : maintenanceStatus?.started ? '已启用' : '未启动'}
+                        </div>
+                    </div>
+                    <div className="bg-surface-primary/60 rounded border border-border p-3">
+                        <div className="text-[10px] text-text-tertiary mb-1">待处理变更</div>
+                        <div className="text-sm font-medium text-text-primary">{maintenanceStatus?.pendingMutations ?? 0}</div>
+                    </div>
+                    <div className="bg-surface-primary/60 rounded border border-border p-3">
+                        <div className="text-[10px] text-text-tertiary mb-1">上次执行</div>
+                        <div className="text-xs text-text-primary">
+                            {maintenanceStatus?.lastRunAt ? new Date(maintenanceStatus.lastRunAt).toLocaleString() : '暂无'}
+                        </div>
+                    </div>
+                    <div className="bg-surface-primary/60 rounded border border-border p-3">
+                        <div className="text-[10px] text-text-tertiary mb-1">下次计划</div>
+                        <div className="text-xs text-text-primary">
+                            {maintenanceStatus?.nextScheduledAt ? new Date(maintenanceStatus.nextScheduledAt).toLocaleString() : '按需触发'}
+                        </div>
+                    </div>
+                </div>
+                {maintenanceStatus?.lastSummary && (
+                    <div className="text-xs text-text-secondary">
+                        最近摘要：{maintenanceStatus.lastSummary}
+                    </div>
+                )}
+                {maintenanceStatus?.lastError && (
+                    <div className="text-xs text-red-500 bg-red-500/5 border border-red-200 rounded p-3">
+                        最近错误：{maintenanceStatus.lastError}
+                    </div>
+                )}
+            </div>
+
             <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                    <h3 className="text-sm font-medium text-text-primary">当前有效记忆</h3>
+                    <span className="text-[11px] text-text-tertiary">只展示当前生效版本</span>
+                </div>
                 {isMemoryLoading ? (
                     <div className="text-center py-8 text-text-tertiary text-xs">加载中...</div>
                 ) : memories.length === 0 ? (
@@ -162,17 +264,29 @@ export function MemorySettingsSection({
                                 <div className="flex items-center gap-2 mb-1">
                                     <span className={clsx(
                                         'px-1.5 py-0.5 rounded text-[10px] font-medium uppercase tracking-wider',
-                                        memory.type === 'preference' ? 'bg-purple-500/10 text-purple-500'
-                                            : memory.type === 'fact' ? 'bg-blue-500/10 text-blue-500'
-                                                : 'bg-gray-500/10 text-text-tertiary'
+                                        memoryTypeTone(memory.type)
                                     )}>
-                                        {memory.type === 'preference' ? '偏好' : memory.type === 'fact' ? '事实' : '一般'}
+                                        {memoryTypeLabel(memory.type)}
                                     </span>
                                     <span className="text-[10px] text-text-tertiary">
-                                        {new Date(memory.created_at).toLocaleDateString()}
+                                        {new Date(memory.updated_at || memory.created_at).toLocaleString()}
                                     </span>
+                                    {(memory.revision || 1) > 1 && (
+                                        <span className="text-[10px] text-amber-600 bg-amber-500/10 px-1.5 py-0.5 rounded">
+                                            rev {memory.revision}
+                                        </span>
+                                    )}
                                 </div>
                                 <p className="text-sm text-text-secondary">{memory.content}</p>
+                                {(memory.tags?.length || 0) > 0 && (
+                                    <div className="mt-2 flex flex-wrap gap-1">
+                                        {memory.tags.map((tag) => (
+                                            <span key={tag} className="text-[10px] px-1.5 py-0.5 rounded bg-surface-primary border border-border text-text-tertiary">
+                                                {tag}
+                                            </span>
+                                        ))}
+                                    </div>
+                                )}
                             </div>
                             <button
                                 onClick={() => handleDeleteMemory(memory.id)}
@@ -183,6 +297,85 @@ export function MemorySettingsSection({
                             </button>
                         </div>
                     ))
+                )}
+            </div>
+
+            <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                    <h3 className="text-sm font-medium text-text-primary">归档记忆</h3>
+                    <span className="text-[11px] text-text-tertiary">旧版本、冲突覆盖、容量裁剪都会归档到这里</span>
+                </div>
+                {isMemoryLoading ? (
+                    <div className="text-center py-6 text-text-tertiary text-xs">加载中...</div>
+                ) : archivedMemories.length === 0 ? (
+                    <div className="text-center py-6 text-text-tertiary text-xs border border-dashed border-border rounded-lg">
+                        暂无归档记忆。
+                    </div>
+                ) : (
+                    <div className="space-y-2">
+                        {archivedMemories.slice(0, 50).map((memory) => (
+                            <div key={memory.id} className="p-3 bg-surface-secondary/10 border border-border rounded-lg">
+                                <div className="flex items-center gap-2 mb-1 flex-wrap">
+                                    <span className={clsx('px-1.5 py-0.5 rounded text-[10px] font-medium uppercase tracking-wider', memoryTypeTone(memory.type))}>
+                                        {memoryTypeLabel(memory.type)}
+                                    </span>
+                                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-orange-500/10 text-orange-600">
+                                        已归档
+                                    </span>
+                                    <span className="text-[10px] text-text-tertiary">
+                                        {new Date(memory.archived_at || memory.updated_at || memory.created_at).toLocaleString()}
+                                    </span>
+                                    {memory.archive_reason && (
+                                        <span className="text-[10px] text-text-tertiary">原因: {memory.archive_reason}</span>
+                                    )}
+                                </div>
+                                <p className="text-sm text-text-secondary">{memory.content}</p>
+                            </div>
+                        ))}
+                    </div>
+                )}
+            </div>
+
+            <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                    <h3 className="text-sm font-medium text-text-primary">记忆历史</h3>
+                    <span className="text-[11px] text-text-tertiary">展示最近的记忆维护轨迹</span>
+                </div>
+                {isMemoryLoading ? (
+                    <div className="text-center py-6 text-text-tertiary text-xs">加载中...</div>
+                ) : memoryHistory.length === 0 ? (
+                    <div className="text-center py-6 text-text-tertiary text-xs border border-dashed border-border rounded-lg">
+                        暂无历史记录。
+                    </div>
+                ) : (
+                    <div className="space-y-2">
+                        {memoryHistory.slice(0, 80).map((entry) => (
+                            <div key={entry.id} className="p-3 bg-surface-secondary/10 border border-border rounded-lg">
+                                <div className="flex items-center gap-2 flex-wrap">
+                                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-accent-primary/10 text-accent-primary">
+                                        {historyActionLabel(entry.action)}
+                                    </span>
+                                    <span className="text-[10px] text-text-tertiary">
+                                        {new Date(entry.timestamp).toLocaleString()}
+                                    </span>
+                                    {entry.reason && (
+                                        <span className="text-[10px] text-text-tertiary">{entry.reason}</span>
+                                    )}
+                                </div>
+                                <div className="mt-2 text-xs text-text-secondary space-y-1">
+                                    {entry.before?.content && (
+                                        <div>旧: {entry.before.content}</div>
+                                    )}
+                                    {entry.after?.content && (
+                                        <div>新: {entry.after.content}</div>
+                                    )}
+                                    {!entry.before?.content && !entry.after?.content && (
+                                        <div>origin: {entry.origin_id}</div>
+                                    )}
+                                </div>
+                            </div>
+                        ))}
+                    </div>
                 )}
             </div>
         </section>

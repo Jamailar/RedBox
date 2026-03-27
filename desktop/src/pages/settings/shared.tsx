@@ -15,6 +15,38 @@ export interface UserMemory {
   type: 'general' | 'preference' | 'fact';
   tags: string[];
   created_at: number;
+  updated_at?: number;
+  last_accessed?: number;
+  status?: 'active' | 'archived';
+  archived_at?: number;
+  archive_reason?: string;
+  origin_id?: string;
+  canonical_key?: string;
+  revision?: number;
+  last_conflict_at?: number;
+}
+
+export interface MemoryHistoryEntry {
+  id: string;
+  memory_id: string;
+  origin_id: string;
+  action: 'create' | 'update' | 'dedupe' | 'archive' | 'delete' | 'access';
+  reason?: string;
+  timestamp: number;
+  before?: Partial<UserMemory>;
+  after?: Partial<UserMemory>;
+  archived_memory_id?: string;
+}
+
+export interface MemoryMaintenanceStatus {
+  started: boolean;
+  running: boolean;
+  pendingMutations: number;
+  lastRunAt: string | null;
+  lastReason: 'init' | 'mutation' | 'periodic' | 'workspace-change' | 'manual' | null;
+  lastSummary: string;
+  lastError: string | null;
+  nextScheduledAt: string | null;
 }
 
 export interface OfficialModelInfo {

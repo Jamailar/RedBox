@@ -1,0 +1,391 @@
+import { getSettings } from '../db';
+import { resolveScopedModelName } from './modelScopeSettings';
+import { loadAndRenderPrompt } from '../prompts/runtime';
+import { normalizeApiBaseUrl, safeUrlJoin } from './urlUtils';
+import {
+  addMemoryMutationListener,
+  addUserMemoryToFile,
+  archiveUserMemoryInFile,
+  deleteUserMemoryFromFile,
+  listArchivedMemoriesFromFile,
+  listMemoryHistoryFromFile,
+  listUserMemoriesFromFile,
+  updateUserMemoryInFile,
+  type FileUserMemory,
+  type MemoryHistoryEntry,
+  type MemoryMutationEvent,
+  type MemoryType,
+} from './fileMemoryStore';
+
+const MAINTENANCE_PROMPT_PATH = 'runtime/memory/maintenance_manager.txt';
+const DEFAULT_MODEL_FALLBACK = 'gpt-4o-mini';
+const DEBOUNCE_MS = 90 * 1000;
+const FAST_DEBOUNCE_MS = 15 * 1000;
+const PERIODIC_MS = 30 * 60 * 1000;
+const MIN_PENDING_MUTATIONS = 5;
+const MAX_ACTIVE_PROMPT_ITEMS = 80;
+const MAX_ARCHIVED_PROMPT_ITEMS = 40;
+const MAX_HISTORY_PROMPT_ITEMS = 120;
+const MAX_ACTIONS = 12;
+
+type MaintenanceTriggerReason = 'init' | 'mutation' | 'periodic' | 'workspace-change' | 'manual';
+
+type MaintenanceAction = {
+  type: 'create' | 'update' | 'archive' | 'delete' | 'noop';
+  targetMemoryId?: string;
+  content?: string;
+  memoryType?: MemoryType;
+  tags?: string[];
+  reason?: string;
+};
+
+type MaintenanceResponse = {
+  summary?: string;
+  actions?: MaintenanceAction[];
+};
+
+export interface MemoryMaintenanceStatus {
+  started: boolean;
+  running: boolean;
+  pendingMutations: number;
+  lastRunAt: string | null;
+  lastReason: MaintenanceTriggerReason | null;
+  lastSummary: string;
+  lastError: string | null;
+  nextScheduledAt: string | null;
+}
+
+function parseJsonResponse(raw: string): MaintenanceResponse {
+  const text = String(raw || '').trim();
+  if (!text) {
+    return { summary: 'empty-response', actions: [{ type: 'noop', reason: 'empty-response' }] };
+  }
+  const parsed = JSON.parse(text) as MaintenanceResponse;
+  if (!parsed || typeof parsed !== 'object') {
+    throw new Error('Invalid memory maintenance response payload');
+  }
+  return parsed;
+}
+
+function sanitizeTags(tags: unknown): string[] {
+  if (!Array.isArray(tags)) return [];
+  return Array.from(new Set(tags.map((item) => String(item || '').trim()).filter(Boolean))).slice(0, 12);
+}
+
+function sanitizeAction(raw: unknown): MaintenanceAction | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const record = raw as Record<string, unknown>;
+  const type = String(record.type || '').trim() as MaintenanceAction['type'];
+  if (!['create', 'update', 'archive', 'delete', 'noop'].includes(type)) {
+    return null;
+  }
+  const next: MaintenanceAction = {
+    type,
+    targetMemoryId: typeof record.targetMemoryId === 'string' ? record.targetMemoryId.trim() : undefined,
+    content: typeof record.content === 'string' ? record.content.trim() : undefined,
+    memoryType: record.memoryType === 'preference' || record.memoryType === 'fact' ? record.memoryType : 'general',
+    tags: sanitizeTags(record.tags),
+    reason: typeof record.reason === 'string' ? record.reason.trim() : undefined,
+  };
+  if ((type === 'update' || type === 'archive' || type === 'delete') && !next.targetMemoryId) {
+    return null;
+  }
+  if ((type === 'create' || type === 'update') && !next.content) {
+    return null;
+  }
+  return next;
+}
+
+function buildPromptPayload(params: {
+  reason: MaintenanceTriggerReason;
+  pendingMutations: number;
+  active: FileUserMemory[];
+  archived: FileUserMemory[];
+  history: MemoryHistoryEntry[];
+}): string {
+  return loadAndRenderPrompt(MAINTENANCE_PROMPT_PATH, {
+    trigger_reason: params.reason,
+    current_date: new Date().toISOString(),
+    pending_mutation_count: params.pendingMutations,
+    active_memory_count: params.active.length,
+    archived_memory_count: params.archived.length,
+    history_count: params.history.length,
+    active_memories_json: JSON.stringify(params.active.slice(0, MAX_ACTIVE_PROMPT_ITEMS), null, 2),
+    archived_memories_json: JSON.stringify(params.archived.slice(0, MAX_ARCHIVED_PROMPT_ITEMS), null, 2),
+    history_json: JSON.stringify(params.history.slice(0, MAX_HISTORY_PROMPT_ITEMS), null, 2),
+  }, 'You are a memory maintenance manager. Output strict JSON only.');
+}
+
+async function requestMaintenancePlan(input: {
+  model: string;
+  apiKey: string;
+  baseURL: string;
+  prompt: string;
+  timeoutMs?: number;
+}): Promise<MaintenanceResponse> {
+  const controller = new AbortController();
+  const timeoutMs = Math.max(15000, Number(input.timeoutMs || 90000));
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  const payload = {
+    model: input.model,
+    temperature: 0.1,
+    response_format: { type: 'json_object' },
+    messages: [
+      { role: 'system', content: input.prompt },
+      { role: 'user', content: 'Return the memory maintenance actions now.' },
+    ],
+  };
+
+  console.log('[MemoryMaintenance] request', {
+    model: input.model,
+    baseURL: input.baseURL,
+    timeoutMs,
+    payloadPreview: JSON.stringify(payload).slice(0, 4000),
+  });
+
+  try {
+    const response = await fetch(safeUrlJoin(input.baseURL, '/chat/completions'), {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${input.apiKey}`,
+      },
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    });
+
+    const rawText = await response.text().catch(() => '');
+    console.log('[MemoryMaintenance] response', {
+      status: response.status,
+      statusText: response.statusText,
+      bodyPreview: rawText.slice(0, 8000),
+    });
+
+    if (!response.ok) {
+      throw new Error(`Memory maintenance failed (${response.status}): ${rawText || response.statusText}`);
+    }
+
+    let parsed: any;
+    try {
+      parsed = JSON.parse(rawText);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(`Memory maintenance invalid JSON response: ${message}`);
+    }
+    const content = parsed?.choices?.[0]?.message?.content || '';
+    return parseJsonResponse(String(content || ''));
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+export class MemoryMaintenanceService {
+  private started = false;
+  private running = false;
+  private pendingMutations = 0;
+  private lastRunAt: string | null = null;
+  private lastReason: MaintenanceTriggerReason | null = null;
+  private lastSummary = '';
+  private lastError: string | null = null;
+  private nextScheduledAt: string | null = null;
+  private debounceTimer: NodeJS.Timeout | null = null;
+  private periodicTimer: NodeJS.Timeout | null = null;
+  private unsubscribeMutationListener: (() => void) | null = null;
+
+  start(): void {
+    if (this.started) return;
+    this.started = true;
+    this.unsubscribeMutationListener = addMemoryMutationListener((event) => {
+      this.handleMutation(event);
+    });
+    this.periodicTimer = setInterval(() => {
+      void this.runIfNeeded('periodic');
+    }, PERIODIC_MS);
+    this.scheduleDebouncedRun('init', 2 * 60 * 1000);
+    console.log('[MemoryMaintenance] started');
+  }
+
+  stop(): void {
+    this.started = false;
+    if (this.debounceTimer) {
+      clearTimeout(this.debounceTimer);
+      this.debounceTimer = null;
+    }
+    if (this.periodicTimer) {
+      clearInterval(this.periodicTimer);
+      this.periodicTimer = null;
+    }
+    this.nextScheduledAt = null;
+    this.unsubscribeMutationListener?.();
+    this.unsubscribeMutationListener = null;
+  }
+
+  async reloadForWorkspaceChange(): Promise<void> {
+    this.pendingMutations = 0;
+    if (this.debounceTimer) {
+      clearTimeout(this.debounceTimer);
+      this.debounceTimer = null;
+    }
+    this.scheduleDebouncedRun('workspace-change', 30 * 1000);
+  }
+
+  getStatus(): MemoryMaintenanceStatus {
+    return {
+      started: this.started,
+      running: this.running,
+      pendingMutations: this.pendingMutations,
+      lastRunAt: this.lastRunAt,
+      lastReason: this.lastReason,
+      lastSummary: this.lastSummary,
+      lastError: this.lastError,
+      nextScheduledAt: this.nextScheduledAt,
+    };
+  }
+
+  async runNow(): Promise<MemoryMaintenanceStatus> {
+    if (!this.started) {
+      this.start();
+    }
+    await this.runIfNeeded('manual', true);
+    return this.getStatus();
+  }
+
+  private handleMutation(event: MemoryMutationEvent): void {
+    if (event.source === 'maintenance') {
+      return;
+    }
+    this.pendingMutations += 1;
+    const delay = this.pendingMutations >= MIN_PENDING_MUTATIONS ? FAST_DEBOUNCE_MS : DEBOUNCE_MS;
+    this.scheduleDebouncedRun('mutation', delay);
+  }
+
+  private scheduleDebouncedRun(reason: MaintenanceTriggerReason, delayMs: number): void {
+    if (!this.started) return;
+    if (this.debounceTimer) {
+      clearTimeout(this.debounceTimer);
+    }
+    this.nextScheduledAt = new Date(Date.now() + delayMs).toISOString();
+    this.debounceTimer = setTimeout(() => {
+      void this.runIfNeeded(reason);
+    }, delayMs);
+  }
+
+  private async runIfNeeded(reason: MaintenanceTriggerReason, force = false): Promise<void> {
+    if ((!this.started && !force) || this.running) return;
+    this.running = true;
+    this.lastReason = reason;
+    this.lastError = null;
+    this.nextScheduledAt = null;
+
+    try {
+      const active = await listUserMemoriesFromFile();
+      const archived = await listArchivedMemoriesFromFile();
+      const history = await listMemoryHistoryFromFile();
+
+      const shouldRun = force
+        || this.pendingMutations > 0
+        || (reason === 'periodic' && active.length >= 20)
+        || (reason === 'init' && (active.length >= 10 || history.length >= 20));
+
+      if (!shouldRun) {
+        return;
+      }
+
+      const settings = (getSettings() || {}) as Record<string, unknown>;
+      const apiKey = String(settings.api_key || '').trim();
+      const baseURL = normalizeApiBaseUrl(String(settings.api_endpoint || ''), 'https://api.openai.com/v1');
+      const model = resolveScopedModelName(settings, 'redclaw', DEFAULT_MODEL_FALLBACK);
+
+      if (!apiKey || !baseURL || !model) {
+        this.lastError = 'missing-model-config';
+        console.warn('[MemoryMaintenance] skipped: model config missing', { hasApiKey: Boolean(apiKey), baseURL, model });
+        return;
+      }
+
+      const prompt = buildPromptPayload({
+        reason,
+        pendingMutations: this.pendingMutations,
+        active,
+        archived,
+        history,
+      });
+
+      const plan = await requestMaintenancePlan({
+        model,
+        apiKey,
+        baseURL,
+        prompt,
+      });
+
+      const actions = Array.isArray(plan.actions)
+        ? plan.actions.map(sanitizeAction).filter((item): item is MaintenanceAction => Boolean(item)).slice(0, MAX_ACTIONS)
+        : [];
+
+      console.log('[MemoryMaintenance] actions', {
+        summary: plan.summary || '',
+        count: actions.length,
+        actions,
+      });
+
+      for (const action of actions) {
+        await this.applyAction(action);
+      }
+
+      this.lastSummary = String(plan.summary || '').trim() || `actions=${actions.length}`;
+      this.pendingMutations = 0;
+      this.lastRunAt = new Date().toISOString();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.lastError = message;
+      console.error('[MemoryMaintenance] run failed:', error);
+    } finally {
+      this.running = false;
+    }
+  }
+
+  private async applyAction(action: MaintenanceAction): Promise<void> {
+    const reason = action.reason || `maintenance-${action.type}`;
+    switch (action.type) {
+      case 'create':
+        await addUserMemoryToFile(
+          String(action.content || '').trim(),
+          action.memoryType || 'general',
+          action.tags || [],
+          { source: 'maintenance', reason }
+        );
+        return;
+      case 'update':
+        if (!action.targetMemoryId) return;
+        await updateUserMemoryInFile(
+          action.targetMemoryId,
+          {
+            content: String(action.content || '').trim(),
+            type: action.memoryType || 'general',
+            tags: action.tags || [],
+          },
+          { source: 'maintenance', reason }
+        );
+        return;
+      case 'archive':
+        if (!action.targetMemoryId) return;
+        await archiveUserMemoryInFile(action.targetMemoryId, reason, { source: 'maintenance' });
+        return;
+      case 'delete':
+        if (!action.targetMemoryId) return;
+        await deleteUserMemoryFromFile(action.targetMemoryId, { source: 'maintenance', reason });
+        return;
+      case 'noop':
+      default:
+        return;
+    }
+  }
+}
+
+let globalMemoryMaintenanceService: MemoryMaintenanceService | null = null;
+
+export function getMemoryMaintenanceService(): MemoryMaintenanceService {
+  if (!globalMemoryMaintenanceService) {
+    globalMemoryMaintenanceService = new MemoryMaintenanceService();
+  }
+  return globalMemoryMaintenanceService;
+}

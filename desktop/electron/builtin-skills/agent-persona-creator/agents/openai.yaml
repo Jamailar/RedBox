@@ -1,0 +1,4 @@
+interface:
+  display_name: "Agent Persona Creator"
+  short_description: "Create high-signal AI role personas"
+  default_prompt: "Use $agent-persona-creator to draft an agency-style agent profile from my brief."

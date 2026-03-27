@@ -17,6 +17,7 @@ import {
   type LocalAiGuide,
   type MemoryHistoryEntry,
   type MemoryMaintenanceStatus,
+  type MemorySearchResult,
   type McpServerConfig,
   type UserMemory,
   AiPresetLogo,
@@ -352,9 +353,13 @@ export function Settings() {
   const [archivedMemories, setArchivedMemories] = useState<UserMemory[]>([]);
   const [memoryHistory, setMemoryHistory] = useState<MemoryHistoryEntry[]>([]);
   const [memoryMaintenanceStatus, setMemoryMaintenanceStatus] = useState<MemoryMaintenanceStatus | null>(null);
+  const [memorySearchQuery, setMemorySearchQuery] = useState('');
+  const [includeArchivedInSearch, setIncludeArchivedInSearch] = useState(false);
+  const [memorySearchResults, setMemorySearchResults] = useState<MemorySearchResult[]>([]);
   const [newMemoryContent, setNewMemoryContent] = useState('');
   const [newMemoryType, setNewMemoryType] = useState<'general' | 'preference' | 'fact'>('general');
   const [isMemoryLoading, setIsMemoryLoading] = useState(false);
+  const [isMemorySearching, setIsMemorySearching] = useState(false);
   const [aiModelSubTab, setAiModelSubTab] = useState<'custom' | 'login'>('custom');
   const [officialAiPanelEnabled, setOfficialAiPanelEnabled] = useState(false);
   const [OfficialAiPanelComponent, setOfficialAiPanelComponent] = useState<ComponentType<OfficialAiPanelProps> | null>(null);
@@ -1053,6 +1058,27 @@ export function Settings() {
       await loadMemories();
     } catch (e) {
       console.error('Failed to run memory maintenance', e);
+    }
+  };
+
+  const handleSearchMemories = async () => {
+    const query = memorySearchQuery.trim();
+    if (!query) {
+      setMemorySearchResults([]);
+      return;
+    }
+    setIsMemorySearching(true);
+    try {
+      const results = await window.ipcRenderer.invoke('memory:search', {
+        query,
+        includeArchived: includeArchivedInSearch,
+        limit: 20,
+      }) as MemorySearchResult[];
+      setMemorySearchResults(results);
+    } catch (e) {
+      console.error('Failed to search memories', e);
+    } finally {
+      setIsMemorySearching(false);
     }
   };
 
@@ -2071,6 +2097,13 @@ export function Settings() {
                 memoryHistory={memoryHistory}
                 maintenanceStatus={memoryMaintenanceStatus}
                 onRunMaintenance={handleRunMemoryMaintenance}
+                memorySearchQuery={memorySearchQuery}
+                setMemorySearchQuery={setMemorySearchQuery}
+                includeArchivedInSearch={includeArchivedInSearch}
+                setIncludeArchivedInSearch={setIncludeArchivedInSearch}
+                memorySearchResults={memorySearchResults}
+                isMemorySearching={isMemorySearching}
+                onSearchMemories={handleSearchMemories}
                 handleDeleteMemory={handleDeleteMemory}
               />
             )}

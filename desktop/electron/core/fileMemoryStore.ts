@@ -36,6 +36,11 @@ export interface MemoryHistoryEntry {
   archived_memory_id?: string;
 }
 
+export interface MemorySearchResult extends FileUserMemory {
+  score: number;
+  matchReasons: string[];
+}
+
 export interface MemoryMutationEvent {
   action: Exclude<MemoryHistoryAction, 'access'>;
   source: MemoryMutationSource;
@@ -563,6 +568,70 @@ export async function listMemoryHistoryFromFile(originId?: string): Promise<Memo
   const history = [...data.history].sort((a, b) => b.timestamp - a.timestamp);
   if (!originId) return history;
   return history.filter((item) => item.origin_id === originId || item.memory_id === originId);
+}
+
+export async function searchUserMemoriesInFile(query: string, options?: {
+  includeArchived?: boolean;
+  limit?: number;
+}): Promise<MemorySearchResult[]> {
+  await migrateFromDbIfNeeded();
+  const normalizedQuery = String(query || '').trim().toLowerCase();
+  if (!normalizedQuery) return [];
+
+  const data = await readData();
+  const tokens = normalizedQuery.split(/\s+/).map((item) => item.trim()).filter(Boolean);
+  const source = options?.includeArchived
+    ? [...data.memories]
+    : activeMemoriesOf(data.memories);
+
+  const scored = source.map((memory) => {
+    const haystack = `${memory.content}\n${memory.tags.join(' ')}\n${memory.type}`.toLowerCase();
+    const reasons: string[] = [];
+    let score = 0;
+
+    if (memory.content.toLowerCase() === normalizedQuery) {
+      score += 120;
+      reasons.push('exact-content');
+    } else if (memory.content.toLowerCase().includes(normalizedQuery)) {
+      score += 80;
+      reasons.push('content-contains');
+    }
+
+    if (memory.tags.some((tag) => tag.toLowerCase() === normalizedQuery)) {
+      score += 60;
+      reasons.push('tag-exact');
+    }
+
+    if (memory.type.toLowerCase() === normalizedQuery) {
+      score += 40;
+      reasons.push('type-exact');
+    }
+
+    for (const token of tokens) {
+      if (!token) continue;
+      if (haystack.includes(token)) {
+        score += 12;
+      }
+    }
+
+    if (memory.canonical_key && normalizedQuery.includes(memory.canonical_key.toLowerCase())) {
+      score += 24;
+      reasons.push('canonical-key');
+    }
+
+    const freshnessBoost = Math.max(0, 10 - Math.floor((Date.now() - Number(memory.updated_at || memory.created_at || Date.now())) / (1000 * 60 * 60 * 24 * 7)));
+    score += freshnessBoost;
+
+    return {
+      ...memory,
+      score,
+      matchReasons: Array.from(new Set(reasons)),
+    };
+  }).filter((item) => item.score > 0);
+
+  return scored
+    .sort((a, b) => b.score - a.score || b.updated_at - a.updated_at)
+    .slice(0, Math.max(1, Math.min(100, Number(options?.limit || 20))));
 }
 
 export async function addUserMemoryToFile(

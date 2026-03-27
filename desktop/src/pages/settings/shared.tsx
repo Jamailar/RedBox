@@ -38,6 +38,11 @@ export interface MemoryHistoryEntry {
   archived_memory_id?: string;
 }
 
+export interface MemorySearchResult extends UserMemory {
+  score: number;
+  matchReasons: string[];
+}
+
 export interface MemoryMaintenanceStatus {
   started: boolean;
   running: boolean;

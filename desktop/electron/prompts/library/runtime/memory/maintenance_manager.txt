@@ -52,6 +52,7 @@ Maintenance context:
 - Active memory count: {{active_memory_count}}
 - Archived memory count: {{archived_memory_count}}
 - Recent history count: {{history_count}}
+- Recent conversation summary count: {{recent_conversations_count}}
 
 Current active memories:
 {{active_memories_json}}
@@ -61,3 +62,6 @@ Recently archived memories:
 
 Recent memory history:
 {{history_json}}
+
+Recent conversations:
+{{recent_conversations_json}}

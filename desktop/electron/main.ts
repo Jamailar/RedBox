@@ -59,6 +59,7 @@ import {
   listUserMemoriesFromFile,
   listArchivedMemoriesFromFile,
   listMemoryHistoryFromFile,
+  searchUserMemoriesInFile,
   addUserMemoryToFile,
   deleteUserMemoryFromFile,
   updateUserMemoryInFile,
@@ -1129,6 +1130,13 @@ ipcMain.handle('memory:archived', async () => {
 
 ipcMain.handle('memory:history', async (_, originId?: string) => {
   return listMemoryHistoryFromFile(typeof originId === 'string' ? originId : undefined);
+});
+
+ipcMain.handle('memory:search', async (_, payload?: { query?: string; includeArchived?: boolean; limit?: number }) => {
+  return searchUserMemoriesInFile(String(payload?.query || ''), {
+    includeArchived: Boolean(payload?.includeArchived),
+    limit: Number(payload?.limit || 20),
+  });
 });
 
 ipcMain.handle('memory:maintenance-status', async () => {

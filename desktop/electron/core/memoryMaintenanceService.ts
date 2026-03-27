@@ -1,4 +1,4 @@
-import { getSettings } from '../db';
+import { getChatMessages, getChatSessions, getSettings, type ChatMessage, type ChatSession } from '../db';
 import { resolveScopedModelName } from './modelScopeSettings';
 import { loadAndRenderPrompt } from '../prompts/runtime';
 import { normalizeApiBaseUrl, safeUrlJoin } from './urlUtils';
@@ -27,6 +27,9 @@ const MAX_ACTIVE_PROMPT_ITEMS = 80;
 const MAX_ARCHIVED_PROMPT_ITEMS = 40;
 const MAX_HISTORY_PROMPT_ITEMS = 120;
 const MAX_ACTIONS = 12;
+const MAX_RECENT_SESSION_ITEMS = 5;
+const MAX_RECENT_MESSAGES_PER_SESSION = 12;
+const MAX_MESSAGE_CONTENT_CHARS = 280;
 
 type MaintenanceTriggerReason = 'init' | 'mutation' | 'periodic' | 'workspace-change' | 'manual';
 
@@ -53,6 +56,68 @@ export interface MemoryMaintenanceStatus {
   lastSummary: string;
   lastError: string | null;
   nextScheduledAt: string | null;
+}
+
+type RecentConversationSummary = {
+  sessionId: string;
+  title: string;
+  updatedAt: number;
+  contextType: string;
+  messageCount: number;
+  messages: Array<{
+    role: 'user' | 'assistant';
+    content: string;
+    timestamp: number;
+  }>;
+};
+
+function truncateText(value: string, maxChars: number): string {
+  const text = String(value || '').replace(/\s+/g, ' ').trim();
+  if (text.length <= maxChars) return text;
+  return `${text.slice(0, Math.max(0, maxChars - 1)).trim()}…`;
+}
+
+function parseSessionMetadata(session: ChatSession): Record<string, unknown> {
+  if (!session.metadata) return {};
+  try {
+    return JSON.parse(session.metadata) as Record<string, unknown>;
+  } catch {
+    return {};
+  }
+}
+
+function isUserOrAssistantMessage(message: ChatMessage): message is ChatMessage & { role: 'user' | 'assistant' } {
+  return message.role === 'user' || message.role === 'assistant';
+}
+
+function buildRecentConversationSummaries(): RecentConversationSummary[] {
+  const sessions = getChatSessions();
+  const preferred = sessions.filter((session) => {
+    const metadata = parseSessionMetadata(session);
+    return String(metadata.contextType || '').trim().toLowerCase() === 'redclaw';
+  });
+  const candidateSessions = (preferred.length > 0 ? preferred : sessions).slice(0, MAX_RECENT_SESSION_ITEMS);
+
+  return candidateSessions.map((session) => {
+    const metadata = parseSessionMetadata(session);
+    const messages = getChatMessages(session.id)
+      .filter(isUserOrAssistantMessage)
+      .slice(-MAX_RECENT_MESSAGES_PER_SESSION)
+      .map((message) => ({
+        role: message.role,
+        content: truncateText(message.content, MAX_MESSAGE_CONTENT_CHARS),
+        timestamp: message.timestamp,
+      }));
+
+    return {
+      sessionId: session.id,
+      title: String(session.title || 'Untitled'),
+      updatedAt: Number(session.updated_at || session.created_at || Date.now()),
+      contextType: String(metadata.contextType || 'unknown'),
+      messageCount: messages.length,
+      messages,
+    };
+  }).filter((item) => item.messageCount > 0);
 }
 
 function parseJsonResponse(raw: string): MaintenanceResponse {
@@ -102,6 +167,7 @@ function buildPromptPayload(params: {
   active: FileUserMemory[];
   archived: FileUserMemory[];
   history: MemoryHistoryEntry[];
+  recentConversations: RecentConversationSummary[];
 }): string {
   return loadAndRenderPrompt(MAINTENANCE_PROMPT_PATH, {
     trigger_reason: params.reason,
@@ -110,9 +176,11 @@ function buildPromptPayload(params: {
     active_memory_count: params.active.length,
     archived_memory_count: params.archived.length,
     history_count: params.history.length,
+    recent_conversations_count: params.recentConversations.length,
     active_memories_json: JSON.stringify(params.active.slice(0, MAX_ACTIVE_PROMPT_ITEMS), null, 2),
     archived_memories_json: JSON.stringify(params.archived.slice(0, MAX_ARCHIVED_PROMPT_ITEMS), null, 2),
     history_json: JSON.stringify(params.history.slice(0, MAX_HISTORY_PROMPT_ITEMS), null, 2),
+    recent_conversations_json: JSON.stringify(params.recentConversations, null, 2),
   }, 'You are a memory maintenance manager. Output strict JSON only.');
 }
 
@@ -281,6 +349,7 @@ export class MemoryMaintenanceService {
       const active = await listUserMemoriesFromFile();
       const archived = await listArchivedMemoriesFromFile();
       const history = await listMemoryHistoryFromFile();
+      const recentConversations = buildRecentConversationSummaries();
 
       const shouldRun = force
         || this.pendingMutations > 0
@@ -308,6 +377,7 @@ export class MemoryMaintenanceService {
         active,
         archived,
         history,
+        recentConversations,
       });
 
       const plan = await requestMaintenancePlan({

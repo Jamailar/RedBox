@@ -1,7 +1,7 @@
 import type { Dispatch, SetStateAction } from 'react';
-import { AlertCircle, Database, Download, FolderOpen, Info, RefreshCw, Save, Trash2 } from 'lucide-react';
+import { AlertCircle, Database, Download, FolderOpen, Info, RefreshCw, Save, Search, Trash2 } from 'lucide-react';
 import clsx from 'clsx';
-import type { McpServerConfig, MemoryHistoryEntry, MemoryMaintenanceStatus, UserMemory } from './shared';
+import type { McpServerConfig, MemoryHistoryEntry, MemoryMaintenanceStatus, MemorySearchResult, UserMemory } from './shared';
 
 type SettingsFormData = {
     workspace_dir: string;
@@ -95,6 +95,13 @@ interface MemorySettingsSectionProps {
     memoryHistory: MemoryHistoryEntry[];
     maintenanceStatus: MemoryMaintenanceStatus | null;
     onRunMaintenance: () => Promise<void>;
+    memorySearchQuery: string;
+    setMemorySearchQuery: Dispatch<SetStateAction<string>>;
+    includeArchivedInSearch: boolean;
+    setIncludeArchivedInSearch: Dispatch<SetStateAction<boolean>>;
+    memorySearchResults: MemorySearchResult[];
+    isMemorySearching: boolean;
+    onSearchMemories: () => Promise<void>;
     handleDeleteMemory: (id: string) => void;
 }
 
@@ -132,6 +139,13 @@ export function MemorySettingsSection({
     memoryHistory,
     maintenanceStatus,
     onRunMaintenance,
+    memorySearchQuery,
+    setMemorySearchQuery,
+    includeArchivedInSearch,
+    setIncludeArchivedInSearch,
+    memorySearchResults,
+    isMemorySearching,
+    onSearchMemories,
     handleDeleteMemory,
 }: MemorySettingsSectionProps) {
     return (
@@ -242,6 +256,79 @@ export function MemorySettingsSection({
                 {maintenanceStatus?.lastError && (
                     <div className="text-xs text-red-500 bg-red-500/5 border border-red-200 rounded p-3">
                         最近错误：{maintenanceStatus.lastError}
+                    </div>
+                )}
+            </div>
+
+            <div className="bg-surface-secondary/20 rounded-lg border border-border p-4 space-y-3">
+                <div className="flex items-center justify-between gap-3">
+                    <div>
+                        <h3 className="text-sm font-medium text-text-primary">记忆搜索</h3>
+                        <p className="text-[11px] text-text-tertiary mt-1">
+                            文档型检索，不使用向量。按内容、标签、类型和新近度综合排序。
+                        </p>
+                    </div>
+                    <label className="flex items-center gap-2 text-xs text-text-secondary">
+                        <input
+                            type="checkbox"
+                            checked={includeArchivedInSearch}
+                            onChange={(e) => setIncludeArchivedInSearch(e.target.checked)}
+                            className="rounded border-border"
+                        />
+                        包含归档
+                    </label>
+                </div>
+                <div className="flex gap-2">
+                    <div className="flex-1 relative">
+                        <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-text-tertiary" />
+                        <input
+                            type="text"
+                            value={memorySearchQuery}
+                            onChange={(e) => setMemorySearchQuery(e.target.value)}
+                            onKeyDown={(e) => {
+                                if (e.key === 'Enter') {
+                                    e.preventDefault();
+                                    void onSearchMemories();
+                                }
+                            }}
+                            placeholder="搜索记忆，例如：redclaw、用户偏好、封面..."
+                            className="w-full bg-surface-primary/60 border border-border rounded pl-10 pr-3 py-2 text-sm focus:outline-none focus:border-accent-primary"
+                        />
+                    </div>
+                    <button
+                        type="button"
+                        onClick={() => void onSearchMemories()}
+                        disabled={!memorySearchQuery.trim()}
+                        className="px-4 py-2 border border-border rounded text-xs font-medium text-text-primary hover:bg-surface-secondary disabled:opacity-50"
+                    >
+                        搜索
+                    </button>
+                </div>
+                {!memorySearchQuery.trim() ? (
+                    <div className="text-[11px] text-text-tertiary">输入关键词后执行检索。</div>
+                ) : isMemorySearching ? (
+                    <div className="text-[11px] text-text-tertiary">搜索中...</div>
+                ) : memorySearchResults.length === 0 ? (
+                    <div className="text-[11px] text-text-tertiary">没有命中结果。</div>
+                ) : (
+                    <div className="space-y-2">
+                        {memorySearchResults.slice(0, 12).map((memory) => (
+                            <div key={memory.id} className="p-3 bg-surface-primary/60 border border-border rounded-lg">
+                                <div className="flex items-center gap-2 flex-wrap mb-1">
+                                    <span className={clsx('px-1.5 py-0.5 rounded text-[10px] font-medium uppercase tracking-wider', memoryTypeTone(memory.type))}>
+                                        {memoryTypeLabel(memory.type)}
+                                    </span>
+                                    {memory.status === 'archived' && (
+                                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-orange-500/10 text-orange-600">已归档</span>
+                                    )}
+                                    <span className="text-[10px] text-text-tertiary">score {memory.score}</span>
+                                    {(memory.matchReasons || []).length > 0 && (
+                                        <span className="text-[10px] text-text-tertiary">{memory.matchReasons.join(' · ')}</span>
+                                    )}
+                                </div>
+                                <div className="text-sm text-text-secondary">{memory.content}</div>
+                            </div>
+                        ))}
                     </div>
                 )}
             </div>

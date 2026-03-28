@@ -10,6 +10,30 @@ export interface VideoEntry {
   subtitleFile?: string;
 }
 
+export interface ToolDiagnosticDescriptor {
+  name: string;
+  displayName: string;
+  description: string;
+  kind: string;
+  visibility: 'public' | 'developer' | 'internal';
+  contexts: string[];
+  availabilityStatus: 'available' | 'missing_context' | 'internal_only' | 'not_in_current_pack' | 'registration_error';
+  availabilityReason: string;
+}
+
+export interface ToolDiagnosticRunResult {
+  success: boolean;
+  mode: 'direct' | 'ai';
+  toolName: string;
+  request: unknown;
+  response?: unknown;
+  error?: string;
+  toolCallReturned?: boolean;
+  toolNameMatched?: boolean;
+  argumentsParsed?: boolean;
+  executionSucceeded?: boolean;
+}
+
 declare global {
   interface ChatSession {
     id: string;
@@ -28,8 +52,13 @@ declare global {
 
   interface Window {
     ipcRenderer: {
-      saveSettings: (settings: { api_endpoint: string; api_key: string; model_name: string; model_name_wander?: string; model_name_chatroom?: string; model_name_knowledge?: string; model_name_redclaw?: string; workspace_dir?: string; active_space_id?: string; role_mapping?: Record<string, string> | string; transcription_model?: string; transcription_endpoint?: string; transcription_key?: string; embedding_endpoint?: string; embedding_key?: string; embedding_model?: string; ai_sources_json?: string; default_ai_source_id?: string; image_provider?: string; image_endpoint?: string; image_api_key?: string; image_model?: string; image_provider_template?: string; image_aspect_ratio?: string; image_size?: string; image_quality?: string; mcp_servers_json?: string; redclaw_compact_target_tokens?: number; wander_deep_think_enabled?: boolean; chat_max_tokens_default?: number; chat_max_tokens_deepseek?: number }) => Promise<unknown>;
-      getSettings: () => Promise<{ api_endpoint: string; api_key: string; model_name: string; model_name_wander?: string; model_name_chatroom?: string; model_name_knowledge?: string; model_name_redclaw?: string; workspace_dir?: string; active_space_id?: string; role_mapping?: string; transcription_model?: string; transcription_endpoint?: string; transcription_key?: string; embedding_endpoint?: string; embedding_key?: string; embedding_model?: string; ai_sources_json?: string; default_ai_source_id?: string; image_provider?: string; image_endpoint?: string; image_api_key?: string; image_model?: string; image_provider_template?: string; image_aspect_ratio?: string; image_size?: string; image_quality?: string; mcp_servers_json?: string; redclaw_compact_target_tokens?: number; wander_deep_think_enabled?: boolean; chat_max_tokens_default?: number; chat_max_tokens_deepseek?: number } | undefined>;
+      saveSettings: (settings: { api_endpoint: string; api_key: string; model_name: string; model_name_wander?: string; model_name_chatroom?: string; model_name_knowledge?: string; model_name_redclaw?: string; workspace_dir?: string; active_space_id?: string; role_mapping?: Record<string, string> | string; transcription_model?: string; transcription_endpoint?: string; transcription_key?: string; embedding_endpoint?: string; embedding_key?: string; embedding_model?: string; ai_sources_json?: string; default_ai_source_id?: string; image_provider?: string; image_endpoint?: string; image_api_key?: string; image_model?: string; image_provider_template?: string; image_aspect_ratio?: string; image_size?: string; image_quality?: string; mcp_servers_json?: string; redclaw_compact_target_tokens?: number; wander_deep_think_enabled?: boolean; debug_log_enabled?: boolean; developer_mode_enabled?: boolean; developer_mode_unlocked_at?: string | null; chat_max_tokens_default?: number; chat_max_tokens_deepseek?: number }) => Promise<unknown>;
+      getSettings: () => Promise<{ api_endpoint: string; api_key: string; model_name: string; model_name_wander?: string; model_name_chatroom?: string; model_name_knowledge?: string; model_name_redclaw?: string; workspace_dir?: string; active_space_id?: string; role_mapping?: string; transcription_model?: string; transcription_endpoint?: string; transcription_key?: string; embedding_endpoint?: string; embedding_key?: string; embedding_model?: string; ai_sources_json?: string; default_ai_source_id?: string; image_provider?: string; image_endpoint?: string; image_api_key?: string; image_model?: string; image_provider_template?: string; image_aspect_ratio?: string; image_size?: string; image_quality?: string; mcp_servers_json?: string; redclaw_compact_target_tokens?: number; wander_deep_think_enabled?: boolean; debug_log_enabled?: boolean; developer_mode_enabled?: boolean; developer_mode_unlocked_at?: string | null; chat_max_tokens_default?: number; chat_max_tokens_deepseek?: number } | undefined>;
+      debug: {
+        getStatus: () => Promise<{ enabled: boolean; logDirectory: string }>;
+        getRecent: (limit?: number) => Promise<{ lines: string[] }>;
+        openLogDir: () => Promise<{ success: boolean; error?: string; path: string }>;
+      };
       getAppVersion: () => Promise<string>;
       checkAppUpdate: (force?: boolean) => Promise<{ success: boolean; hasUpdate: boolean; throttled?: boolean; inFlight?: boolean; message?: string; notice?: { currentVersion: string; latestVersion: string; htmlUrl: string; name: string; publishedAt: string; body: string } }>;
       openAppReleasePage: (url?: string) => Promise<{ success: boolean; error?: string }>;
@@ -40,6 +69,11 @@ declare global {
       cancelChat: () => void;
       confirmTool: (callId: string, confirmed: boolean) => void;
       listSkills: () => Promise<SkillDefinition[]>;
+      toolDiagnostics: {
+        list: () => Promise<ToolDiagnosticDescriptor[]>;
+        runDirect: (toolName: string) => Promise<ToolDiagnosticRunResult>;
+        runAi: (toolName: string) => Promise<ToolDiagnosticRunResult>;
+      };
       on: (channel: string, func: (...args: any[]) => void) => void;
       off: (channel: string, func: (...args: any[]) => void) => void;
       removeAllListeners: (channel: string) => void;

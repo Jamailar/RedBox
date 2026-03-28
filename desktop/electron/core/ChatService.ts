@@ -86,7 +86,7 @@ export class ChatService extends EventEmitter {
         this.config = config;
 
         this.toolRegistry = new ToolRegistry();
-        this.toolRegistry.registerTools(createBuiltinTools(this));
+        this.toolRegistry.registerTools(createBuiltinTools({ chatService: this, pack: 'full' }));
 
         this.toolExecutor = new ToolExecutor(
             this.toolRegistry,
@@ -316,4 +316,3 @@ export async function createChatService(config: ChatServiceConfig): Promise<Chat
     await service.initialize();
     return service;
 }
-

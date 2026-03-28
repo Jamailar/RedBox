@@ -1,10 +1,19 @@
 import type { Dispatch, SetStateAction } from 'react';
 import { AlertCircle, Database, Download, FolderOpen, Info, RefreshCw, Save, Search, Trash2 } from 'lucide-react';
 import clsx from 'clsx';
-import type { McpServerConfig, MemoryHistoryEntry, MemoryMaintenanceStatus, MemorySearchResult, UserMemory } from './shared';
+import type {
+    McpServerConfig,
+    MemoryHistoryEntry,
+    MemoryMaintenanceStatus,
+    MemorySearchResult,
+    ToolDiagnosticDescriptor,
+    ToolDiagnosticRunResult,
+    UserMemory,
+} from './shared';
 
 type SettingsFormData = {
     workspace_dir: string;
+    debug_log_enabled: boolean;
 };
 
 type YtdlpStatus = {
@@ -23,9 +32,23 @@ interface GeneralSettingsSectionProps {
     appVersion: string;
     formData: SettingsFormData;
     setFormData: Dispatch<SetStateAction<any>>;
+    recentDebugLogs: string[];
+    isDebugLogsLoading: boolean;
+    handleRefreshDebugLogs: () => Promise<void>;
+    handleOpenDebugLogDir: () => Promise<void>;
+    handleVersionTap: () => void;
 }
 
-export function GeneralSettingsSection({ appVersion, formData, setFormData }: GeneralSettingsSectionProps) {
+export function GeneralSettingsSection({
+    appVersion,
+    formData,
+    setFormData,
+    recentDebugLogs,
+    isDebugLogsLoading,
+    handleRefreshDebugLogs,
+    handleOpenDebugLogDir,
+    handleVersionTap,
+}: GeneralSettingsSectionProps) {
     return (
         <section className="space-y-6">
             <h2 className="text-lg font-medium text-text-primary mb-6">常规设置</h2>
@@ -38,7 +61,14 @@ export function GeneralSettingsSection({ appVersion, formData, setFormData }: Ge
                             红盒子 RedBox
                         </h3>
                         <p className="text-xs text-text-tertiary mt-1">
-                            当前版本: <span className="font-mono">{appVersion || '加载中...'}</span>
+                            当前版本:{' '}
+                            <button
+                                type="button"
+                                onClick={handleVersionTap}
+                                className="font-mono hover:text-text-primary transition-colors"
+                            >
+                                {appVersion || '加载中...'}
+                            </button>
                         </p>
                         <p className="text-xs text-text-tertiary mt-1">
                             自动更新已关闭，请前往 GitHub Releases 手动下载新版本。
@@ -78,6 +108,53 @@ export function GeneralSettingsSection({ appVersion, formData, setFormData }: Ge
                 <p className="text-[10px] text-text-tertiary mt-2">
                     目录结构：<code className="bg-surface-secondary px-1 rounded">/skills/</code> 技能文件 · <code className="bg-surface-secondary px-1 rounded">/knowledge/notes/</code> 笔记
                 </p>
+            </div>
+            <div className="bg-surface-secondary/30 rounded-lg border border-border p-4 space-y-4">
+                <div className="flex items-start justify-between gap-4">
+                    <div>
+                        <h3 className="text-sm font-medium text-text-primary">调试日志</h3>
+                        <p className="text-xs text-text-tertiary mt-1">
+                            开启后会把主进程日志、聊天日志和工具诊断日志写入本地日志文件，便于追踪 RedClaw 工具调用失败。
+                        </p>
+                    </div>
+                    <button
+                        type="button"
+                        onClick={() => setFormData((prev: any) => ({ ...prev, debug_log_enabled: !prev.debug_log_enabled }))}
+                        className={clsx(
+                            'relative inline-flex h-7 w-12 items-center rounded-full transition-colors',
+                            formData.debug_log_enabled ? 'bg-[#34C759]' : 'bg-gray-300'
+                        )}
+                    >
+                        <span
+                            className={clsx(
+                                'inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform',
+                                formData.debug_log_enabled ? 'translate-x-6' : 'translate-x-1'
+                            )}
+                        />
+                    </button>
+                </div>
+                <div className="flex items-center gap-2">
+                    <button
+                        type="button"
+                        onClick={() => void handleRefreshDebugLogs()}
+                        className="px-3 py-1.5 border border-border rounded text-xs hover:bg-surface-secondary transition-colors"
+                    >
+                        {isDebugLogsLoading ? '刷新中...' : '刷新日志'}
+                    </button>
+                    <button
+                        type="button"
+                        onClick={() => void handleOpenDebugLogDir()}
+                        className="px-3 py-1.5 border border-border rounded text-xs hover:bg-surface-secondary transition-colors"
+                    >
+                        打开日志目录
+                    </button>
+                </div>
+                <div className="rounded-lg border border-border bg-surface-primary/60 p-3">
+                    <div className="text-[11px] text-text-tertiary mb-2">最近日志预览</div>
+                    <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-all text-[11px] leading-5 text-text-secondary">
+                        {recentDebugLogs.length ? recentDebugLogs.join('\n') : '暂无日志。开启后保存设置并重试相关操作。'}
+                    </pre>
+                </div>
             </div>
         </section>
     );
@@ -541,6 +618,15 @@ interface ToolsSettingsSectionProps {
     handleUpdateYtdlp: () => Promise<void>;
     isInstallingTool: boolean;
     installProgress: number;
+    showDeveloperDiagnostics: boolean;
+    toolDiagnostics: ToolDiagnosticDescriptor[];
+    toolDiagnosticResults: Record<string, ToolDiagnosticRunResult | undefined>;
+    toolDiagnosticRunning: Record<string, 'direct' | 'ai' | undefined>;
+    handleRunDirectToolDiagnostic: (toolName: string) => Promise<void>;
+    handleRunAiToolDiagnostic: (toolName: string) => Promise<void>;
+    handleRefreshToolDiagnostics: () => Promise<void>;
+    handleRunAllDirectToolDiagnostics: () => Promise<void>;
+    handleRunAllAiToolDiagnostics: () => Promise<void>;
 }
 
 export function ToolsSettingsSection({
@@ -563,7 +649,46 @@ export function ToolsSettingsSection({
     handleUpdateYtdlp,
     isInstallingTool,
     installProgress,
+    showDeveloperDiagnostics,
+    toolDiagnostics,
+    toolDiagnosticResults,
+    toolDiagnosticRunning,
+    handleRunDirectToolDiagnostic,
+    handleRunAiToolDiagnostic,
+    handleRefreshToolDiagnostics,
+    handleRunAllDirectToolDiagnostics,
+    handleRunAllAiToolDiagnostics,
 }: ToolsSettingsSectionProps) {
+    const availabilityTone = (tool: ToolDiagnosticDescriptor) => {
+        switch (tool.availabilityStatus) {
+            case 'available':
+                return 'bg-green-500/10 text-green-600';
+            case 'missing_context':
+                return 'bg-amber-500/10 text-amber-600';
+            case 'internal_only':
+                return 'bg-purple-500/10 text-purple-600';
+            case 'not_in_current_pack':
+                return 'bg-slate-500/10 text-slate-600';
+            default:
+                return 'bg-red-500/10 text-red-600';
+        }
+    };
+
+    const availabilityLabel = (tool: ToolDiagnosticDescriptor) => {
+        switch (tool.availabilityStatus) {
+            case 'available':
+                return '可用';
+            case 'missing_context':
+                return '当前上下文不可用';
+            case 'internal_only':
+                return '内部工具';
+            case 'not_in_current_pack':
+                return '当前 pack 未暴露';
+            default:
+                return '注册异常';
+        }
+    };
+
     return (
         <section className="space-y-6">
             <h2 className="text-lg font-medium text-text-primary mb-6">外部工具管理</h2>
@@ -801,6 +926,126 @@ export function ToolsSettingsSection({
                     </div>
                 )}
             </div>
+
+            {showDeveloperDiagnostics && (
+            <div className="bg-surface-secondary/30 rounded-lg border border-border p-4 space-y-4">
+                <div className="flex items-start justify-between gap-3">
+                    <div>
+                        <h3 className="text-sm font-medium text-text-primary">开发者工具调用诊断</h3>
+                        <p className="text-xs text-text-tertiary mt-1">
+                            直接测试用于验证工具本身是否可用，AI 调用测试用于验证模型是否真的会正确发起 tool_call。
+                        </p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                        <button
+                            type="button"
+                            onClick={() => void handleRefreshToolDiagnostics()}
+                            className="px-3 py-1.5 border border-border rounded text-xs hover:bg-surface-secondary transition-colors"
+                        >
+                            刷新列表
+                        </button>
+                        <button
+                            type="button"
+                            onClick={() => void handleRunAllDirectToolDiagnostics()}
+                            className="px-3 py-1.5 border border-border rounded text-xs hover:bg-surface-secondary transition-colors"
+                        >
+                            全部直接测试
+                        </button>
+                        <button
+                            type="button"
+                            onClick={() => void handleRunAllAiToolDiagnostics()}
+                            className="px-3 py-1.5 border border-border rounded text-xs hover:bg-surface-secondary transition-colors"
+                        >
+                            全部 AI 测试
+                        </button>
+                    </div>
+                </div>
+
+                {toolDiagnostics.length === 0 ? (
+                    <div className="text-xs text-text-tertiary border border-dashed border-border rounded-lg px-3 py-5 text-center">
+                        暂无可诊断工具。
+                    </div>
+                ) : (
+                    <div className="space-y-3">
+                        {toolDiagnostics.map((tool) => {
+                            const result = toolDiagnosticResults[tool.name];
+                            const runningMode = toolDiagnosticRunning[tool.name];
+                            const isRunnable = tool.availabilityStatus === 'available';
+                            return (
+                                <div key={tool.name} className="rounded-lg border border-border bg-surface-primary/50 p-3 space-y-3">
+                                    <div className="flex items-start justify-between gap-3">
+                                        <div className="min-w-0">
+                                            <div className="flex items-center gap-2 flex-wrap">
+                                                <span className="text-sm font-medium text-text-primary">{tool.displayName}</span>
+                                                <span className="text-[10px] px-1.5 py-0.5 rounded bg-surface-secondary border border-border text-text-tertiary">
+                                                    {tool.name}
+                                                </span>
+                                                <span className="text-[10px] px-1.5 py-0.5 rounded bg-surface-secondary border border-border text-text-tertiary">
+                                                    {tool.kind}
+                                                </span>
+                                                <span className={clsx('text-[10px] px-1.5 py-0.5 rounded', availabilityTone(tool))}>
+                                                    {availabilityLabel(tool)}
+                                                </span>
+                                                <span className="text-[10px] px-1.5 py-0.5 rounded bg-surface-secondary border border-border text-text-tertiary">
+                                                    {tool.visibility}
+                                                </span>
+                                            </div>
+                                            <p className="text-xs text-text-tertiary mt-1">{tool.description || '暂无描述'}</p>
+                                            <p className="text-[11px] text-text-tertiary mt-1">{tool.availabilityReason}</p>
+                                        </div>
+                                        <div className="flex items-center gap-2 shrink-0">
+                                            <button
+                                                type="button"
+                                                onClick={() => void handleRunDirectToolDiagnostic(tool.name)}
+                                                disabled={!isRunnable || Boolean(runningMode)}
+                                                className="px-3 py-1.5 border border-border rounded text-xs hover:bg-surface-secondary disabled:opacity-50"
+                                            >
+                                                {runningMode === 'direct' ? '直接测试中...' : '直接测试'}
+                                            </button>
+                                            <button
+                                                type="button"
+                                                onClick={() => void handleRunAiToolDiagnostic(tool.name)}
+                                                disabled={!isRunnable || Boolean(runningMode)}
+                                                className="px-3 py-1.5 border border-border rounded text-xs hover:bg-surface-secondary disabled:opacity-50"
+                                            >
+                                                {runningMode === 'ai' ? 'AI 测试中...' : 'AI 调用测试'}
+                                            </button>
+                                        </div>
+                                    </div>
+
+                                    {result && (
+                                        <div className={clsx(
+                                            'rounded border p-3 text-xs space-y-2',
+                                            result.success
+                                                ? 'border-green-200 bg-green-500/5'
+                                                : 'border-red-200 bg-red-500/5'
+                                        )}>
+                                            <div className="flex items-center gap-2">
+                                                <span className={clsx(
+                                                    'px-1.5 py-0.5 rounded text-[10px] font-medium',
+                                                    result.success ? 'bg-green-500/10 text-green-600' : 'bg-red-500/10 text-red-600'
+                                                )}>
+                                                    {result.mode === 'direct' ? '直接测试' : 'AI 调用测试'}
+                                                </span>
+                                                <span className="text-text-secondary">
+                                                    {result.success ? '成功' : (result.error || '失败')}
+                                                </span>
+                                            </div>
+                                            <details>
+                                                <summary className="cursor-pointer text-text-secondary">查看详情</summary>
+                                                <pre className="mt-2 max-h-56 overflow-auto whitespace-pre-wrap break-all rounded bg-surface-primary/70 p-3 text-[11px] leading-5 text-text-secondary">
+                                                    {JSON.stringify(result, null, 2)}
+                                                </pre>
+                                            </details>
+                                        </div>
+                                    )}
+                                </div>
+                            );
+                        })}
+                    </div>
+                )}
+            </div>
+            )}
         </section>
     );
 }
@@ -857,6 +1102,7 @@ export function ExperimentalSettingsSection({ flags, updateFlag }: ExperimentalS
                     </div>
                 </div>
             </div>
+
         </section>
     );
 }

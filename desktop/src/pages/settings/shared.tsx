@@ -54,6 +54,30 @@ export interface MemoryMaintenanceStatus {
   nextScheduledAt: string | null;
 }
 
+export interface ToolDiagnosticDescriptor {
+  name: string;
+  displayName: string;
+  description: string;
+  kind: string;
+  visibility: 'public' | 'developer' | 'internal';
+  contexts: string[];
+  availabilityStatus: 'available' | 'missing_context' | 'internal_only' | 'not_in_current_pack' | 'registration_error';
+  availabilityReason: string;
+}
+
+export interface ToolDiagnosticRunResult {
+  success: boolean;
+  mode: 'direct' | 'ai';
+  toolName: string;
+  request: unknown;
+  response?: unknown;
+  error?: string;
+  toolCallReturned?: boolean;
+  toolNameMatched?: boolean;
+  argumentsParsed?: boolean;
+  executionSucceeded?: boolean;
+}
+
 export interface OfficialModelInfo {
   id: string;
   capability?: string;

@@ -39,6 +39,11 @@ contextBridge.exposeInMainWorld('ipcRenderer', {
   // Database / Settings
   saveSettings: (settings: unknown) => ipcRenderer.invoke('db:save-settings', settings),
   getSettings: () => ipcRenderer.invoke('db:get-settings'),
+  debug: {
+    getStatus: () => ipcRenderer.invoke('debug:get-status'),
+    getRecent: (limit?: number) => ipcRenderer.invoke('debug:get-recent', { limit }),
+    openLogDir: () => ipcRenderer.invoke('debug:open-log-dir'),
+  },
   getAppVersion: () => ipcRenderer.invoke('app:get-version'),
   checkAppUpdate: (force = false) => ipcRenderer.invoke('app:check-update', { force }),
   openAppReleasePage: (url?: string) => ipcRenderer.invoke('app:open-release-page', { url }),
@@ -123,6 +128,11 @@ contextBridge.exposeInMainWorld('ipcRenderer', {
 
   // Skills
   listSkills: () => ipcRenderer.invoke('skills:list'),
+  toolDiagnostics: {
+    list: () => ipcRenderer.invoke('tools:diagnostics:list'),
+    runDirect: (toolName: string) => ipcRenderer.invoke('tools:diagnostics:run-direct', { toolName }),
+    runAi: (toolName: string) => ipcRenderer.invoke('tools:diagnostics:run-ai', { toolName }),
+  },
   mcp: {
     list: () => ipcRenderer.invoke('mcp:list'),
     save: (servers: unknown[]) => ipcRenderer.invoke('mcp:save', { servers }),

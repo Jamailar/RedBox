@@ -19,6 +19,8 @@ import {
   type MemoryMaintenanceStatus,
   type MemorySearchResult,
   type McpServerConfig,
+  type ToolDiagnosticDescriptor,
+  type ToolDiagnosticRunResult,
   type UserMemory,
   AiPresetLogo,
   AiPresetSelect,
@@ -58,6 +60,8 @@ import {
 const MIN_CHAT_MAX_TOKENS = 1024;
 const DEFAULT_CHAT_MAX_TOKENS = 262144;
 const DEFAULT_CHAT_MAX_TOKENS_DEEPSEEK = 131072;
+const DEVELOPER_MODE_UNLOCK_TAP_COUNT = 7;
+const DEVELOPER_MODE_TTL_MS = 24 * 60 * 60 * 1000;
 
 const sanitizeChatMaxTokensInput = (value: string, fallback: number): string => {
   const parsed = Number(value);
@@ -97,6 +101,9 @@ export function Settings() {
     chat_max_tokens_default: String(DEFAULT_CHAT_MAX_TOKENS),
     chat_max_tokens_deepseek: String(DEFAULT_CHAT_MAX_TOKENS_DEEPSEEK),
     wander_deep_think_enabled: false,
+    debug_log_enabled: false,
+    developer_mode_enabled: false,
+    developer_mode_unlocked_at: '',
   });
   const [aiSources, setAiSources] = useState<AiSourceConfig[]>([]);
   const [defaultAiSourceId, setDefaultAiSourceId] = useState('');
@@ -119,8 +126,14 @@ export function Settings() {
   const [imageAvailableModels, setImageAvailableModels] = useState<Array<{ id: string; source: 'remote' | 'suggested' }>>([]);
   const [isFetchingImageModels, setIsFetchingImageModels] = useState(false);
   const [imageModelStatus, setImageModelStatus] = useState('');
+  const [recentDebugLogs, setRecentDebugLogs] = useState<string[]>([]);
+  const [isDebugLogsLoading, setIsDebugLogsLoading] = useState(false);
+  const [toolDiagnostics, setToolDiagnostics] = useState<ToolDiagnosticDescriptor[]>([]);
+  const [toolDiagnosticResults, setToolDiagnosticResults] = useState<Record<string, ToolDiagnosticRunResult | undefined>>({});
+  const [toolDiagnosticRunning, setToolDiagnosticRunning] = useState<Record<string, 'direct' | 'ai' | undefined>>({});
   const [status, setStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [showScopedModelOverrides, setShowScopedModelOverrides] = useState(false);
+  const [developerVersionTapCount, setDeveloperVersionTapCount] = useState(0);
   const fetchModelsRequestRef = useRef(0);
   const fetchImageModelsRequestRef = useRef(0);
 
@@ -467,6 +480,12 @@ export function Settings() {
       memoryPollTimer = window.setInterval(() => {
         void loadMemories();
       }, 15000);
+    }
+    if (activeTab === 'general') {
+      void loadRecentDebugLogs();
+    }
+    if (activeTab === 'tools') {
+      void loadToolDiagnostics();
     }
 
     const handleProgress = (_: unknown, progress: number) => {
@@ -1117,6 +1136,108 @@ export function Settings() {
     }
   };
 
+  const loadRecentDebugLogs = async () => {
+    setIsDebugLogsLoading(true);
+    try {
+      const result = await window.ipcRenderer.debug.getRecent(120);
+      setRecentDebugLogs(Array.isArray(result?.lines) ? result.lines : []);
+    } catch (e) {
+      console.error('Failed to load debug logs', e);
+      setRecentDebugLogs([]);
+    } finally {
+      setIsDebugLogsLoading(false);
+    }
+  };
+
+  const openDebugLogDirectory = async () => {
+    const result = await window.ipcRenderer.debug.openLogDir();
+    if (!result?.success && result?.error) {
+      alert(`打开日志目录失败：${result.error}`);
+    }
+  };
+
+  const loadToolDiagnostics = async () => {
+    try {
+      const result = await window.ipcRenderer.toolDiagnostics.list();
+      setToolDiagnostics(Array.isArray(result) ? result : []);
+    } catch (e) {
+      console.error('Failed to load tool diagnostics', e);
+      setToolDiagnostics([]);
+    }
+  };
+
+  const runToolDiagnostic = async (toolName: string, mode: 'direct' | 'ai') => {
+    setToolDiagnosticRunning((prev) => ({ ...prev, [toolName]: mode }));
+    try {
+      const result = mode === 'direct'
+        ? await window.ipcRenderer.toolDiagnostics.runDirect(toolName)
+        : await window.ipcRenderer.toolDiagnostics.runAi(toolName);
+      setToolDiagnosticResults((prev) => ({ ...prev, [toolName]: result }));
+      await loadRecentDebugLogs();
+    } catch (e) {
+      const errorMessage = e instanceof Error ? e.message : String(e);
+      setToolDiagnosticResults((prev) => ({
+        ...prev,
+        [toolName]: {
+          success: false,
+          mode,
+          toolName,
+          request: null,
+          error: errorMessage,
+        },
+      }));
+    } finally {
+      setToolDiagnosticRunning((prev) => ({ ...prev, [toolName]: undefined }));
+    }
+  };
+
+  const runAllToolDiagnostics = async (mode: 'direct' | 'ai') => {
+    const candidates = toolDiagnostics.filter((tool) => tool.availabilityStatus === 'available');
+    for (const tool of candidates) {
+      // eslint-disable-next-line no-await-in-loop
+      await runToolDiagnostic(tool.name, mode);
+    }
+  };
+
+  const persistDeveloperModeState = useCallback(async (enabled: boolean, unlockedAt: string | null) => {
+    await window.ipcRenderer.saveSettings({
+      developer_mode_enabled: enabled,
+      developer_mode_unlocked_at: unlockedAt,
+    } as any);
+  }, []);
+
+  const expireDeveloperMode = useCallback(async () => {
+    setFormData((prev) => ({
+      ...prev,
+      developer_mode_enabled: false,
+      developer_mode_unlocked_at: '',
+    }));
+    try {
+      await persistDeveloperModeState(false, null);
+    } catch (error) {
+      console.error('Failed to persist developer mode expiration', error);
+    }
+  }, [persistDeveloperModeState]);
+
+  const handleVersionTap = useCallback(() => {
+    setDeveloperVersionTapCount((prev) => {
+      const next = prev + 1;
+      if (next < DEVELOPER_MODE_UNLOCK_TAP_COUNT) {
+        return next;
+      }
+
+      const unlockedAt = new Date().toISOString();
+      setFormData((current) => ({
+        ...current,
+        developer_mode_enabled: true,
+        developer_mode_unlocked_at: unlockedAt,
+      }));
+      void persistDeveloperModeState(true, unlockedAt);
+      window.alert('开发者模式已开启（24 小时内有效）');
+      return 0;
+    });
+  }, [persistDeveloperModeState]);
+
   const loadSettings = async () => {
     try {
       const settings = await window.ipcRenderer.getSettings();
@@ -1144,6 +1265,11 @@ export function Settings() {
           ? loadedDefaultId
           : sourceList[0].id;
         const resolvedDefaultSource = sourceList.find((source) => source.id === normalizedDefaultId) || sourceList[0];
+        const unlockedAt = String(settings.developer_mode_unlocked_at || '').trim();
+        const unlockedAtMs = unlockedAt ? Date.parse(unlockedAt) : NaN;
+        const developerModeEnabled = Boolean(settings.developer_mode_enabled)
+          && Number.isFinite(unlockedAtMs)
+          && (Date.now() - unlockedAtMs) < DEVELOPER_MODE_TTL_MS;
 
         setAiSources(sourceList);
         setDefaultAiSourceId(normalizedDefaultId);
@@ -1195,7 +1321,14 @@ export function Settings() {
           chat_max_tokens_default: sanitizeChatMaxTokensInput(String(settings.chat_max_tokens_default || DEFAULT_CHAT_MAX_TOKENS), DEFAULT_CHAT_MAX_TOKENS),
           chat_max_tokens_deepseek: sanitizeChatMaxTokensInput(String(settings.chat_max_tokens_deepseek || DEFAULT_CHAT_MAX_TOKENS_DEEPSEEK), DEFAULT_CHAT_MAX_TOKENS_DEEPSEEK),
           wander_deep_think_enabled: Boolean(settings.wander_deep_think_enabled),
+          debug_log_enabled: Boolean(settings.debug_log_enabled),
+          developer_mode_enabled: developerModeEnabled,
+          developer_mode_unlocked_at: developerModeEnabled ? unlockedAt : '',
         });
+
+        if (Boolean(settings.developer_mode_enabled) && !developerModeEnabled) {
+          void persistDeveloperModeState(false, null);
+        }
       } else {
         const fallback = createAiSourceFromPreset(DEFAULT_AI_PRESET_ID);
         setAiSources([fallback]);
@@ -1213,6 +1346,26 @@ export function Settings() {
   const reloadCustomAiSettings = useCallback(async () => {
     await loadSettings();
   }, []);
+
+  useEffect(() => {
+    if (!formData.developer_mode_enabled || !formData.developer_mode_unlocked_at) {
+      return;
+    }
+    const unlockedAtMs = Date.parse(formData.developer_mode_unlocked_at);
+    if (!Number.isFinite(unlockedAtMs)) {
+      void expireDeveloperMode();
+      return;
+    }
+    const remaining = DEVELOPER_MODE_TTL_MS - (Date.now() - unlockedAtMs);
+    if (remaining <= 0) {
+      void expireDeveloperMode();
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      void expireDeveloperMode();
+    }, remaining);
+    return () => window.clearTimeout(timer);
+  }, [expireDeveloperMode, formData.developer_mode_enabled, formData.developer_mode_unlocked_at]);
 
   const checkTools = async () => {
     try {
@@ -1361,9 +1514,17 @@ export function Settings() {
         default_ai_source_id: resolvedDefaultSourceId || defaultSource?.id || '',
         mcp_servers_json: JSON.stringify(mcpServers),
         redclaw_compact_target_tokens: compactTargetTokens,
+        debug_log_enabled: Boolean(formData.debug_log_enabled),
+        developer_mode_enabled: Boolean(formData.developer_mode_enabled),
+        developer_mode_unlocked_at: formData.developer_mode_enabled
+          ? (formData.developer_mode_unlocked_at || new Date().toISOString())
+          : null,
         chat_max_tokens_default: chatMaxTokensDefault,
         chat_max_tokens_deepseek: chatMaxTokensDeepseek,
       });
+      if (formData.debug_log_enabled) {
+        await loadRecentDebugLogs();
+      }
       setStatus('saved');
       setTimeout(() => setStatus('idle'), 2000);
     } catch (e) {
@@ -1416,6 +1577,11 @@ export function Settings() {
                 appVersion={appVersion}
                 formData={formData}
                 setFormData={setFormData}
+                recentDebugLogs={recentDebugLogs}
+                isDebugLogsLoading={isDebugLogsLoading}
+                handleRefreshDebugLogs={loadRecentDebugLogs}
+                handleOpenDebugLogDir={openDebugLogDirectory}
+                handleVersionTap={handleVersionTap}
               />
             )}
 
@@ -2139,6 +2305,15 @@ export function Settings() {
                 handleUpdateYtdlp={handleUpdateYtdlp}
                 isInstallingTool={isInstallingTool}
                 installProgress={installProgress}
+                showDeveloperDiagnostics={Boolean(formData.developer_mode_enabled)}
+                toolDiagnostics={toolDiagnostics}
+                toolDiagnosticResults={toolDiagnosticResults}
+                toolDiagnosticRunning={toolDiagnosticRunning}
+                handleRunDirectToolDiagnostic={(toolName) => runToolDiagnostic(toolName, 'direct')}
+                handleRunAiToolDiagnostic={(toolName) => runToolDiagnostic(toolName, 'ai')}
+                handleRefreshToolDiagnostics={loadToolDiagnostics}
+                handleRunAllDirectToolDiagnostics={() => runAllToolDiagnostics('direct')}
+                handleRunAllAiToolDiagnostics={() => runAllToolDiagnostics('ai')}
               />
             )}
 

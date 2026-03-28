@@ -62,6 +62,9 @@ const initDb = () => {
       mcp_servers_json TEXT,
       redclaw_compact_target_tokens INTEGER,
       wander_deep_think_enabled INTEGER,
+      debug_log_enabled INTEGER,
+      developer_mode_enabled INTEGER,
+      developer_mode_unlocked_at TEXT,
       chat_max_tokens_default INTEGER,
       chat_max_tokens_deepseek INTEGER
     );
@@ -237,6 +240,15 @@ const initDb = () => {
     db.exec(`ALTER TABLE settings ADD COLUMN wander_deep_think_enabled INTEGER;`);
   } catch { /* Column already exists */ }
   try {
+    db.exec(`ALTER TABLE settings ADD COLUMN debug_log_enabled INTEGER;`);
+  } catch { /* Column already exists */ }
+  try {
+    db.exec(`ALTER TABLE settings ADD COLUMN developer_mode_enabled INTEGER;`);
+  } catch { /* Column already exists */ }
+  try {
+    db.exec(`ALTER TABLE settings ADD COLUMN developer_mode_unlocked_at TEXT;`);
+  } catch { /* Column already exists */ }
+  try {
     db.exec(`ALTER TABLE settings ADD COLUMN chat_max_tokens_default INTEGER;`);
   } catch { /* Column already exists */ }
   try {
@@ -362,12 +374,15 @@ export const saveSettings = (settings: {
   mcp_servers_json?: string;
   redclaw_compact_target_tokens?: number;
   wander_deep_think_enabled?: boolean;
+  debug_log_enabled?: boolean;
+  developer_mode_enabled?: boolean;
+  developer_mode_unlocked_at?: string | null;
   chat_max_tokens_default?: number;
   chat_max_tokens_deepseek?: number;
 }) => {
   const stmt = db.prepare(`
-    INSERT INTO settings (id, api_endpoint, api_key, model_name, model_name_wander, model_name_chatroom, model_name_knowledge, model_name_redclaw, role_mapping, workspace_dir, active_space_id, transcription_model, transcription_endpoint, transcription_key, embedding_endpoint, embedding_key, embedding_model, ai_sources_json, default_ai_source_id, image_provider, image_endpoint, image_api_key, image_model, image_provider_template, image_aspect_ratio, image_size, image_quality, mcp_servers_json, redclaw_compact_target_tokens, wander_deep_think_enabled, chat_max_tokens_default, chat_max_tokens_deepseek)
-    VALUES (1, @api_endpoint, @api_key, @model_name, @model_name_wander, @model_name_chatroom, @model_name_knowledge, @model_name_redclaw, @role_mapping, @workspace_dir, @active_space_id, @transcription_model, @transcription_endpoint, @transcription_key, @embedding_endpoint, @embedding_key, @embedding_model, @ai_sources_json, @default_ai_source_id, @image_provider, @image_endpoint, @image_api_key, @image_model, @image_provider_template, @image_aspect_ratio, @image_size, @image_quality, @mcp_servers_json, @redclaw_compact_target_tokens, @wander_deep_think_enabled, @chat_max_tokens_default, @chat_max_tokens_deepseek)
+    INSERT INTO settings (id, api_endpoint, api_key, model_name, model_name_wander, model_name_chatroom, model_name_knowledge, model_name_redclaw, role_mapping, workspace_dir, active_space_id, transcription_model, transcription_endpoint, transcription_key, embedding_endpoint, embedding_key, embedding_model, ai_sources_json, default_ai_source_id, image_provider, image_endpoint, image_api_key, image_model, image_provider_template, image_aspect_ratio, image_size, image_quality, mcp_servers_json, redclaw_compact_target_tokens, wander_deep_think_enabled, debug_log_enabled, developer_mode_enabled, developer_mode_unlocked_at, chat_max_tokens_default, chat_max_tokens_deepseek)
+    VALUES (1, @api_endpoint, @api_key, @model_name, @model_name_wander, @model_name_chatroom, @model_name_knowledge, @model_name_redclaw, @role_mapping, @workspace_dir, @active_space_id, @transcription_model, @transcription_endpoint, @transcription_key, @embedding_endpoint, @embedding_key, @embedding_model, @ai_sources_json, @default_ai_source_id, @image_provider, @image_endpoint, @image_api_key, @image_model, @image_provider_template, @image_aspect_ratio, @image_size, @image_quality, @mcp_servers_json, @redclaw_compact_target_tokens, @wander_deep_think_enabled, @debug_log_enabled, @developer_mode_enabled, @developer_mode_unlocked_at, @chat_max_tokens_default, @chat_max_tokens_deepseek)
     ON CONFLICT(id) DO UPDATE SET
       api_endpoint = @api_endpoint,
       api_key = @api_key,
@@ -398,6 +413,9 @@ export const saveSettings = (settings: {
       mcp_servers_json = @mcp_servers_json,
       redclaw_compact_target_tokens = @redclaw_compact_target_tokens,
       wander_deep_think_enabled = @wander_deep_think_enabled,
+      debug_log_enabled = @debug_log_enabled,
+      developer_mode_enabled = @developer_mode_enabled,
+      developer_mode_unlocked_at = @developer_mode_unlocked_at,
       chat_max_tokens_default = @chat_max_tokens_default,
       chat_max_tokens_deepseek = @chat_max_tokens_deepseek
   `);
@@ -412,6 +430,9 @@ export const saveSettings = (settings: {
     mcp_servers_json?: string;
     redclaw_compact_target_tokens?: number;
     wander_deep_think_enabled?: boolean;
+    debug_log_enabled?: boolean;
+    developer_mode_enabled?: boolean;
+    developer_mode_unlocked_at?: string | null;
     chat_max_tokens_default?: number;
     chat_max_tokens_deepseek?: number;
   } | undefined;
@@ -449,6 +470,15 @@ export const saveSettings = (settings: {
     wander_deep_think_enabled: settings.wander_deep_think_enabled === undefined
       ? (current?.wander_deep_think_enabled ? 1 : 0)
       : (settings.wander_deep_think_enabled ? 1 : 0),
+    debug_log_enabled: settings.debug_log_enabled === undefined
+      ? (current?.debug_log_enabled ? 1 : 0)
+      : (settings.debug_log_enabled ? 1 : 0),
+    developer_mode_enabled: settings.developer_mode_enabled === undefined
+      ? (current?.developer_mode_enabled ? 1 : 0)
+      : (settings.developer_mode_enabled ? 1 : 0),
+    developer_mode_unlocked_at: settings.developer_mode_unlocked_at === undefined
+      ? (current?.developer_mode_unlocked_at ?? null)
+      : (settings.developer_mode_unlocked_at || null),
     chat_max_tokens_default: normalizeChatMaxTokens(
       settings.chat_max_tokens_default,
       normalizeChatMaxTokens(current?.chat_max_tokens_default, DEFAULT_CHAT_MAX_TOKENS),
@@ -492,6 +522,9 @@ export const getSettings = () => {
     mcp_servers_json?: string;
     redclaw_compact_target_tokens?: number;
     wander_deep_think_enabled?: number;
+    debug_log_enabled?: number;
+    developer_mode_enabled?: number;
+    developer_mode_unlocked_at?: string | null;
     chat_max_tokens_default?: number;
     chat_max_tokens_deepseek?: number;
   } | undefined;
@@ -536,6 +569,8 @@ export const getSettings = () => {
   }
   if (result) {
     (result as { wander_deep_think_enabled?: boolean }).wander_deep_think_enabled = Boolean(result.wander_deep_think_enabled);
+    (result as { debug_log_enabled?: boolean }).debug_log_enabled = Boolean(result.debug_log_enabled);
+    (result as { developer_mode_enabled?: boolean }).developer_mode_enabled = Boolean(result.developer_mode_enabled);
   }
   return result;
 };

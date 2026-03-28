@@ -80,7 +80,7 @@ export class AgentExecutor {
 
         // 初始化工具注册表
         this.toolRegistry = new ToolRegistry();
-        const builtinTools = createBuiltinTools();
+        const builtinTools = createBuiltinTools({ pack: 'full' });
         this.toolRegistry.registerTools(builtinTools);
 
         // 初始化工具执行器（带确认回调）

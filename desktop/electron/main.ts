@@ -87,6 +87,18 @@ import { detectAiProtocol, fetchModelsForAiSource, testAiSourceConnection } from
 import { loadOfficialFeatureModule } from './officialFeatureBridge';
 import { getMemoryMaintenanceService } from './core/memoryMaintenanceService';
 import { generateAdvisorPersonaDocument } from './core/advisorPersonaGenerator';
+import {
+  getDebugLogDirectory,
+  getRecentDebugLogs,
+  installDebugConsoleBridge,
+  openDebugLogDirectory,
+  setDebugLoggingEnabled,
+} from './core/debugLogger';
+import {
+  listToolDiagnostics,
+  runAiToolDiagnostic,
+  runDirectToolDiagnostic,
+} from './core/toolDiagnosticsService';
 
 if (typeof (globalThis as any).Blob === 'undefined' && typeof NodeBlob !== 'undefined') {
   (globalThis as any).Blob = NodeBlob;
@@ -103,6 +115,9 @@ if (typeof (globalThis as any).File === 'undefined' && typeof (globalThis as any
   }
   (globalThis as any).File = FilePolyfill;
 }
+
+installDebugConsoleBridge();
+setDebugLoggingEnabled(Boolean((getSettings() as { debug_log_enabled?: boolean } | undefined)?.debug_log_enabled));
 import {
   getMcpServers,
   saveMcpServers,
@@ -1005,14 +1020,54 @@ function initializeTaskQueueWithExecutors() {
 
 // Database
 ipcMain.handle('db:save-settings', (_, settings) => {
-  return saveSettings(
-    normalizeSettingsInput((settings || {}) as Record<string, unknown>) as Parameters<typeof saveSettings>[0]
-  )
+  const normalized = normalizeSettingsInput((settings || {}) as Record<string, unknown>) as Parameters<typeof saveSettings>[0];
+  const result = saveSettings(normalized);
+  setDebugLoggingEnabled(Boolean(normalized.debug_log_enabled));
+  return result;
 })
 
 ipcMain.handle('db:get-settings', () => {
   return getSettings()
 })
+
+ipcMain.handle('debug:get-status', () => {
+  const settings = (getSettings() || {}) as { debug_log_enabled?: boolean } | undefined;
+  return {
+    enabled: Boolean(settings?.debug_log_enabled),
+    logDirectory: getDebugLogDirectory(),
+  };
+});
+
+ipcMain.handle('debug:get-recent', (_event, payload?: { limit?: number }) => {
+  const limit = Number(payload?.limit || 200);
+  return {
+    lines: getRecentDebugLogs(Number.isFinite(limit) ? Math.max(1, Math.min(limit, 1000)) : 200),
+  };
+});
+
+ipcMain.handle('debug:open-log-dir', async () => {
+  return openDebugLogDirectory();
+});
+
+ipcMain.handle('tools:diagnostics:list', () => {
+  return listToolDiagnostics();
+});
+
+ipcMain.handle('tools:diagnostics:run-direct', async (_event, payload?: { toolName?: string }) => {
+  const toolName = String(payload?.toolName || '').trim();
+  if (!toolName) {
+    return { success: false, mode: 'direct', toolName: '', error: 'toolName is required' };
+  }
+  return runDirectToolDiagnostic(toolName);
+});
+
+ipcMain.handle('tools:diagnostics:run-ai', async (_event, payload?: { toolName?: string }) => {
+  const toolName = String(payload?.toolName || '').trim();
+  if (!toolName) {
+    return { success: false, mode: 'ai', toolName: '', error: 'toolName is required' };
+  }
+  return runAiToolDiagnostic(toolName);
+});
 
 ipcMain.handle('app:get-version', () => app.getVersion());
 

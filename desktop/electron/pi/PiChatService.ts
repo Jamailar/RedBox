@@ -47,6 +47,7 @@ import {
 import { resolveChatMaxTokens } from '../core/chatTokenConfig';
 import { resolveModelScopeFromContextType, resolveScopedModelName } from '../core/modelScopeSettings';
 import { normalizeApiBaseUrl, safeUrlJoin } from '../core/urlUtils';
+import { logDebugEvent } from '../core/debugLogger';
 import { loadPrompt, renderPrompt } from '../prompts/runtime';
 
 interface SessionMetadata {
@@ -173,7 +174,7 @@ export class PiChatService {
     this.sessionId = `session_${Date.now()}`;
     this.skillManager = new SkillManager();
     this.toolRegistry = new ToolRegistry();
-    const tools = createBuiltinTools().filter((tool) => tool.name !== 'explore_workspace');
+    const tools = createBuiltinTools({ pack: 'redclaw' });
     this.toolRegistry.registerTools(tools);
     this.toolExecutor = new ToolExecutor(
       this.toolRegistry,
@@ -334,8 +335,11 @@ export class PiChatService {
     return current;
   }
 
-  private emitDebugLog(_level: 'info' | 'warn' | 'error', _message: string, _data?: unknown) {
-    // Debug logging removed after Windows max_tokens issue was resolved.
+  private emitDebugLog(level: 'info' | 'warn' | 'error', message: string, data?: unknown) {
+    logDebugEvent('pi-chat', level, message, {
+      sessionId: this.sessionId,
+      ...((data && typeof data === 'object' && !Array.isArray(data)) ? data as Record<string, unknown> : { data }),
+    });
   }
 
   abort() {
@@ -1143,8 +1147,23 @@ export class PiChatService {
       },
     });
 
+    const agentTools = this.createAgentTools(signal);
+    this.emitDebugLog('info', 'agent:tools:registered', {
+      pack: 'redclaw',
+      count: agentTools.length,
+      names: agentTools.map((tool) => tool.name),
+    });
+    const requiredTools = ['read_file', 'app_cli', 'save_memory'];
+    const missingTools = requiredTools.filter((name) => !agentTools.some((tool) => tool.name === name));
+    if (!agentTools.length || missingTools.length > 0) {
+      this.emitDebugLog('error', 'agent:tools:pack-invalid', {
+        pack: 'redclaw',
+        count: agentTools.length,
+        missingTools,
+      });
+    }
     agent.setSystemPrompt(systemPrompt);
-    agent.setTools(this.createAgentTools(signal));
+    agent.setTools(agentTools);
     agent.replaceMessages(history as any[]);
 
     return agent;

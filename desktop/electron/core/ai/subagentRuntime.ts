@@ -37,7 +37,7 @@ const ROLE_SEQUENCE_BY_INTENT: Record<string, RoleId[]> = {
   automation: ['planner', 'ops-coordinator', 'reviewer'],
 };
 
-const DEFAULT_TIMEOUT_MS = 90000;
+const DEFAULT_TIMEOUT_MS = 30000;
 
 function parseStructuredContent(raw: string): Record<string, unknown> {
   const text = String(raw || '').trim();
@@ -77,6 +77,13 @@ async function callSubagentLlm(input: {
   priorOutputs: SubagentOutput[];
 }): Promise<SubagentOutput> {
   const role = getRoleSpec(input.roleId);
+  console.log('[SubagentRuntime] start', {
+    taskId: input.taskId,
+    roleId: input.roleId,
+    intent: input.route.intent,
+    runtimeMode: input.runtimeMode,
+    model: input.llm.model,
+  });
   const systemPrompt = loadAndRenderPrompt(ORCHESTRATION_PROMPT_PATH, {
     role_id: role.roleId,
     role_purpose: role.purpose,
@@ -127,7 +134,13 @@ async function callSubagentLlm(input: {
     const parsedOuter = JSON.parse(rawText) as any;
     const content = String(parsedOuter?.choices?.[0]?.message?.content || '').trim();
     const parsed = parseStructuredContent(content);
-    return sanitizeOutput(input.roleId, parsed);
+    const sanitized = sanitizeOutput(input.roleId, parsed);
+    console.log('[SubagentRuntime] completed', {
+      taskId: input.taskId,
+      roleId: input.roleId,
+      summary: sanitized.summary.slice(0, 160),
+    });
+    return sanitized;
   } finally {
     clearTimeout(timeout);
   }
@@ -194,6 +207,11 @@ export async function runSubagentOrchestration(input: {
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    console.error('[SubagentRuntime] failed', {
+      taskId: input.taskId,
+      intent: input.route.intent,
+      error: message,
+    });
     runtime.addTrace(input.taskId, 'subagent.failed', { error: message }, 'spawn_agents');
     runtime.failTask(input.taskId, message, 'spawn_agents');
     throw error;

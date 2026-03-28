@@ -322,18 +322,39 @@ const normalizeAiSourceListJson = (raw: unknown): string | undefined => {
   }
 };
 
-const normalizeSettingsInput = (settings: Record<string, unknown>) => ({
-  ...settings,
-  api_endpoint: normalizeApiBaseUrl(String(settings.api_endpoint || '')),
-  transcription_endpoint: normalizeApiBaseUrl(String(settings.transcription_endpoint || '')),
-  embedding_endpoint: normalizeApiBaseUrl(String(settings.embedding_endpoint || '')),
-  image_endpoint: normalizeApiBaseUrl(String(settings.image_endpoint || '')),
-  model_name_wander: String(settings.model_name_wander || '').trim(),
-  model_name_chatroom: String(settings.model_name_chatroom || '').trim(),
-  model_name_knowledge: String(settings.model_name_knowledge || '').trim(),
-  model_name_redclaw: String(settings.model_name_redclaw || '').trim(),
-  ai_sources_json: normalizeAiSourceListJson(settings.ai_sources_json),
-});
+const normalizeSettingsInput = (settings: Record<string, unknown>) => {
+  const normalized: Record<string, unknown> = { ...settings };
+
+  if (Object.prototype.hasOwnProperty.call(settings, 'api_endpoint')) {
+    normalized.api_endpoint = normalizeApiBaseUrl(String(settings.api_endpoint || ''));
+  }
+  if (Object.prototype.hasOwnProperty.call(settings, 'transcription_endpoint')) {
+    normalized.transcription_endpoint = normalizeApiBaseUrl(String(settings.transcription_endpoint || ''));
+  }
+  if (Object.prototype.hasOwnProperty.call(settings, 'embedding_endpoint')) {
+    normalized.embedding_endpoint = normalizeApiBaseUrl(String(settings.embedding_endpoint || ''));
+  }
+  if (Object.prototype.hasOwnProperty.call(settings, 'image_endpoint')) {
+    normalized.image_endpoint = normalizeApiBaseUrl(String(settings.image_endpoint || ''));
+  }
+  if (Object.prototype.hasOwnProperty.call(settings, 'model_name_wander')) {
+    normalized.model_name_wander = String(settings.model_name_wander || '').trim();
+  }
+  if (Object.prototype.hasOwnProperty.call(settings, 'model_name_chatroom')) {
+    normalized.model_name_chatroom = String(settings.model_name_chatroom || '').trim();
+  }
+  if (Object.prototype.hasOwnProperty.call(settings, 'model_name_knowledge')) {
+    normalized.model_name_knowledge = String(settings.model_name_knowledge || '').trim();
+  }
+  if (Object.prototype.hasOwnProperty.call(settings, 'model_name_redclaw')) {
+    normalized.model_name_redclaw = String(settings.model_name_redclaw || '').trim();
+  }
+  if (Object.prototype.hasOwnProperty.call(settings, 'ai_sources_json')) {
+    normalized.ai_sources_json = normalizeAiSourceListJson(settings.ai_sources_json);
+  }
+
+  return normalized;
+};
 
 const normalizeVersionTag = (raw: string): string => {
   return String(raw || '').trim().replace(/^v/i, '');
@@ -5217,6 +5238,8 @@ const requestWanderCompletion = async ({
   allowJsonFallback = true,
   enableThinking,
   timeoutMs = 90000,
+  retryOnTimeout = true,
+  retryTimeoutMs,
 }: {
   baseURL: string;
   apiKey: string;
@@ -5227,11 +5250,13 @@ const requestWanderCompletion = async ({
   allowJsonFallback?: boolean;
   enableThinking?: boolean;
   timeoutMs?: number;
+  retryOnTimeout?: boolean;
+  retryTimeoutMs?: number;
 }) => {
-  const sendRequest = async (withResponseFormat: boolean) => {
+  const sendRequest = async (withResponseFormat: boolean, effectiveTimeoutMs: number) => {
     const startedAt = Date.now();
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    const timeout = setTimeout(() => controller.abort(), effectiveTimeoutMs);
     const lower = `${model} ${baseURL}`.toLowerCase();
     const isQwenFamily = lower.includes('qwen') || lower.includes('dashscope.aliyuncs.com');
     const payload = {
@@ -5246,7 +5271,7 @@ const requestWanderCompletion = async ({
     console.log('[wander:brainstorm] request-start', {
       withResponseFormat,
       enableThinking: payload.enable_thinking,
-      timeoutMs,
+      timeoutMs: effectiveTimeoutMs,
       model,
       baseURL,
     });
@@ -5265,7 +5290,7 @@ const requestWanderCompletion = async ({
     } catch (error) {
       clearTimeout(timeout);
       if (controller.signal.aborted) {
-        throw new Error(`OpenAI API timeout after ${timeoutMs}ms`);
+        throw new Error(`OpenAI API timeout after ${effectiveTimeoutMs}ms`);
       }
       throw error;
     }
@@ -5292,15 +5317,27 @@ const requestWanderCompletion = async ({
   };
 
   try {
-    return await sendRequest(requireJson);
+    return await sendRequest(requireJson, timeoutMs);
   } catch (error) {
     const errorMessage = String(error || '');
+    const isTimeout = /timeout after \d+ms/i.test(errorMessage);
     const isResponseFormatUnsupported =
       /response[_\s-]?format|json_object|unsupported|not supported|invalid parameter/i.test(errorMessage);
+    if (retryOnTimeout && isTimeout) {
+      const nextTimeoutMs = Math.max(retryTimeoutMs || timeoutMs, timeoutMs + 45000);
+      console.warn('[wander:brainstorm] retry-after-timeout', {
+        model,
+        baseURL,
+        previousTimeoutMs: timeoutMs,
+        nextTimeoutMs,
+        requireJson,
+      });
+      return await sendRequest(requireJson, nextTimeoutMs);
+    }
     if (requireJson && allowJsonFallback && isResponseFormatUnsupported) {
       // 仅当明确不支持 response_format 时才回退一次，避免普通错误导致额外慢一次
       console.log('[wander:brainstorm] fallback-without-response-format');
-      return await sendRequest(false);
+      return await sendRequest(false, timeoutMs);
     }
     throw error;
   }
@@ -5340,14 +5377,15 @@ ipcMain.handle('wander:brainstorm', async (_, items: any[], options?: { deepThin
         baseURL,
         apiKey: settings.api_key,
         model,
-        temperature: 0.9,
-        // 单次模式强制只请求一次，避免隐藏回退造成“像 Agent 一样慢”
-        requireJson: false,
-        allowJsonFallback: false,
+        temperature: 0.85,
+        requireJson: true,
+        allowJsonFallback: true,
         enableThinking: false,
-        timeoutMs: 45000,
+        timeoutMs: 90000,
+        retryOnTimeout: true,
+        retryTimeoutMs: 135000,
         messages: [
-          { role: 'system', content: `${WANDER_BRAINSTORM_PROMPT}\n\n补充要求：直接回答，不要进行长时间思考循环或分阶段推演。` },
+          { role: 'system', content: `${WANDER_BRAINSTORM_PROMPT}\n\n补充要求：直接给出最终 JSON，不要进行长时间思考循环或分阶段推演。` },
           { role: 'user', content: `这里是 3 个条目：\n\n${itemsText}` },
         ],
       });
@@ -5369,6 +5407,8 @@ ipcMain.handle('wander:brainstorm', async (_, items: any[], options?: { deepThin
         requireJson: false,
         enableThinking: true,
         timeoutMs: 120000,
+        retryOnTimeout: true,
+        retryTimeoutMs: 180000,
         messages: [
           { role: 'system', content: analysisPrompt },
           { role: 'user', content: `这里是 3 个条目：\n\n${itemsText}` },
@@ -5388,8 +5428,11 @@ ipcMain.handle('wander:brainstorm', async (_, items: any[], options?: { deepThin
         model,
         temperature: 0.8,
         requireJson: true,
+        allowJsonFallback: true,
         enableThinking: true,
         timeoutMs: 120000,
+        retryOnTimeout: true,
+        retryTimeoutMs: 180000,
         messages: [
           { role: 'system', content: deepFinalizePrompt },
           { role: 'assistant', content: `中间分析（供你收敛）：\n${deepAnalysis}` },

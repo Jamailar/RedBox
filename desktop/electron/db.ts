@@ -387,9 +387,9 @@ const normalizeWorkspaceDir = (raw: string | undefined | null): string => {
 };
 
 export const saveSettings = (settings: {
-  api_endpoint: string;
-  api_key: string;
-  model_name: string;
+  api_endpoint?: string;
+  api_key?: string;
+  model_name?: string;
   model_name_wander?: string;
   model_name_chatroom?: string;
   model_name_knowledge?: string;
@@ -462,13 +462,32 @@ export const saveSettings = (settings: {
       chat_max_tokens_deepseek = @chat_max_tokens_deepseek
   `);
   const current = getSettings() as {
+    api_endpoint?: string;
+    api_key?: string;
+    model_name?: string;
     model_name_wander?: string;
     model_name_chatroom?: string;
     model_name_knowledge?: string;
     model_name_redclaw?: string;
+    role_mapping?: string;
+    workspace_dir?: string;
     active_space_id?: string;
+    transcription_model?: string;
+    transcription_endpoint?: string;
+    transcription_key?: string;
+    embedding_endpoint?: string;
+    embedding_key?: string;
+    embedding_model?: string;
     ai_sources_json?: string;
     default_ai_source_id?: string;
+    image_provider?: string;
+    image_endpoint?: string;
+    image_api_key?: string;
+    image_model?: string;
+    image_provider_template?: string;
+    image_aspect_ratio?: string;
+    image_size?: string;
+    image_quality?: string;
     mcp_servers_json?: string;
     redclaw_compact_target_tokens?: number;
     wander_deep_think_enabled?: boolean;
@@ -480,29 +499,42 @@ export const saveSettings = (settings: {
   } | undefined;
   return stmt.run({
     ...settings,
+    api_endpoint: Object.prototype.hasOwnProperty.call(settings, 'api_endpoint')
+      ? String(settings.api_endpoint || '').trim()
+      : String(current?.api_endpoint || '').trim(),
+    api_key: Object.prototype.hasOwnProperty.call(settings, 'api_key')
+      ? String(settings.api_key || '').trim()
+      : String(current?.api_key || '').trim(),
+    model_name: Object.prototype.hasOwnProperty.call(settings, 'model_name')
+      ? String(settings.model_name || '').trim()
+      : String(current?.model_name || '').trim(),
     model_name_wander: String(settings.model_name_wander ?? current?.model_name_wander ?? '').trim(),
     model_name_chatroom: String(settings.model_name_chatroom ?? current?.model_name_chatroom ?? '').trim(),
     model_name_knowledge: String(settings.model_name_knowledge ?? current?.model_name_knowledge ?? '').trim(),
     model_name_redclaw: String(settings.model_name_redclaw ?? current?.model_name_redclaw ?? '').trim(),
-    role_mapping: typeof settings.role_mapping === 'object' ? JSON.stringify(settings.role_mapping) : (settings.role_mapping || '{}'),
-    workspace_dir: normalizeWorkspaceDir(settings.workspace_dir || getDefaultWorkspaceDir()),
+    role_mapping: settings.role_mapping === undefined
+      ? (current?.role_mapping || '{}')
+      : typeof settings.role_mapping === 'object'
+        ? JSON.stringify(settings.role_mapping)
+        : (settings.role_mapping || '{}'),
+    workspace_dir: normalizeWorkspaceDir(settings.workspace_dir ?? current?.workspace_dir ?? getDefaultWorkspaceDir()),
     active_space_id: settings.active_space_id || current?.active_space_id || DEFAULT_SPACE_ID,
-    transcription_model: settings.transcription_model || '',
-    transcription_endpoint: settings.transcription_endpoint || '',
-    transcription_key: settings.transcription_key || '',
-    embedding_endpoint: settings.embedding_endpoint || '',
-    embedding_key: settings.embedding_key || '',
-    embedding_model: settings.embedding_model || '',
+    transcription_model: settings.transcription_model ?? current?.transcription_model ?? '',
+    transcription_endpoint: settings.transcription_endpoint ?? current?.transcription_endpoint ?? '',
+    transcription_key: settings.transcription_key ?? current?.transcription_key ?? '',
+    embedding_endpoint: settings.embedding_endpoint ?? current?.embedding_endpoint ?? '',
+    embedding_key: settings.embedding_key ?? current?.embedding_key ?? '',
+    embedding_model: settings.embedding_model ?? current?.embedding_model ?? '',
     ai_sources_json: settings.ai_sources_json ?? current?.ai_sources_json ?? '',
     default_ai_source_id: settings.default_ai_source_id ?? current?.default_ai_source_id ?? '',
-    image_provider: settings.image_provider || '',
-    image_endpoint: settings.image_endpoint || '',
-    image_api_key: settings.image_api_key || '',
-    image_model: settings.image_model || '',
-    image_provider_template: settings.image_provider_template || '',
-    image_aspect_ratio: settings.image_aspect_ratio || '',
-    image_size: settings.image_size || '',
-    image_quality: settings.image_quality || '',
+    image_provider: settings.image_provider ?? current?.image_provider ?? '',
+    image_endpoint: settings.image_endpoint ?? current?.image_endpoint ?? '',
+    image_api_key: settings.image_api_key ?? current?.image_api_key ?? '',
+    image_model: settings.image_model ?? current?.image_model ?? '',
+    image_provider_template: settings.image_provider_template ?? current?.image_provider_template ?? '',
+    image_aspect_ratio: settings.image_aspect_ratio ?? current?.image_aspect_ratio ?? '',
+    image_size: settings.image_size ?? current?.image_size ?? '',
+    image_quality: settings.image_quality ?? current?.image_quality ?? '',
     mcp_servers_json: settings.mcp_servers_json ?? current?.mcp_servers_json ?? '[]',
     redclaw_compact_target_tokens: Number.isFinite(Number(settings.redclaw_compact_target_tokens))
       ? Math.floor(Number(settings.redclaw_compact_target_tokens))

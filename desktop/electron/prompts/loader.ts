@@ -8,15 +8,13 @@ export class PromptLoader {
     private libraryPath: string;
 
     constructor() {
-        // 智能路径探测
-        const devPath = path.join(process.cwd(), 'desktop/electron/prompts/library');
-        const prodPath = path.join(__dirname, 'library');
+        const candidatePaths = [
+            path.join(process.cwd(), 'desktop/electron/prompts/library'),
+            path.join(__dirname, 'library'),
+            path.resolve(__dirname, '../electron/prompts/library'),
+        ];
 
-        if (fs.existsSync(devPath)) {
-            this.libraryPath = devPath;
-        } else {
-            this.libraryPath = prodPath;
-        }
+        this.libraryPath = candidatePaths.find((candidate) => fs.existsSync(candidate)) || candidatePaths[1];
 
         console.log(`[PromptLoader] Initialized with library path: ${this.libraryPath}`);
     }

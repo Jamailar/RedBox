@@ -4,18 +4,48 @@ import { getRoleSpec } from './roleRegistry';
 import { runSubagentOrchestration } from './subagentRuntime';
 import { getTaskGraphRuntime } from './taskGraphRuntime';
 import type {
+  IntentRoute,
   PreparedRuntimeExecution,
   RuntimeContext,
   RuntimeMode,
   ThinkingBudget,
 } from './types';
 
-const resolveThinkingBudget = (runtimeMode: RuntimeMode, route: ReturnType<typeof routeIntent>): ThinkingBudget => {
+const resolveThinkingBudget = (runtimeMode: RuntimeMode, route: IntentRoute): ThinkingBudget => {
   if (route.requiresMultiAgent) return 'medium';
   if (route.requiresLongRunningTask) return 'high';
   if (runtimeMode === 'redclaw' && route.intent === 'manuscript_creation') return 'medium';
   if (route.intent === 'direct_answer') return 'minimal';
   return 'low';
+};
+
+const shouldRunSubagentOrchestration = (params: {
+  runtimeMode: RuntimeMode;
+  userInput: string;
+  route: IntentRoute;
+}): boolean => {
+  if (!params.route.requiresMultiAgent) {
+    return false;
+  }
+
+  if (params.route.intent === 'advisor_persona') {
+    return true;
+  }
+
+  const normalized = String(params.userInput || '').toLowerCase();
+  return [
+    '多角色',
+    '多智能体',
+    '多 agent',
+    '多agent',
+    'multiagent',
+    'multi-agent',
+    'subagent',
+    '子agent',
+    '分角色',
+    '协作执行',
+    '多人协作',
+  ].some((part) => normalized.includes(part));
 };
 
 export class AgentRuntime {
@@ -29,7 +59,10 @@ export class AgentRuntime {
       timeoutMs?: number;
     };
   }): Promise<PreparedRuntimeExecution> {
-    const route = routeIntent(params.runtimeContext);
+    const route = await routeIntent({
+      context: params.runtimeContext,
+      llm: params.llm,
+    });
     const role = getRoleSpec(route.recommendedRole);
     const runtime = getTaskGraphRuntime();
     const task = runtime.createInteractiveTask({
@@ -48,8 +81,27 @@ export class AgentRuntime {
 
     let orchestration: PreparedRuntimeExecution['orchestration'] = null;
     let orchestrationSection = '';
-    if ((route.requiresMultiAgent || route.requiresLongRunningTask) && params.llm?.apiKey && params.llm?.baseURL && params.llm?.model) {
+    const orchestrationEnabled = shouldRunSubagentOrchestration({
+      runtimeMode: params.runtimeContext.runtimeMode,
+      userInput: params.runtimeContext.userInput,
+      route,
+    });
+    console.log('[AgentRuntime] prepared-route', {
+      sessionId: params.runtimeContext.sessionId,
+      runtimeMode: params.runtimeContext.runtimeMode,
+      intent: route.intent,
+      routeSource: route.source || 'rule',
+      roleId: role.roleId,
+      requiresMultiAgent: route.requiresMultiAgent,
+      orchestrationEnabled,
+    });
+
+    if (orchestrationEnabled && params.llm?.apiKey && params.llm?.baseURL && params.llm?.model) {
       try {
+        runtime.addTrace(task.id, 'runtime.orchestration_start', {
+          intent: route.intent,
+          roleId: role.roleId,
+        }, 'spawn_agents');
         const orchestrationResult = await runSubagentOrchestration({
           llm: params.llm,
           route,
@@ -68,9 +120,19 @@ export class AgentRuntime {
         runtime.addTrace(task.id, 'runtime.orchestration_failed', { error: message }, 'spawn_agents');
       }
     } else if (task.graph.some((node) => node.type === 'spawn_agents')) {
-      runtime.skipNode(task.id, 'spawn_agents', '当前未配置可用的协作 LLM，上游 orchestration 跳过');
+      runtime.skipNode(
+        task.id,
+        'spawn_agents',
+        orchestrationEnabled
+          ? '当前未配置可用的协作 LLM，上游 orchestration 跳过'
+          : '当前请求未显式要求多角色协作，默认由主代理直接执行',
+      );
       if (task.graph.some((node) => node.type === 'handoff')) {
-        runtime.skipNode(task.id, 'handoff', '未生成子角色 handoff');
+        runtime.skipNode(
+          task.id,
+          'handoff',
+          orchestrationEnabled ? '未生成子角色 handoff' : '当前请求未启用 subagent handoff',
+        );
       }
     }
 

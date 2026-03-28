@@ -37,7 +37,9 @@ export type ThinkingBudget = 'minimal' | 'low' | 'medium' | 'high';
 
 export interface IntentRoute {
   intent: IntentName;
+  secondaryIntents?: IntentName[];
   goal: string;
+  deliverables?: string[];
   requiredCapabilities: string[];
   recommendedRole: RoleId;
   requiresLongRunningTask: boolean;
@@ -45,6 +47,7 @@ export interface IntentRoute {
   requiresHumanApproval: boolean;
   confidence: number;
   reasoning: string;
+  source?: 'rule' | 'llm' | 'llm+rule';
 }
 
 export interface RoleSpec {

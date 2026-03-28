@@ -86,6 +86,15 @@ export function Wander({ onNavigateToManuscript, onNavigateToRedClaw }: WanderPr
     };
   };
 
+  const buildSuggestedManuscriptPath = (title: string) => {
+    const safeName = String(title || 'wander-draft')
+      .replace(/[\\/:*?"<>|]+/g, '-')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 80) || 'wander-draft';
+    return `wander/${safeName}.md`;
+  };
+
   // 去创作：创建稿件并跳转
   const goCreate = async () => {
     if (!parsedResult || !onNavigateToManuscript) return;
@@ -109,6 +118,7 @@ export function Wander({ onNavigateToManuscript, onNavigateToRedClaw }: WanderPr
 
   const startCreateInRedClaw = () => {
     if (!parsedResult || !onNavigateToRedClaw) return;
+    const suggestedManuscriptPath = buildSuggestedManuscriptPath(parsedResult.topic.title);
 
     const connectedSet = new Set(parsedResult.topic.connections || []);
     const referenceCards = items.map((item, index) => {
@@ -151,6 +161,7 @@ export function Wander({ onNavigateToManuscript, onNavigateToRedClaw }: WanderPr
       '## 灵感选题',
       `标题：${parsedResult.topic.title}`,
       `内容方向：${parsedResult.content_direction || ''}`,
+      `建议保存稿件路径：${suggestedManuscriptPath}`,
       '',
       '## 需要先读取的素材文件夹（当前工作空间下）',
       folderListText,
@@ -163,6 +174,9 @@ export function Wander({ onNavigateToManuscript, onNavigateToRedClaw }: WanderPr
       '2. 给出一篇完整正文（可直接发布，结构清晰）。',
       '3. 给出标签建议（8-12个）。',
       '4. 给出封面文案建议（2-3个）。',
+      `5. 完成后必须调用 app_cli 将完整稿件保存到 manuscripts。优先使用：app_cli(command="manuscripts write --path \\"${suggestedManuscriptPath}\\"", payload={ content: "...完整 markdown..." })。`,
+      '6. 未收到工具成功返回前，禁止告诉我“已经保存”。如果保存失败，必须明确说“内容已生成但尚未保存”。',
+      `7. 最终回复里只有在工具成功后才能回显保存路径，并且必须使用工具返回的真实路径；不要只复述建议路径 ${suggestedManuscriptPath}。`,
     ].join('\n');
 
     onNavigateToRedClaw({

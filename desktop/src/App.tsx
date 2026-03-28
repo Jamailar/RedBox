@@ -366,6 +366,7 @@ function App() {
               <ManuscriptsPage
                 pendingFile={pendingManuscriptFile}
                 onFileConsumed={clearPendingManuscriptFile}
+                isActive={currentView === 'manuscripts'}
               />
             </Suspense>
           </div>

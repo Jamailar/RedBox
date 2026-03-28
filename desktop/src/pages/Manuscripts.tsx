@@ -40,9 +40,10 @@ interface ManuscriptsState {
 interface ManuscriptsProps {
     pendingFile?: string | null;
     onFileConsumed?: () => void;
+    isActive?: boolean;
 }
 
-export function Manuscripts({ pendingFile, onFileConsumed }: ManuscriptsProps) {
+export function Manuscripts({ pendingFile, onFileConsumed, isActive = false }: ManuscriptsProps) {
     const [state, setState] = useState<ManuscriptsState>({
         tree: [],
         selectedFile: localStorage.getItem("manuscripts:lastOpenedFile"),
@@ -213,6 +214,61 @@ export function Manuscripts({ pendingFile, onFileConsumed }: ManuscriptsProps) {
     useEffect(() => {
         loadTree();
     }, [loadTree]);
+
+    const refreshSelectedFileFromDisk = useCallback(async () => {
+        if (!state.selectedFile || state.isModified) return;
+
+        try {
+            const result = await window.ipcRenderer.invoke('manuscripts:read', state.selectedFile) as any;
+            const content = typeof result === 'string' ? result : result.content;
+            const metadata = typeof result === 'string' ? {} : result.metadata;
+
+            setState(prev => {
+                if (prev.selectedFile !== state.selectedFile || prev.isModified) {
+                    return prev;
+                }
+
+                const nextContent = content || '';
+                const nextMetadata = metadata || {};
+                const sameContent = prev.fileContent === nextContent;
+                const sameMetadata = JSON.stringify(prev.fileMetadata || {}) === JSON.stringify(nextMetadata);
+                if (sameContent && sameMetadata) {
+                    return prev;
+                }
+
+                return {
+                    ...prev,
+                    fileContent: nextContent,
+                    fileMetadata: nextMetadata,
+                    isModified: false,
+                };
+            });
+        } catch (error) {
+            console.error('Failed to refresh manuscript from disk:', error);
+        }
+    }, [state.selectedFile, state.isModified]);
+
+    useEffect(() => {
+        if (!isActive) return;
+
+        const refresh = async () => {
+            await loadTree();
+            await refreshSelectedFileFromDisk();
+        };
+
+        refresh();
+        const interval = window.setInterval(refresh, 3000);
+
+        const onFocus = () => {
+            refresh();
+        };
+
+        window.addEventListener('focus', onFocus);
+        return () => {
+            window.clearInterval(interval);
+            window.removeEventListener('focus', onFocus);
+        };
+    }, [isActive, loadTree, refreshSelectedFileFromDisk]);
 
     // Sync title with selected file
     useEffect(() => {

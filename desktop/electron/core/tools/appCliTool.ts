@@ -383,6 +383,29 @@ export class AppCliTool extends DeclarativeTool<typeof AppCliParamsSchema> {
                     },
                 };
             }
+            if (parsed.namespace === 'manuscripts' && (parsed.action === 'write' || parsed.action === 'create')) {
+                const info = result as {
+                    success?: boolean;
+                    path?: string;
+                    absolutePath?: string;
+                    bytes?: number;
+                };
+                const lines = [
+                    'Manuscript saved successfully.',
+                    `relativePath=${info.path || ''}`,
+                    `absolutePath=${info.absolutePath || ''}`,
+                    `bytes=${info.bytes ?? 0}`,
+                ];
+                return {
+                    success: true,
+                    llmContent: lines.join('\n'),
+                    display: 'manuscripts write',
+                    data: {
+                        kind: 'manuscript-write',
+                        ...info,
+                    },
+                };
+            }
             return createSuccessResult(toPrettyJson(result), `${parsed.namespace} ${parsed.action}`);
         } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
@@ -567,7 +590,13 @@ export class AppCliTool extends DeclarativeTool<typeof AppCliParamsSchema> {
             };
             const nextContent = content || currentContent;
             await fs.writeFile(absolute, matter.stringify(nextContent, nextMeta), 'utf-8');
-            return { success: true, path: relPath };
+            return {
+                success: true,
+                path: relPath,
+                absolutePath: absolute,
+                bytes: Buffer.byteLength(nextContent, 'utf8'),
+                frontmatter: nextMeta,
+            };
         }
 
         if (action === 'mkdir') {

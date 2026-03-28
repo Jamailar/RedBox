@@ -28,9 +28,9 @@ const REDCLAW_CONTEXT = [
 
 const REDCLAW_SHORTCUTS = [
     { label: '🎯 新建项目', text: '这是一个新的小红书创作目标，请先创建 RedClaw 项目，再推进完整创作流程。' },
-    { label: '🧠 生成文案包', text: '请基于当前项目目标生成完整小红书文案包，并调用 redclaw_save_copy_pack 保存。' },
-    { label: '🖼️ 生成配图包', text: '请为当前项目生成封面与配图提示词，并调用 redclaw_save_image_pack 保存。' },
-    { label: '📊 复盘本次发布', text: '请基于当前项目进行发布复盘，并调用 redclaw_save_retrospective 保存。' },
+    { label: '🧠 生成文案包', text: '请基于当前项目目标生成完整小红书文案包，并通过 app_cli 调用 redclaw save-copy 保存。' },
+    { label: '🖼️ 生成配图包', text: '请为当前项目生成封面与配图提示词，并通过 app_cli 调用 redclaw save-image 保存。' },
+    { label: '📊 复盘本次发布', text: '请基于当前项目进行发布复盘，并通过 app_cli 调用 redclaw save-retro 保存。' },
 ];
 
 const REDCLAW_WELCOME_SHORTCUTS = [

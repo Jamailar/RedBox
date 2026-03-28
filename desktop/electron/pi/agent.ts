@@ -153,7 +153,7 @@ class AgentManager {
     const agent = new Agent({
       initialState: {
         model: this.createModelWithBaseUrl(modelName, baseURL, settings),
-        thinkingLevel: 'off',
+        thinkingLevel: 'low',
       },
       convertToLlm: (messages) => this.convertMessages(messages),
       transformContext: async (messages) => messages,

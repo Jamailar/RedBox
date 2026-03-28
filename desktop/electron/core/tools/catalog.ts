@@ -16,6 +16,12 @@ export interface BuiltinToolDescriptor {
     contexts: BuiltinToolPack[];
     visibility: BuiltinToolVisibility;
     requiresContext: BuiltinToolRequiredContext;
+    preconditions?: string[];
+    successSignal?: string;
+    failureSignal?: string;
+    artifactOutput?: string[];
+    retryPolicy?: 'never' | 'safe-retry' | 'manual';
+    requiresConfirmation?: boolean;
     create: (context: BuiltinToolFactoryContext) => ToolDefinition<unknown, ToolResult> | null;
 }
 

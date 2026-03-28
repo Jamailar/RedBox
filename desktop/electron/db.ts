@@ -155,6 +155,48 @@ const initDb = () => {
     CREATE INDEX IF NOT EXISTS idx_vectors_source ON knowledge_vectors(source_id);
   `);
 
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS agent_tasks (
+      id TEXT PRIMARY KEY,
+      task_type TEXT NOT NULL,
+      status TEXT NOT NULL,
+      runtime_mode TEXT NOT NULL,
+      owner_session_id TEXT,
+      intent TEXT,
+      role_id TEXT,
+      goal TEXT,
+      current_node TEXT,
+      route_json TEXT,
+      graph_json TEXT,
+      artifacts_json TEXT,
+      checkpoints_json TEXT,
+      metadata_json TEXT,
+      last_error TEXT,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      started_at INTEGER,
+      completed_at INTEGER
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_agent_tasks_status_updated
+      ON agent_tasks(status, updated_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_agent_tasks_owner_session
+      ON agent_tasks(owner_session_id, updated_at DESC);
+
+    CREATE TABLE IF NOT EXISTS agent_task_traces (
+      id TEXT PRIMARY KEY,
+      task_id TEXT NOT NULL,
+      node_id TEXT,
+      event_type TEXT NOT NULL,
+      payload_json TEXT,
+      created_at INTEGER NOT NULL,
+      FOREIGN KEY (task_id) REFERENCES agent_tasks(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_agent_task_traces_task
+      ON agent_task_traces(task_id, created_at ASC);
+  `);
+
   // User Memory tables
   db.exec(`
     CREATE TABLE IF NOT EXISTS user_memories (
@@ -977,6 +1019,276 @@ export interface ChatMessage {
   tool_call_id?: string;
   timestamp: number;
 }
+
+export type AgentTaskStatus = 'pending' | 'running' | 'paused' | 'completed' | 'failed' | 'cancelled';
+export type AgentTaskNodeStatus = 'pending' | 'running' | 'completed' | 'failed' | 'skipped';
+
+export interface AgentTaskNodeRecord {
+  id: string;
+  type: string;
+  title: string;
+  status: AgentTaskNodeStatus;
+  startedAt?: number;
+  completedAt?: number;
+  error?: string;
+  summary?: string;
+}
+
+export interface AgentTaskCheckpointRecord {
+  id: string;
+  nodeId: string;
+  summary: string;
+  payload?: unknown;
+  createdAt: number;
+}
+
+export interface AgentTaskArtifactRecord {
+  id: string;
+  type: string;
+  label: string;
+  relativePath?: string;
+  absolutePath?: string;
+  metadata?: unknown;
+  createdAt: number;
+}
+
+export interface AgentTaskRecord {
+  id: string;
+  task_type: string;
+  status: AgentTaskStatus;
+  runtime_mode: string;
+  owner_session_id?: string | null;
+  intent?: string | null;
+  role_id?: string | null;
+  goal?: string | null;
+  current_node?: string | null;
+  route_json?: string | null;
+  graph_json?: string | null;
+  artifacts_json?: string | null;
+  checkpoints_json?: string | null;
+  metadata_json?: string | null;
+  last_error?: string | null;
+  created_at: number;
+  updated_at: number;
+  started_at?: number | null;
+  completed_at?: number | null;
+}
+
+export interface AgentTaskTraceRecord {
+  id: string;
+  task_id: string;
+  node_id?: string | null;
+  event_type: string;
+  payload_json?: string | null;
+  created_at: number;
+}
+
+const safeJsonStringify = (value: unknown): string | null => {
+  if (value === undefined) return null;
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return JSON.stringify({ error: 'json-stringify-failed' });
+  }
+};
+
+const safeJsonParse = <T>(value: string | null | undefined, fallback: T): T => {
+  if (!value) return fallback;
+  try {
+    return JSON.parse(value) as T;
+  } catch {
+    return fallback;
+  }
+};
+
+export interface AgentTaskInput {
+  id: string;
+  task_type: string;
+  status: AgentTaskStatus;
+  runtime_mode: string;
+  owner_session_id?: string | null;
+  intent?: string | null;
+  role_id?: string | null;
+  goal?: string | null;
+  current_node?: string | null;
+  route?: unknown;
+  graph?: AgentTaskNodeRecord[];
+  artifacts?: AgentTaskArtifactRecord[];
+  checkpoints?: AgentTaskCheckpointRecord[];
+  metadata?: unknown;
+  last_error?: string | null;
+  created_at?: number;
+  updated_at?: number;
+  started_at?: number | null;
+  completed_at?: number | null;
+}
+
+export const createAgentTask = (input: AgentTaskInput): AgentTaskRecord => {
+  const now = Date.now();
+  const record: AgentTaskRecord = {
+    id: input.id,
+    task_type: input.task_type,
+    status: input.status,
+    runtime_mode: input.runtime_mode,
+    owner_session_id: input.owner_session_id ?? null,
+    intent: input.intent ?? null,
+    role_id: input.role_id ?? null,
+    goal: input.goal ?? null,
+    current_node: input.current_node ?? null,
+    route_json: safeJsonStringify(input.route),
+    graph_json: safeJsonStringify(input.graph ?? []),
+    artifacts_json: safeJsonStringify(input.artifacts ?? []),
+    checkpoints_json: safeJsonStringify(input.checkpoints ?? []),
+    metadata_json: safeJsonStringify(input.metadata),
+    last_error: input.last_error ?? null,
+    created_at: input.created_at ?? now,
+    updated_at: input.updated_at ?? now,
+    started_at: input.started_at ?? (input.status === 'running' ? now : null),
+    completed_at: input.completed_at ?? null,
+  };
+
+  db.prepare(`
+    INSERT INTO agent_tasks (
+      id, task_type, status, runtime_mode, owner_session_id, intent, role_id, goal,
+      current_node, route_json, graph_json, artifacts_json, checkpoints_json, metadata_json,
+      last_error, created_at, updated_at, started_at, completed_at
+    ) VALUES (
+      @id, @task_type, @status, @runtime_mode, @owner_session_id, @intent, @role_id, @goal,
+      @current_node, @route_json, @graph_json, @artifacts_json, @checkpoints_json, @metadata_json,
+      @last_error, @created_at, @updated_at, @started_at, @completed_at
+    )
+  `).run(record);
+
+  return record;
+};
+
+export const updateAgentTask = (id: string, updates: Partial<AgentTaskInput>): AgentTaskRecord | null => {
+  const current = getAgentTask(id);
+  if (!current) return null;
+
+  const next: AgentTaskRecord = {
+    ...current,
+    task_type: updates.task_type ?? current.task_type,
+    status: updates.status ?? current.status,
+    runtime_mode: updates.runtime_mode ?? current.runtime_mode,
+    owner_session_id: updates.owner_session_id === undefined ? current.owner_session_id : (updates.owner_session_id ?? null),
+    intent: updates.intent === undefined ? current.intent : (updates.intent ?? null),
+    role_id: updates.role_id === undefined ? current.role_id : (updates.role_id ?? null),
+    goal: updates.goal === undefined ? current.goal : (updates.goal ?? null),
+    current_node: updates.current_node === undefined ? current.current_node : (updates.current_node ?? null),
+    route_json: updates.route === undefined ? current.route_json : safeJsonStringify(updates.route),
+    graph_json: updates.graph === undefined ? current.graph_json : safeJsonStringify(updates.graph ?? []),
+    artifacts_json: updates.artifacts === undefined ? current.artifacts_json : safeJsonStringify(updates.artifacts ?? []),
+    checkpoints_json: updates.checkpoints === undefined ? current.checkpoints_json : safeJsonStringify(updates.checkpoints ?? []),
+    metadata_json: updates.metadata === undefined ? current.metadata_json : safeJsonStringify(updates.metadata),
+    last_error: updates.last_error === undefined ? current.last_error : (updates.last_error ?? null),
+    updated_at: Date.now(),
+    started_at: updates.started_at === undefined ? current.started_at : (updates.started_at ?? null),
+    completed_at: updates.completed_at === undefined ? current.completed_at : (updates.completed_at ?? null),
+  };
+
+  db.prepare(`
+    UPDATE agent_tasks
+    SET task_type = @task_type,
+        status = @status,
+        runtime_mode = @runtime_mode,
+        owner_session_id = @owner_session_id,
+        intent = @intent,
+        role_id = @role_id,
+        goal = @goal,
+        current_node = @current_node,
+        route_json = @route_json,
+        graph_json = @graph_json,
+        artifacts_json = @artifacts_json,
+        checkpoints_json = @checkpoints_json,
+        metadata_json = @metadata_json,
+        last_error = @last_error,
+        updated_at = @updated_at,
+        started_at = @started_at,
+        completed_at = @completed_at
+    WHERE id = @id
+  `).run(next);
+
+  return next;
+};
+
+export const getAgentTask = (id: string): AgentTaskRecord | null => {
+  const row = db.prepare('SELECT * FROM agent_tasks WHERE id = ?').get(id) as AgentTaskRecord | undefined;
+  return row || null;
+};
+
+export const listAgentTasks = (params?: { status?: AgentTaskStatus; ownerSessionId?: string; limit?: number }): AgentTaskRecord[] => {
+  const conditions: string[] = [];
+  const values: unknown[] = [];
+  if (params?.status) {
+    conditions.push('status = ?');
+    values.push(params.status);
+  }
+  if (params?.ownerSessionId) {
+    conditions.push('owner_session_id = ?');
+    values.push(params.ownerSessionId);
+  }
+  const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+  const limit = Math.max(1, Math.min(500, Number(params?.limit || 100)));
+  const stmt = db.prepare(`
+    SELECT * FROM agent_tasks
+    ${where}
+    ORDER BY updated_at DESC
+    LIMIT ${limit}
+  `);
+  return stmt.all(...values) as AgentTaskRecord[];
+};
+
+export const addAgentTaskTrace = (input: {
+  id?: string;
+  task_id: string;
+  node_id?: string | null;
+  event_type: string;
+  payload?: unknown;
+  created_at?: number;
+}): AgentTaskTraceRecord => {
+  const record: AgentTaskTraceRecord = {
+    id: input.id || `trace_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+    task_id: input.task_id,
+    node_id: input.node_id ?? null,
+    event_type: input.event_type,
+    payload_json: safeJsonStringify(input.payload),
+    created_at: input.created_at ?? Date.now(),
+  };
+  db.prepare(`
+    INSERT INTO agent_task_traces (id, task_id, node_id, event_type, payload_json, created_at)
+    VALUES (@id, @task_id, @node_id, @event_type, @payload_json, @created_at)
+  `).run(record);
+  return record;
+};
+
+export const listAgentTaskTraces = (taskId: string, limit = 500): AgentTaskTraceRecord[] => {
+  const safeLimit = Math.max(1, Math.min(5000, Number(limit || 500)));
+  const stmt = db.prepare(`
+    SELECT * FROM agent_task_traces
+    WHERE task_id = ?
+    ORDER BY created_at ASC
+    LIMIT ${safeLimit}
+  `);
+  return stmt.all(taskId) as AgentTaskTraceRecord[];
+};
+
+export const parseAgentTaskRecord = (record: AgentTaskRecord | null) => {
+  if (!record) return null;
+  return {
+    ...record,
+    route: safeJsonParse(record.route_json, null as unknown),
+    graph: safeJsonParse(record.graph_json, [] as AgentTaskNodeRecord[]),
+    artifacts: safeJsonParse(record.artifacts_json, [] as AgentTaskArtifactRecord[]),
+    checkpoints: safeJsonParse(record.checkpoints_json, [] as AgentTaskCheckpointRecord[]),
+    metadata: safeJsonParse(record.metadata_json, null as unknown),
+  };
+};
+
+export const parseAgentTaskTraceRecord = (record: AgentTaskTraceRecord) => ({
+  ...record,
+  payload: safeJsonParse(record.payload_json, null as unknown),
+});
 
 /**
  * 创建新的聊天会话

@@ -2,10 +2,13 @@ import type { Dispatch, SetStateAction } from 'react';
 import { AlertCircle, Database, Download, FolderOpen, Info, RefreshCw, Save, Search, Trash2 } from 'lucide-react';
 import clsx from 'clsx';
 import type {
+    AgentTaskSnapshot,
+    AgentTaskTrace,
     McpServerConfig,
     MemoryHistoryEntry,
     MemoryMaintenanceStatus,
     MemorySearchResult,
+    RoleSpec,
     ToolDiagnosticDescriptor,
     ToolDiagnosticRunResult,
     UserMemory,
@@ -627,6 +630,23 @@ interface ToolsSettingsSectionProps {
     handleRefreshToolDiagnostics: () => Promise<void>;
     handleRunAllDirectToolDiagnostics: () => Promise<void>;
     handleRunAllAiToolDiagnostics: () => Promise<void>;
+    runtimeTasks: AgentTaskSnapshot[];
+    runtimeRoles: RoleSpec[];
+    selectedRuntimeTaskId: string;
+    setSelectedRuntimeTaskId: Dispatch<SetStateAction<string>>;
+    runtimeTaskTraces: AgentTaskTrace[];
+    runtimeDraftInput: string;
+    setRuntimeDraftInput: Dispatch<SetStateAction<string>>;
+    runtimeDraftMode: 'redclaw' | 'knowledge' | 'chatroom' | 'advisor-discussion' | 'background-maintenance';
+    setRuntimeDraftMode: Dispatch<SetStateAction<'redclaw' | 'knowledge' | 'chatroom' | 'advisor-discussion' | 'background-maintenance'>>;
+    isRuntimeLoading: boolean;
+    isRuntimeTraceLoading: boolean;
+    isRuntimeCreating: boolean;
+    runtimeTaskActionRunning: Record<string, 'resume' | 'cancel' | undefined>;
+    handleRefreshRuntimeData: () => Promise<void>;
+    handleCreateRuntimeTask: () => Promise<void>;
+    handleResumeRuntimeTask: (taskId: string) => Promise<void>;
+    handleCancelRuntimeTask: (taskId: string) => Promise<void>;
 }
 
 export function ToolsSettingsSection({
@@ -658,6 +678,23 @@ export function ToolsSettingsSection({
     handleRefreshToolDiagnostics,
     handleRunAllDirectToolDiagnostics,
     handleRunAllAiToolDiagnostics,
+    runtimeTasks,
+    runtimeRoles,
+    selectedRuntimeTaskId,
+    setSelectedRuntimeTaskId,
+    runtimeTaskTraces,
+    runtimeDraftInput,
+    setRuntimeDraftInput,
+    runtimeDraftMode,
+    setRuntimeDraftMode,
+    isRuntimeLoading,
+    isRuntimeTraceLoading,
+    isRuntimeCreating,
+    runtimeTaskActionRunning,
+    handleRefreshRuntimeData,
+    handleCreateRuntimeTask,
+    handleResumeRuntimeTask,
+    handleCancelRuntimeTask,
 }: ToolsSettingsSectionProps) {
     const availabilityTone = (tool: ToolDiagnosticDescriptor) => {
         switch (tool.availabilityStatus) {
@@ -674,6 +711,8 @@ export function ToolsSettingsSection({
         }
     };
 
+    const selectedRuntimeTask = runtimeTasks.find((task) => task.id === selectedRuntimeTaskId) || null;
+
     const availabilityLabel = (tool: ToolDiagnosticDescriptor) => {
         switch (tool.availabilityStatus) {
             case 'available':
@@ -686,6 +725,21 @@ export function ToolsSettingsSection({
                 return '当前 pack 未暴露';
             default:
                 return '注册异常';
+        }
+    };
+
+    const taskStatusTone = (status: AgentTaskSnapshot['status']) => {
+        switch (status) {
+            case 'completed':
+                return 'bg-green-500/10 text-green-600';
+            case 'running':
+                return 'bg-blue-500/10 text-blue-600';
+            case 'failed':
+                return 'bg-red-500/10 text-red-600';
+            case 'cancelled':
+                return 'bg-slate-500/10 text-slate-600';
+            default:
+                return 'bg-amber-500/10 text-amber-600';
         }
     };
 
@@ -928,123 +982,362 @@ export function ToolsSettingsSection({
             </div>
 
             {showDeveloperDiagnostics && (
-            <div className="bg-surface-secondary/30 rounded-lg border border-border p-4 space-y-4">
-                <div className="flex items-start justify-between gap-3">
-                    <div>
-                        <h3 className="text-sm font-medium text-text-primary">开发者工具调用诊断</h3>
-                        <p className="text-xs text-text-tertiary mt-1">
-                            直接测试用于验证工具本身是否可用，AI 调用测试用于验证模型是否真的会正确发起 tool_call。
-                        </p>
-                    </div>
-                    <div className="flex items-center gap-2">
-                        <button
-                            type="button"
-                            onClick={() => void handleRefreshToolDiagnostics()}
-                            className="px-3 py-1.5 border border-border rounded text-xs hover:bg-surface-secondary transition-colors"
-                        >
-                            刷新列表
-                        </button>
-                        <button
-                            type="button"
-                            onClick={() => void handleRunAllDirectToolDiagnostics()}
-                            className="px-3 py-1.5 border border-border rounded text-xs hover:bg-surface-secondary transition-colors"
-                        >
-                            全部直接测试
-                        </button>
-                        <button
-                            type="button"
-                            onClick={() => void handleRunAllAiToolDiagnostics()}
-                            className="px-3 py-1.5 border border-border rounded text-xs hover:bg-surface-secondary transition-colors"
-                        >
-                            全部 AI 测试
-                        </button>
-                    </div>
-                </div>
+                <div className="space-y-4">
+                    <div className="bg-surface-secondary/30 rounded-lg border border-border p-4 space-y-4">
+                        <div className="flex items-start justify-between gap-3">
+                            <div>
+                                <h3 className="text-sm font-medium text-text-primary">AI Runtime 调试中心</h3>
+                                <p className="text-xs text-text-tertiary mt-1">
+                                    查看当前角色注册表、任务图运行状态和单任务 trace，确认新 runtime 是否按预期执行。
+                                </p>
+                            </div>
+                            <button
+                                type="button"
+                                onClick={() => void handleRefreshRuntimeData()}
+                                className="px-3 py-1.5 border border-border rounded text-xs hover:bg-surface-secondary transition-colors"
+                            >
+                                {isRuntimeLoading ? '刷新中...' : '刷新 Runtime'}
+                            </button>
+                        </div>
 
-                {toolDiagnostics.length === 0 ? (
-                    <div className="text-xs text-text-tertiary border border-dashed border-border rounded-lg px-3 py-5 text-center">
-                        暂无可诊断工具。
-                    </div>
-                ) : (
-                    <div className="space-y-3">
-                        {toolDiagnostics.map((tool) => {
-                            const result = toolDiagnosticResults[tool.name];
-                            const runningMode = toolDiagnosticRunning[tool.name];
-                            const isRunnable = tool.availabilityStatus === 'available';
-                            return (
-                                <div key={tool.name} className="rounded-lg border border-border bg-surface-primary/50 p-3 space-y-3">
-                                    <div className="flex items-start justify-between gap-3">
-                                        <div className="min-w-0">
-                                            <div className="flex items-center gap-2 flex-wrap">
-                                                <span className="text-sm font-medium text-text-primary">{tool.displayName}</span>
-                                                <span className="text-[10px] px-1.5 py-0.5 rounded bg-surface-secondary border border-border text-text-tertiary">
-                                                    {tool.name}
-                                                </span>
-                                                <span className="text-[10px] px-1.5 py-0.5 rounded bg-surface-secondary border border-border text-text-tertiary">
-                                                    {tool.kind}
-                                                </span>
-                                                <span className={clsx('text-[10px] px-1.5 py-0.5 rounded', availabilityTone(tool))}>
-                                                    {availabilityLabel(tool)}
-                                                </span>
-                                                <span className="text-[10px] px-1.5 py-0.5 rounded bg-surface-secondary border border-border text-text-tertiary">
-                                                    {tool.visibility}
-                                                </span>
-                                            </div>
-                                            <p className="text-xs text-text-tertiary mt-1">{tool.description || '暂无描述'}</p>
-                                            <p className="text-[11px] text-text-tertiary mt-1">{tool.availabilityReason}</p>
-                                        </div>
-                                        <div className="flex items-center gap-2 shrink-0">
-                                            <button
-                                                type="button"
-                                                onClick={() => void handleRunDirectToolDiagnostic(tool.name)}
-                                                disabled={!isRunnable || Boolean(runningMode)}
-                                                className="px-3 py-1.5 border border-border rounded text-xs hover:bg-surface-secondary disabled:opacity-50"
-                                            >
-                                                {runningMode === 'direct' ? '直接测试中...' : '直接测试'}
-                                            </button>
-                                            <button
-                                                type="button"
-                                                onClick={() => void handleRunAiToolDiagnostic(tool.name)}
-                                                disabled={!isRunnable || Boolean(runningMode)}
-                                                className="px-3 py-1.5 border border-border rounded text-xs hover:bg-surface-secondary disabled:opacity-50"
-                                            >
-                                                {runningMode === 'ai' ? 'AI 测试中...' : 'AI 调用测试'}
-                                            </button>
-                                        </div>
-                                    </div>
-
-                                    {result && (
-                                        <div className={clsx(
-                                            'rounded border p-3 text-xs space-y-2',
-                                            result.success
-                                                ? 'border-green-200 bg-green-500/5'
-                                                : 'border-red-200 bg-red-500/5'
-                                        )}>
-                                            <div className="flex items-center gap-2">
-                                                <span className={clsx(
-                                                    'px-1.5 py-0.5 rounded text-[10px] font-medium',
-                                                    result.success ? 'bg-green-500/10 text-green-600' : 'bg-red-500/10 text-red-600'
-                                                )}>
-                                                    {result.mode === 'direct' ? '直接测试' : 'AI 调用测试'}
-                                                </span>
-                                                <span className="text-text-secondary">
-                                                    {result.success ? '成功' : (result.error || '失败')}
-                                                </span>
-                                            </div>
-                                            <details>
-                                                <summary className="cursor-pointer text-text-secondary">查看详情</summary>
-                                                <pre className="mt-2 max-h-56 overflow-auto whitespace-pre-wrap break-all rounded bg-surface-primary/70 p-3 text-[11px] leading-5 text-text-secondary">
-                                                    {JSON.stringify(result, null, 2)}
-                                                </pre>
-                                            </details>
+                        <div className="grid grid-cols-1 xl:grid-cols-[340px_minmax(0,1fr)] gap-4">
+                            <div className="space-y-4">
+                                <div className="rounded-lg border border-border bg-surface-primary/50 p-3 space-y-3">
+                                    <div className="text-xs font-medium text-text-primary">角色注册表</div>
+                                    {runtimeRoles.length === 0 ? (
+                                        <div className="text-[11px] text-text-tertiary">暂无角色定义。</div>
+                                    ) : (
+                                        <div className="space-y-2">
+                                            {runtimeRoles.map((role) => (
+                                                <div key={role.roleId} className="rounded border border-border bg-surface-secondary/30 p-2">
+                                                    <div className="flex items-center justify-between gap-2">
+                                                        <div className="text-xs font-medium text-text-primary">{role.roleId}</div>
+                                                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-surface-secondary border border-border text-text-tertiary">
+                                                            {role.allowedToolPack}
+                                                        </span>
+                                                    </div>
+                                                    <p className="text-[11px] text-text-tertiary mt-1 leading-5">{role.purpose}</p>
+                                                </div>
+                                            ))}
                                         </div>
                                     )}
                                 </div>
-                            );
-                        })}
+
+                                <div className="rounded-lg border border-border bg-surface-primary/50 p-3 space-y-3">
+                                    <div className="text-xs font-medium text-text-primary">手动创建任务</div>
+                                    <select
+                                        value={runtimeDraftMode}
+                                        onChange={(e) => setRuntimeDraftMode(e.target.value as typeof runtimeDraftMode)}
+                                        className="w-full bg-surface-secondary/30 rounded border border-border px-3 py-2 text-sm focus:outline-none focus:border-accent-primary transition-colors"
+                                    >
+                                        <option value="redclaw">redclaw</option>
+                                        <option value="knowledge">knowledge</option>
+                                        <option value="chatroom">chatroom</option>
+                                        <option value="advisor-discussion">advisor-discussion</option>
+                                        <option value="background-maintenance">background-maintenance</option>
+                                    </select>
+                                    <textarea
+                                        value={runtimeDraftInput}
+                                        onChange={(e) => setRuntimeDraftInput(e.target.value)}
+                                        rows={4}
+                                        placeholder="输入一条开发者测试任务，例如：根据随机漫步素材写一篇文案并保存到稿件。"
+                                        className="w-full bg-surface-secondary/30 rounded border border-border px-3 py-2 text-sm focus:outline-none focus:border-accent-primary transition-colors"
+                                    />
+                                    <button
+                                        type="button"
+                                        onClick={() => void handleCreateRuntimeTask()}
+                                        disabled={isRuntimeCreating}
+                                        className="w-full px-3 py-2 bg-accent-primary text-white rounded text-xs font-medium hover:opacity-90 disabled:opacity-50"
+                                    >
+                                        {isRuntimeCreating ? '创建中...' : '创建任务图'}
+                                    </button>
+                                </div>
+                            </div>
+
+                            <div className="space-y-4">
+                                <div className="rounded-lg border border-border bg-surface-primary/50 p-3 space-y-3">
+                                    <div className="flex items-center justify-between gap-2">
+                                        <div className="text-xs font-medium text-text-primary">任务图实例</div>
+                                        <span className="text-[11px] text-text-tertiary">共 {runtimeTasks.length} 条</span>
+                                    </div>
+                                    {runtimeTasks.length === 0 ? (
+                                        <div className="text-[11px] text-text-tertiary">暂无任务实例。</div>
+                                    ) : (
+                                        <div className="space-y-2 max-h-80 overflow-auto pr-1">
+                                            {runtimeTasks.map((task) => (
+                                                <button
+                                                    key={task.id}
+                                                    type="button"
+                                                    onClick={() => setSelectedRuntimeTaskId(task.id)}
+                                                    className={clsx(
+                                                        'w-full text-left rounded border p-3 transition-colors',
+                                                        selectedRuntimeTaskId === task.id
+                                                            ? 'border-accent-primary bg-accent-primary/5'
+                                                            : 'border-border bg-surface-secondary/20 hover:bg-surface-secondary/30'
+                                                    )}
+                                                >
+                                                    <div className="flex items-center justify-between gap-2">
+                                                        <div className="min-w-0">
+                                                            <div className="text-xs font-medium text-text-primary truncate">{task.goal || task.taskType}</div>
+                                                            <div className="text-[11px] text-text-tertiary mt-1 font-mono truncate">{task.id}</div>
+                                                        </div>
+                                                        <span className={clsx('text-[10px] px-1.5 py-0.5 rounded', taskStatusTone(task.status))}>
+                                                            {task.status}
+                                                        </span>
+                                                    </div>
+                                                    <div className="flex flex-wrap gap-2 mt-2 text-[11px] text-text-tertiary">
+                                                        <span>mode: {task.runtimeMode}</span>
+                                                        {task.roleId ? <span>role: {task.roleId}</span> : null}
+                                                        {task.intent ? <span>intent: {task.intent}</span> : null}
+                                                    </div>
+                                                </button>
+                                            ))}
+                                        </div>
+                                    )}
+                                </div>
+
+                                <div className="rounded-lg border border-border bg-surface-primary/50 p-3 space-y-3">
+                                    <div className="flex items-center justify-between gap-2">
+                                        <div className="text-xs font-medium text-text-primary">任务详情 / Trace</div>
+                                        {selectedRuntimeTask ? (
+                                            <div className="flex items-center gap-2">
+                                                <button
+                                                    type="button"
+                                                    onClick={() => void handleResumeRuntimeTask(selectedRuntimeTask.id)}
+                                                    disabled={Boolean(runtimeTaskActionRunning[selectedRuntimeTask.id])}
+                                                    className="px-2.5 py-1.5 border border-border rounded text-xs hover:bg-surface-secondary transition-colors disabled:opacity-50"
+                                                >
+                                                    {runtimeTaskActionRunning[selectedRuntimeTask.id] === 'resume' ? '恢复中...' : '恢复'}
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => void handleCancelRuntimeTask(selectedRuntimeTask.id)}
+                                                    disabled={Boolean(runtimeTaskActionRunning[selectedRuntimeTask.id])}
+                                                    className="px-2.5 py-1.5 border border-red-300 text-red-600 rounded text-xs hover:bg-red-50/70 transition-colors disabled:opacity-50"
+                                                >
+                                                    {runtimeTaskActionRunning[selectedRuntimeTask.id] === 'cancel' ? '取消中...' : '取消'}
+                                                </button>
+                                            </div>
+                                        ) : null}
+                                    </div>
+
+                                    {!selectedRuntimeTask ? (
+                                        <div className="text-[11px] text-text-tertiary">请选择左侧一条任务查看节点和 trace。</div>
+                                    ) : (
+                                        <div className="space-y-3">
+                                            <div className="rounded border border-border bg-surface-secondary/20 p-3">
+                                                <div className="flex items-center gap-2 flex-wrap">
+                                                    <span className="text-xs font-medium text-text-primary">{selectedRuntimeTask.goal || selectedRuntimeTask.taskType}</span>
+                                                    <span className={clsx('text-[10px] px-1.5 py-0.5 rounded', taskStatusTone(selectedRuntimeTask.status))}>
+                                                        {selectedRuntimeTask.status}
+                                                    </span>
+                                                    {selectedRuntimeTask.roleId ? (
+                                                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-surface-secondary border border-border text-text-tertiary">
+                                                            {selectedRuntimeTask.roleId}
+                                                        </span>
+                                                    ) : null}
+                                                </div>
+                                                <div className="mt-2 text-[11px] text-text-tertiary space-y-1">
+                                                    <div className="font-mono break-all">{selectedRuntimeTask.id}</div>
+                                                    {selectedRuntimeTask.route?.reasoning ? (
+                                                        <div>route: {selectedRuntimeTask.route.reasoning}</div>
+                                                    ) : null}
+                                                    {selectedRuntimeTask.lastError ? (
+                                                        <div className="text-red-600">error: {selectedRuntimeTask.lastError}</div>
+                                                    ) : null}
+                                                </div>
+                                            </div>
+
+                                            <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+                                                <div className="rounded border border-border bg-surface-secondary/20 p-3 space-y-2">
+                                                    <div className="text-[11px] font-medium text-text-primary">节点状态</div>
+                                                    <div className="space-y-2">
+                                                        {selectedRuntimeTask.graph.map((node) => (
+                                                            <div key={node.id} className="rounded border border-border bg-surface-primary/60 p-2">
+                                                                <div className="flex items-center justify-between gap-2">
+                                                                    <div className="text-[11px] font-medium text-text-primary">{node.title}</div>
+                                                                    <span className={clsx('text-[10px] px-1.5 py-0.5 rounded', taskStatusTone(node.status === 'failed' ? 'failed' : node.status === 'completed' ? 'completed' : node.status === 'running' ? 'running' : 'pending'))}>
+                                                                        {node.status}
+                                                                    </span>
+                                                                </div>
+                                                                <div className="text-[10px] text-text-tertiary mt-1">{node.type}</div>
+                                                                {node.summary ? <div className="text-[11px] text-text-secondary mt-1">{node.summary}</div> : null}
+                                                                {node.error ? <div className="text-[11px] text-red-600 mt-1">{node.error}</div> : null}
+                                                            </div>
+                                                        ))}
+                                                    </div>
+                                                </div>
+
+                                                <div className="rounded border border-border bg-surface-secondary/20 p-3 space-y-2">
+                                                    <div className="text-[11px] font-medium text-text-primary">产物 / Checkpoints</div>
+                                                    <div className="space-y-2">
+                                                        {selectedRuntimeTask.artifacts.map((artifact) => (
+                                                            <div key={artifact.id} className="rounded border border-border bg-surface-primary/60 p-2 text-[11px] text-text-secondary">
+                                                                <div className="font-medium text-text-primary">{artifact.label}</div>
+                                                                <div className="text-text-tertiary mt-1">{artifact.type}</div>
+                                                                {artifact.path ? <div className="font-mono break-all mt-1">{artifact.path}</div> : null}
+                                                            </div>
+                                                        ))}
+                                                        {selectedRuntimeTask.checkpoints.map((checkpoint) => (
+                                                            <div key={checkpoint.id} className="rounded border border-border bg-surface-primary/60 p-2 text-[11px] text-text-secondary">
+                                                                <div className="font-medium text-text-primary">{checkpoint.summary}</div>
+                                                                <div className="text-text-tertiary mt-1">node: {checkpoint.nodeId}</div>
+                                                            </div>
+                                                        ))}
+                                                        {selectedRuntimeTask.artifacts.length === 0 && selectedRuntimeTask.checkpoints.length === 0 ? (
+                                                            <div className="text-[11px] text-text-tertiary">暂无产物或 checkpoint。</div>
+                                                        ) : null}
+                                                    </div>
+                                                </div>
+                                            </div>
+
+                                            <div className="rounded border border-border bg-surface-secondary/20 p-3 space-y-2">
+                                                <div className="text-[11px] font-medium text-text-primary">执行 Trace</div>
+                                                {isRuntimeTraceLoading ? (
+                                                    <div className="text-[11px] text-text-tertiary">加载中...</div>
+                                                ) : runtimeTaskTraces.length === 0 ? (
+                                                    <div className="text-[11px] text-text-tertiary">暂无 trace。</div>
+                                                ) : (
+                                                    <div className="max-h-72 overflow-auto space-y-2 pr-1">
+                                                        {runtimeTaskTraces.map((trace) => (
+                                                            <details key={trace.id} className="rounded border border-border bg-surface-primary/60 p-2">
+                                                                <summary className="cursor-pointer flex items-center justify-between gap-2 text-[11px]">
+                                                                    <span className="font-medium text-text-primary">{trace.eventType}</span>
+                                                                    <span className="text-text-tertiary">{new Date(trace.createdAt).toLocaleString()}</span>
+                                                                </summary>
+                                                                <pre className="mt-2 whitespace-pre-wrap break-all text-[11px] leading-5 text-text-secondary">
+                                                                    {JSON.stringify(trace.payload ?? {}, null, 2)}
+                                                                </pre>
+                                                            </details>
+                                                        ))}
+                                                    </div>
+                                                )}
+                                            </div>
+                                        </div>
+                                    )}
+                                </div>
+                            </div>
+                        </div>
                     </div>
-                )}
-            </div>
+
+                    <div className="bg-surface-secondary/30 rounded-lg border border-border p-4 space-y-4">
+                        <div className="flex items-start justify-between gap-3">
+                            <div>
+                                <h3 className="text-sm font-medium text-text-primary">开发者工具调用诊断</h3>
+                                <p className="text-xs text-text-tertiary mt-1">
+                                    直接测试用于验证工具本身是否可用，AI 调用测试用于验证模型是否真的会正确发起 tool_call。
+                                </p>
+                            </div>
+                            <div className="flex items-center gap-2">
+                                <button
+                                    type="button"
+                                    onClick={() => void handleRefreshToolDiagnostics()}
+                                    className="px-3 py-1.5 border border-border rounded text-xs hover:bg-surface-secondary transition-colors"
+                                >
+                                    刷新列表
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => void handleRunAllDirectToolDiagnostics()}
+                                    className="px-3 py-1.5 border border-border rounded text-xs hover:bg-surface-secondary transition-colors"
+                                >
+                                    全部直接测试
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => void handleRunAllAiToolDiagnostics()}
+                                    className="px-3 py-1.5 border border-border rounded text-xs hover:bg-surface-secondary transition-colors"
+                                >
+                                    全部 AI 测试
+                                </button>
+                            </div>
+                        </div>
+
+                        {toolDiagnostics.length === 0 ? (
+                            <div className="text-xs text-text-tertiary border border-dashed border-border rounded-lg px-3 py-5 text-center">
+                                暂无可诊断工具。
+                            </div>
+                        ) : (
+                            <div className="space-y-3">
+                                {toolDiagnostics.map((tool) => {
+                                    const result = toolDiagnosticResults[tool.name];
+                                    const runningMode = toolDiagnosticRunning[tool.name];
+                                    const isRunnable = tool.availabilityStatus === 'available';
+                                    return (
+                                        <div key={tool.name} className="rounded-lg border border-border bg-surface-primary/50 p-3 space-y-3">
+                                            <div className="flex items-start justify-between gap-3">
+                                                <div className="min-w-0">
+                                                    <div className="flex items-center gap-2 flex-wrap">
+                                                        <span className="text-sm font-medium text-text-primary">{tool.displayName}</span>
+                                                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-surface-secondary border border-border text-text-tertiary">
+                                                            {tool.name}
+                                                        </span>
+                                                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-surface-secondary border border-border text-text-tertiary">
+                                                            {tool.kind}
+                                                        </span>
+                                                        <span className={clsx('text-[10px] px-1.5 py-0.5 rounded', availabilityTone(tool))}>
+                                                            {availabilityLabel(tool)}
+                                                        </span>
+                                                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-surface-secondary border border-border text-text-tertiary">
+                                                            {tool.visibility}
+                                                        </span>
+                                                    </div>
+                                                    <p className="text-xs text-text-tertiary mt-1">{tool.description || '暂无描述'}</p>
+                                                    <p className="text-[11px] text-text-tertiary mt-1">{tool.availabilityReason}</p>
+                                                </div>
+                                                <div className="flex items-center gap-2 shrink-0">
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => void handleRunDirectToolDiagnostic(tool.name)}
+                                                        disabled={!isRunnable || Boolean(runningMode)}
+                                                        className="px-3 py-1.5 border border-border rounded text-xs hover:bg-surface-secondary disabled:opacity-50"
+                                                    >
+                                                        {runningMode === 'direct' ? '直接测试中...' : '直接测试'}
+                                                    </button>
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => void handleRunAiToolDiagnostic(tool.name)}
+                                                        disabled={!isRunnable || Boolean(runningMode)}
+                                                        className="px-3 py-1.5 border border-border rounded text-xs hover:bg-surface-secondary disabled:opacity-50"
+                                                    >
+                                                        {runningMode === 'ai' ? 'AI 测试中...' : 'AI 调用测试'}
+                                                    </button>
+                                                </div>
+                                            </div>
+
+                                            {result && (
+                                                <div className={clsx(
+                                                    'rounded border p-3 text-xs space-y-2',
+                                                    result.success
+                                                        ? 'border-green-200 bg-green-500/5'
+                                                        : 'border-red-200 bg-red-500/5'
+                                                )}>
+                                                    <div className="flex items-center gap-2">
+                                                        <span className={clsx(
+                                                            'px-1.5 py-0.5 rounded text-[10px] font-medium',
+                                                            result.success ? 'bg-green-500/10 text-green-600' : 'bg-red-500/10 text-red-600'
+                                                        )}>
+                                                            {result.mode === 'direct' ? '直接测试' : 'AI 调用测试'}
+                                                        </span>
+                                                        <span className="text-text-secondary">
+                                                            {result.success ? '成功' : (result.error || '失败')}
+                                                        </span>
+                                                    </div>
+                                                    <details>
+                                                        <summary className="cursor-pointer text-text-secondary">查看详情</summary>
+                                                        <pre className="mt-2 max-h-56 overflow-auto whitespace-pre-wrap break-all rounded bg-surface-primary/70 p-3 text-[11px] leading-5 text-text-secondary">
+                                                            {JSON.stringify(result, null, 2)}
+                                                        </pre>
+                                                    </details>
+                                                </div>
+                                            )}
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        )}
+                    </div>
+                </div>
             )}
         </section>
     );

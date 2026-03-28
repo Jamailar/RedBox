@@ -472,7 +472,7 @@ ${ragContext.context}
         this.agent = new Agent({
             initialState: {
                 model: this.createModelWithBaseUrl(),
-                thinkingLevel: 'off',
+                thinkingLevel: 'low',
             },
             getApiKey: async () => this.config.apiKey,
         });

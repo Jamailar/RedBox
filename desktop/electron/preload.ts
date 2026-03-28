@@ -44,12 +44,23 @@ contextBridge.exposeInMainWorld('ipcRenderer', {
     getRecent: (limit?: number) => ipcRenderer.invoke('debug:get-recent', { limit }),
     openLogDir: () => ipcRenderer.invoke('debug:open-log-dir'),
   },
+  tasks: {
+    create: (payload?: { runtimeMode?: string; sessionId?: string; userInput?: string; metadata?: Record<string, unknown> }) => ipcRenderer.invoke('tasks:create', payload || {}),
+    list: (payload?: { status?: string; ownerSessionId?: string; limit?: number }) => ipcRenderer.invoke('tasks:list', payload || {}),
+    get: (payload: { taskId: string }) => ipcRenderer.invoke('tasks:get', payload),
+    resume: (payload: { taskId: string }) => ipcRenderer.invoke('tasks:resume', payload),
+    cancel: (payload: { taskId: string }) => ipcRenderer.invoke('tasks:cancel', payload),
+    trace: (payload: { taskId: string; limit?: number }) => ipcRenderer.invoke('tasks:trace', payload),
+  },
   getAppVersion: () => ipcRenderer.invoke('app:get-version'),
   checkAppUpdate: (force = false) => ipcRenderer.invoke('app:check-update', { force }),
   openAppReleasePage: (url?: string) => ipcRenderer.invoke('app:open-release-page', { url }),
 
   // AI (Legacy)
   fetchModels: (config: { apiKey: string, baseURL: string, presetId?: string, protocol?: 'openai' | 'anthropic' | 'gemini', purpose?: 'chat' | 'image' }) => ipcRenderer.invoke('ai:fetch-models', config),
+  aiRoles: {
+    list: () => ipcRenderer.invoke('ai:roles:list'),
+  },
   detectAiProtocol: (config: { baseURL: string, presetId?: string, protocol?: string }) => ipcRenderer.invoke('ai:detect-protocol', config),
   testAiConnection: (config: { apiKey: string, baseURL: string, presetId?: string, protocol?: 'openai' | 'anthropic' | 'gemini' }) => ipcRenderer.invoke('ai:test-connection', config),
   startChat: (message: string, modelConfig?: unknown) => ipcRenderer.send('ai:start-chat', message, modelConfig),

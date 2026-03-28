@@ -78,6 +78,88 @@ export interface ToolDiagnosticRunResult {
   executionSucceeded?: boolean;
 }
 
+export interface AgentTaskNode {
+  id: string;
+  type: string;
+  title: string;
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'skipped';
+  startedAt?: number;
+  completedAt?: number;
+  summary?: string;
+  error?: string;
+}
+
+export interface AgentTaskCheckpoint {
+  id: string;
+  nodeId: string;
+  summary: string;
+  payload?: unknown;
+  createdAt: number;
+}
+
+export interface AgentTaskArtifact {
+  id: string;
+  type: string;
+  label: string;
+  path?: string;
+  metadata?: unknown;
+  createdAt: number;
+}
+
+export interface IntentRouteInfo {
+  intent: string;
+  goal: string;
+  requiredCapabilities: string[];
+  recommendedRole: string;
+  requiresLongRunningTask: boolean;
+  requiresMultiAgent: boolean;
+  requiresHumanApproval: boolean;
+  confidence: number;
+  reasoning: string;
+}
+
+export interface AgentTaskSnapshot {
+  id: string;
+  taskType: string;
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
+  runtimeMode: string;
+  ownerSessionId?: string | null;
+  intent?: string | null;
+  roleId?: string | null;
+  goal?: string | null;
+  currentNode?: string | null;
+  route?: IntentRouteInfo | null;
+  graph: AgentTaskNode[];
+  artifacts: AgentTaskArtifact[];
+  checkpoints: AgentTaskCheckpoint[];
+  metadata?: unknown;
+  lastError?: string | null;
+  createdAt: number;
+  updatedAt: number;
+  startedAt?: number | null;
+  completedAt?: number | null;
+}
+
+export interface AgentTaskTrace {
+  id: number;
+  taskId: string;
+  nodeId?: string | null;
+  eventType: string;
+  payload?: unknown;
+  createdAt: number;
+}
+
+export interface RoleSpec {
+  roleId: string;
+  purpose: string;
+  systemPrompt: string;
+  allowedToolPack: string;
+  inputSchema: string;
+  outputSchema: string;
+  handoffContract: string;
+  artifactTypes: string[];
+}
+
 export interface OfficialModelInfo {
   id: string;
   capability?: string;

@@ -34,6 +34,88 @@ export interface ToolDiagnosticRunResult {
   executionSucceeded?: boolean;
 }
 
+export interface AgentTaskNode {
+  id: string;
+  type: string;
+  title: string;
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'skipped';
+  startedAt?: number;
+  completedAt?: number;
+  summary?: string;
+  error?: string;
+}
+
+export interface AgentTaskCheckpoint {
+  id: string;
+  nodeId: string;
+  summary: string;
+  payload?: unknown;
+  createdAt: number;
+}
+
+export interface AgentTaskArtifact {
+  id: string;
+  type: string;
+  label: string;
+  path?: string;
+  metadata?: unknown;
+  createdAt: number;
+}
+
+export interface IntentRouteInfo {
+  intent: string;
+  goal: string;
+  requiredCapabilities: string[];
+  recommendedRole: string;
+  requiresLongRunningTask: boolean;
+  requiresMultiAgent: boolean;
+  requiresHumanApproval: boolean;
+  confidence: number;
+  reasoning: string;
+}
+
+export interface AgentTaskSnapshot {
+  id: string;
+  taskType: string;
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
+  runtimeMode: string;
+  ownerSessionId?: string | null;
+  intent?: string | null;
+  roleId?: string | null;
+  goal?: string | null;
+  currentNode?: string | null;
+  route?: IntentRouteInfo | null;
+  graph: AgentTaskNode[];
+  artifacts: AgentTaskArtifact[];
+  checkpoints: AgentTaskCheckpoint[];
+  metadata?: unknown;
+  lastError?: string | null;
+  createdAt: number;
+  updatedAt: number;
+  startedAt?: number | null;
+  completedAt?: number | null;
+}
+
+export interface AgentTaskTrace {
+  id: number;
+  taskId: string;
+  nodeId?: string | null;
+  eventType: string;
+  payload?: unknown;
+  createdAt: number;
+}
+
+export interface RoleSpec {
+  roleId: string;
+  purpose: string;
+  systemPrompt: string;
+  allowedToolPack: string;
+  inputSchema: string;
+  outputSchema: string;
+  handoffContract: string;
+  artifactTypes: string[];
+}
+
 declare global {
   interface ChatSession {
     id: string;
@@ -59,10 +141,21 @@ declare global {
         getRecent: (limit?: number) => Promise<{ lines: string[] }>;
         openLogDir: () => Promise<{ success: boolean; error?: string; path: string }>;
       };
+      tasks: {
+        create: (payload?: { runtimeMode?: string; sessionId?: string; userInput?: string; metadata?: Record<string, unknown> }) => Promise<AgentTaskSnapshot>;
+        list: (payload?: { status?: string; ownerSessionId?: string; limit?: number }) => Promise<AgentTaskSnapshot[]>;
+        get: (payload: { taskId: string }) => Promise<AgentTaskSnapshot | null>;
+        resume: (payload: { taskId: string }) => Promise<AgentTaskSnapshot | null>;
+        cancel: (payload: { taskId: string }) => Promise<AgentTaskSnapshot | null>;
+        trace: (payload: { taskId: string; limit?: number }) => Promise<AgentTaskTrace[]>;
+      };
       getAppVersion: () => Promise<string>;
       checkAppUpdate: (force?: boolean) => Promise<{ success: boolean; hasUpdate: boolean; throttled?: boolean; inFlight?: boolean; message?: string; notice?: { currentVersion: string; latestVersion: string; htmlUrl: string; name: string; publishedAt: string; body: string } }>;
       openAppReleasePage: (url?: string) => Promise<{ success: boolean; error?: string }>;
       fetchModels: (config: { apiKey: string, baseURL: string, presetId?: string, protocol?: 'openai' | 'anthropic' | 'gemini', purpose?: 'chat' | 'image' }) => Promise<{ id: string }[]>;
+      aiRoles: {
+        list: () => Promise<RoleSpec[]>;
+      };
       detectAiProtocol: (config: { baseURL: string; presetId?: string; protocol?: string }) => Promise<{ success: boolean; protocol: 'openai' | 'anthropic' | 'gemini'; error?: string }>;
       testAiConnection: (config: { apiKey: string; baseURL: string; presetId?: string; protocol?: 'openai' | 'anthropic' | 'gemini' }) => Promise<{ success: boolean; protocol: 'openai' | 'anthropic' | 'gemini'; models: Array<{ id: string }>; message: string }>;
       startChat: (message: string, modelConfig?: unknown) => void;

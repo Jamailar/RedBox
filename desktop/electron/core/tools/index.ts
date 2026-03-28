@@ -87,6 +87,11 @@ const ensureBuiltinToolDescriptorsRegistered = (): void => {
         contexts: publicAllContexts,
         visibility: 'public',
         requiresContext: null,
+        preconditions: ['path must be inside workspace'],
+        successSignal: 'file written successfully',
+        failureSignal: 'path blocked or write failed',
+        artifactOutput: ['file'],
+        retryPolicy: 'manual',
         create: () => new WriteFileTool(),
     });
     register({
@@ -97,6 +102,11 @@ const ensureBuiltinToolDescriptorsRegistered = (): void => {
         contexts: publicAllContexts,
         visibility: 'public',
         requiresContext: null,
+        preconditions: ['target file must be inside workspace'],
+        successSignal: 'replacement applied',
+        failureSignal: 'target text not found or path invalid',
+        artifactOutput: ['file'],
+        retryPolicy: 'manual',
         create: () => new EditTool(),
     });
     register({
@@ -107,6 +117,11 @@ const ensureBuiltinToolDescriptorsRegistered = (): void => {
         contexts: publicAllContexts,
         visibility: 'public',
         requiresContext: null,
+        preconditions: ['path must be inside workspace'],
+        successSignal: 'file content returned',
+        failureSignal: 'file not found or blocked',
+        artifactOutput: ['read-result'],
+        retryPolicy: 'safe-retry',
         create: () => new ReadFileTool(),
     });
     register({
@@ -117,6 +132,11 @@ const ensureBuiltinToolDescriptorsRegistered = (): void => {
         contexts: publicAllContexts,
         visibility: 'public',
         requiresContext: null,
+        preconditions: ['search path must be inside workspace'],
+        successSignal: 'matching files returned',
+        failureSignal: 'search failed or path invalid',
+        artifactOutput: ['search-result'],
+        retryPolicy: 'safe-retry',
         create: () => new GrepTool(),
     });
     register({
@@ -127,6 +147,11 @@ const ensureBuiltinToolDescriptorsRegistered = (): void => {
         contexts: publicAllContexts,
         visibility: 'public',
         requiresContext: null,
+        preconditions: ['cwd must be inside workspace', 'dangerous commands may require confirmation'],
+        successSignal: 'command completed',
+        failureSignal: 'command blocked or failed',
+        artifactOutput: ['command-output'],
+        retryPolicy: 'manual',
         create: () => new BashTool(),
     });
     register({
@@ -137,6 +162,11 @@ const ensureBuiltinToolDescriptorsRegistered = (): void => {
         contexts: publicAllContexts,
         visibility: 'public',
         requiresContext: null,
+        preconditions: ['command must use supported namespace/action'],
+        successSignal: 'structured app result returned',
+        failureSignal: 'namespace/action invalid or command failed',
+        artifactOutput: ['manuscript', 'image', 'project', 'config'],
+        retryPolicy: 'manual',
         create: () => new AppCliTool(),
     });
     register({
@@ -157,6 +187,11 @@ const ensureBuiltinToolDescriptorsRegistered = (): void => {
         contexts: publicAllContexts,
         visibility: 'public',
         requiresContext: null,
+        preconditions: ['query must be non-empty'],
+        successSignal: 'search results returned',
+        failureSignal: 'search request failed',
+        artifactOutput: ['web-results'],
+        retryPolicy: 'safe-retry',
         create: () => new WebSearchTool(),
     });
     register({
@@ -177,6 +212,11 @@ const ensureBuiltinToolDescriptorsRegistered = (): void => {
         contexts: compactRedClawContexts,
         visibility: 'public',
         requiresContext: null,
+        preconditions: ['content must be long-term useful'],
+        successSignal: 'memory persisted',
+        failureSignal: 'memory write rejected',
+        artifactOutput: ['memory'],
+        retryPolicy: 'manual',
         create: () => new SaveMemoryTool(),
     });
     register({
@@ -187,6 +227,11 @@ const ensureBuiltinToolDescriptorsRegistered = (): void => {
         contexts: compactRedClawContexts,
         visibility: 'public',
         requiresContext: null,
+        preconditions: ['document type must be valid'],
+        successSignal: 'profile document updated',
+        failureSignal: 'document update failed',
+        artifactOutput: ['profile-doc'],
+        retryPolicy: 'manual',
         create: () => new RedClawUpdateProfileDocTool(),
     });
     register({

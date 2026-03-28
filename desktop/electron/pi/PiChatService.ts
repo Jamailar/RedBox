@@ -49,6 +49,7 @@ import { resolveModelScopeFromContextType, resolveScopedModelName } from '../cor
 import { normalizeApiBaseUrl, safeUrlJoin } from '../core/urlUtils';
 import { logDebugEvent } from '../core/debugLogger';
 import { loadPrompt, renderPrompt } from '../prompts/runtime';
+import { getAgentRuntime, getTaskGraphRuntime, type PreparedRuntimeExecution, type RuntimeMode } from '../core/ai';
 
 interface SessionMetadata {
   associatedFilePath?: string;
@@ -135,7 +136,7 @@ const TOOL_RESULT_MAX_DISPLAY_CHARS = 26000;
 const TOOL_RESULT_MAX_ERROR_CHARS = 4000;
 const PI_CHAT_SYSTEM_BASE_TEMPLATE = loadPrompt(
   'runtime/pi/system_base.txt',
-  'You are an expert coding assistant operating inside pi.\nCurrent date: {{current_date}}\nCurrent working directory: {{current_working_directory}}'
+  'You are RedClaw, the self-media operations expert agent inside RedBox.\nCurrent date: {{current_date}}\nCurrent working directory: {{current_working_directory}}'
 );
 
 interface ToolGuardState {
@@ -164,6 +165,7 @@ export class PiChatService {
   private unsubscribeAgentEvents: (() => void) | null = null;
   private toolRegistry: ToolRegistry;
   private toolExecutor: ToolExecutor;
+  private activeRuntimeExecution: PreparedRuntimeExecution | null = null;
   private runtimeState: SessionRuntimeState = {
     isProcessing: false,
     partialResponse: '',
@@ -450,6 +452,7 @@ export class PiChatService {
     let metadata = this.getSessionMetadata(sessionId);
     const modelScope = resolveModelScopeFromContextType(String(metadata.contextType || ''));
     const modelName = resolveScopedModelName(settings, modelScope, (settings.openaiModel as string) || 'gpt-4o');
+    const runtimeMode = this.resolveRuntimeMode(metadata);
 
     const workspacePaths = getWorkspacePaths();
     const workspace = workspacePaths.base;
@@ -547,13 +550,26 @@ export class PiChatService {
         console.warn('[PiChatService] Failed to reload RedClaw profile bundle:', error);
       }
     }
-    const systemPrompt = this.buildSystemPrompt(
+    const baseSystemPrompt = this.buildSystemPrompt(
       workspacePaths,
       metadata,
       longTermMemory,
       redClawProjectContext,
       redClawProfileBundle,
     );
+    const preparedExecution = getAgentRuntime().prepareExecution({
+      runtimeContext: {
+        sessionId,
+        runtimeMode,
+        userInput: content,
+        metadata: metadata as Record<string, unknown>,
+        workspaceRoot: workspacePaths.workspaceRoot,
+        currentSpaceRoot: workspacePaths.base,
+      },
+      baseSystemPrompt,
+    });
+    this.activeRuntimeExecution = preparedExecution;
+    const systemPrompt = preparedExecution.systemPrompt;
     const history = this.historyToAgentMessages(sessionId, content, metadata);
     console.log('[PiChatService] sendMessage', {
       sessionId,
@@ -566,6 +582,10 @@ export class PiChatService {
       workspaceBase: workspacePaths.base,
       manuscriptsPath: workspacePaths.manuscripts,
       redClawCompactTargetTokens,
+      taskId: preparedExecution.task.id,
+      route: preparedExecution.route.intent,
+      role: preparedExecution.role.roleId,
+      thinkingBudget: preparedExecution.thinkingBudget,
     });
     this.emitDebugLog('info', 'sendMessage:prepared', {
       modelName,
@@ -573,7 +593,21 @@ export class PiChatService {
       historyCount: history.length,
       isContextBound: Boolean(metadata.isContextBound),
       compacted: Boolean(metadata.compactSummary),
+      taskId: preparedExecution.task.id,
+      route: preparedExecution.route.intent,
+      role: preparedExecution.role.roleId,
+      thinkingBudget: preparedExecution.thinkingBudget,
     });
+    this.traceActiveExecution('runtime.prepared', {
+      modelName,
+      baseURL,
+      modelScope,
+      runtimeMode,
+      route: preparedExecution.route,
+      role: preparedExecution.role.roleId,
+      thinkingBudget: preparedExecution.thinkingBudget,
+      historyCount: history.length,
+    }, 'plan');
 
     try {
       this.emitDebugLog('info', 'agent:run:start');
@@ -613,6 +647,7 @@ export class PiChatService {
       if (finalResultError) {
         console.error('[PiChatService] Chat failed after fallback:', finalResultError);
         this.emitDebugLog('error', 'sendMessage:failed', { error: finalResultError });
+        getAgentRuntime().failExecution(preparedExecution.task.id, finalResultError);
         this.sendToUI('chat:error', this.buildChatErrorPayload(finalResultError));
         return;
       }
@@ -650,17 +685,23 @@ export class PiChatService {
         streamedChunks: runResult.streamedChunks,
         responseLength: fullResponse.length,
       });
+      getAgentRuntime().completeExecution(preparedExecution.task.id, {
+        responseLength: fullResponse.length,
+        streamedChunks: runResult.streamedChunks,
+      });
       this.sendToUI('chat:response-end', { content: fullResponse });
     } catch (error: unknown) {
       if (!signal.aborted) {
         const errorMessage = error instanceof Error ? error.message : 'Unknown error';
         console.error('[PiChatService] Error:', errorMessage);
         this.emitDebugLog('error', 'sendMessage:exception', { error: errorMessage });
+        getAgentRuntime().failExecution(preparedExecution.task.id, errorMessage);
         this.sendToUI('chat:error', this.buildChatErrorPayload(errorMessage));
       }
     } finally {
       this.cleanupAgentSubscription();
       this.abortController = null;
+      this.activeRuntimeExecution = null;
       this.setRuntimeState({
         isProcessing: false,
       });
@@ -728,6 +769,10 @@ export class PiChatService {
       modelId: (model as { id?: string }).id || 'unknown',
       historyCount: history.length,
     });
+    this.traceActiveExecution('agent.init', {
+      modelId: (model as { id?: string }).id || 'unknown',
+      historyCount: history.length,
+    }, 'execute_tools');
 
     this.cleanupAgentSubscription();
     this.unsubscribeAgentEvents = this.agent.subscribe((event: AgentEvent) => {
@@ -782,6 +827,10 @@ export class PiChatService {
         case 'message_end': {
           const msg = event.message as AssistantMessageLike;
           const extractedText = this.extractText(msg.content);
+          this.traceActiveExecution('agent.message_end', {
+            role: msg.role || 'unknown',
+            extractedLength: extractedText.length,
+          }, 'execute_tools');
           this.emitDebugLog('info', 'agent:message-end', {
             role: msg.role || 'unknown',
             extractedLength: extractedText.length,
@@ -846,6 +895,11 @@ export class PiChatService {
             name: event.toolName,
             args: event.args,
           });
+          this.traceActiveExecution('tool.start', {
+            callId: event.toolCallId,
+            name: event.toolName,
+            args: event.args,
+          }, event.toolName === 'read_file' || event.toolName === 'grep' || event.toolName === 'web_search' ? 'retrieve' : 'execute_tools');
           this.sendToUI('chat:tool-start', {
             callId: event.toolCallId,
             name: event.toolName,
@@ -882,6 +936,7 @@ export class PiChatService {
           if (!event.isError && command && this.isImageGenerateCommand(command)) {
             generatedImages.push(...this.extractGeneratedImagesFromToolResult(event.result));
           }
+          this.maybeRegisterArtifactFromToolResult(event.toolName, event.result, command);
           console.log('[PiChatService] tool:end', {
             sessionId: this.sessionId,
             callId: event.toolCallId,
@@ -897,6 +952,14 @@ export class PiChatService {
             success: output.success,
             output: output.content,
           });
+          this.traceActiveExecution('tool.end', {
+            callId: event.toolCallId,
+            name: event.toolName,
+            isError: event.isError,
+            success: output.success,
+            command,
+            outputPreview: output.content.slice(0, 400),
+          }, event.toolName === 'read_file' || event.toolName === 'grep' || event.toolName === 'web_search' ? 'retrieve' : 'execute_tools');
           this.sendToUI('chat:tool-end', {
             callId: event.toolCallId,
             name: event.toolName,
@@ -910,6 +973,7 @@ export class PiChatService {
           if (msg?.role === 'assistant' && msg.errorMessage) {
             console.error('[PiChatService] turn_end error:', msg.errorMessage);
             this.emitDebugLog('error', 'turn:end:error', { error: msg.errorMessage });
+            this.traceActiveExecution('agent.turn_end_error', { error: msg.errorMessage }, 'execute_tools');
           }
           break;
         }
@@ -988,11 +1052,16 @@ export class PiChatService {
       const finalError = assistantError || stateError;
       if (finalError) {
         this.emitDebugLog('warn', 'agent:run:completed-with-error', { error: finalError });
+        this.traceActiveExecution('agent.completed_with_error', { error: finalError }, 'execute_tools');
       } else {
         this.emitDebugLog('info', 'agent:run:completed', {
           responseLength: finalResponse.length,
           streamedChunks: runtime.streamedChunks,
         });
+        this.traceActiveExecution('agent.completed', {
+          responseLength: finalResponse.length,
+          streamedChunks: runtime.streamedChunks,
+        }, 'execute_tools');
       }
 
       return {
@@ -1003,6 +1072,7 @@ export class PiChatService {
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
       this.emitDebugLog('error', 'agent:run:exception', { error: message });
+      this.traceActiveExecution('agent.exception', { error: message }, 'execute_tools');
       return {
         response: runtime.displayResponse,
         error: message,
@@ -1130,10 +1200,11 @@ export class PiChatService {
     signal: AbortSignal,
     toolGuardState: ToolGuardState,
   ): Agent {
+    const thinkingLevel = this.activeRuntimeExecution?.thinkingBudget || 'low';
     const agent = new Agent({
       initialState: {
         model,
-        thinkingLevel: 'off',
+        thinkingLevel,
       },
       sessionId: this.sessionId,
       getApiKey: async () => apiKey,
@@ -1152,6 +1223,7 @@ export class PiChatService {
       pack: 'redclaw',
       count: agentTools.length,
       names: agentTools.map((tool) => tool.name),
+      thinkingLevel,
     });
     const requiredTools = ['read_file', 'app_cli', 'save_memory'];
     const missingTools = requiredTools.filter((name) => !agentTools.some((tool) => tool.name === name));
@@ -1163,10 +1235,65 @@ export class PiChatService {
       });
     }
     agent.setSystemPrompt(systemPrompt);
+    agent.setThinkingLevel(thinkingLevel);
     agent.setTools(agentTools);
     agent.replaceMessages(history as any[]);
 
     return agent;
+  }
+
+  private resolveRuntimeMode(metadata: SessionMetadata): RuntimeMode {
+    const contextType = String(metadata.contextType || '').trim().toLowerCase();
+    if (contextType === 'redclaw') return 'redclaw';
+    if (contextType === 'chatroom') return 'chatroom';
+    if (contextType === 'advisor' || contextType === 'discussion') return 'advisor-discussion';
+    if (contextType === 'note' || contextType === 'knowledge' || contextType === 'video') return 'knowledge';
+    return 'knowledge';
+  }
+
+  private traceActiveExecution(eventType: string, payload?: unknown, nodeType?: string): void {
+    const taskId = this.activeRuntimeExecution?.task.id;
+    if (!taskId) return;
+    getTaskGraphRuntime().addTrace(taskId, eventType, payload, nodeType);
+  }
+
+  private maybeRegisterArtifactFromToolResult(toolName: string, result: unknown, command?: string): void {
+    const taskId = this.activeRuntimeExecution?.task.id;
+    if (!taskId) return;
+
+    const wrapped = result as { details?: ToolResult & { data?: unknown } } | undefined;
+    const details = wrapped?.details;
+    const data = (details?.data || null) as Record<string, unknown> | null;
+    if (!details || details.success === false) return;
+
+    if (toolName === 'app_cli' && data?.kind === 'manuscript-write') {
+      const relativePath = String(data.path || data.relativePath || '').trim();
+      const absolutePath = String(data.absolutePath || '').trim();
+      if (relativePath || absolutePath) {
+        getTaskGraphRuntime().startNode(taskId, 'save_artifact', '检测到稿件落盘');
+        getTaskGraphRuntime().addArtifact(taskId, {
+          type: 'manuscript',
+          label: relativePath || absolutePath || 'manuscript',
+          relativePath: relativePath || undefined,
+          absolutePath: absolutePath || undefined,
+          metadata: { toolName, command: command || '', data },
+        });
+      }
+      return;
+    }
+
+    if (toolName === 'app_cli' && data?.kind === 'generated-images' && Array.isArray(data.assets)) {
+      getTaskGraphRuntime().startNode(taskId, 'save_artifact', '检测到图片产物');
+      data.assets.forEach((asset, index) => {
+        if (!asset || typeof asset !== 'object') return;
+        const record = asset as Record<string, unknown>;
+        getTaskGraphRuntime().addArtifact(taskId, {
+          type: 'image',
+          label: String(record.id || `image-${index + 1}`),
+          metadata: { toolName, command: command || '', asset: record },
+        });
+      });
+    }
   }
 
   private convertAgentMessagesToLlm(messages: unknown[]) {

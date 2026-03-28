@@ -11,8 +11,11 @@ import {
   inferPresetIdByEndpoint
 } from '../config/aiSources';
 import {
+  type AgentTaskSnapshot,
+  type AgentTaskTrace,
   type AiProtocol,
   type AiPresetGroup,
+  type RoleSpec,
   type CreateAiSourceDraft,
   type LocalAiGuide,
   type MemoryHistoryEntry,
@@ -131,6 +134,16 @@ export function Settings() {
   const [toolDiagnostics, setToolDiagnostics] = useState<ToolDiagnosticDescriptor[]>([]);
   const [toolDiagnosticResults, setToolDiagnosticResults] = useState<Record<string, ToolDiagnosticRunResult | undefined>>({});
   const [toolDiagnosticRunning, setToolDiagnosticRunning] = useState<Record<string, 'direct' | 'ai' | undefined>>({});
+  const [runtimeTasks, setRuntimeTasks] = useState<AgentTaskSnapshot[]>([]);
+  const [runtimeRoles, setRuntimeRoles] = useState<RoleSpec[]>([]);
+  const [selectedRuntimeTaskId, setSelectedRuntimeTaskId] = useState('');
+  const [runtimeTaskTraces, setRuntimeTaskTraces] = useState<AgentTaskTrace[]>([]);
+  const [runtimeDraftInput, setRuntimeDraftInput] = useState('');
+  const [runtimeDraftMode, setRuntimeDraftMode] = useState<'redclaw' | 'knowledge' | 'chatroom' | 'advisor-discussion' | 'background-maintenance'>('redclaw');
+  const [isRuntimeLoading, setIsRuntimeLoading] = useState(false);
+  const [isRuntimeTraceLoading, setIsRuntimeTraceLoading] = useState(false);
+  const [isRuntimeCreating, setIsRuntimeCreating] = useState(false);
+  const [runtimeTaskActionRunning, setRuntimeTaskActionRunning] = useState<Record<string, 'resume' | 'cancel' | undefined>>({});
   const [status, setStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [showScopedModelOverrides, setShowScopedModelOverrides] = useState(false);
   const [developerVersionTapCount, setDeveloperVersionTapCount] = useState(0);
@@ -486,6 +499,7 @@ export function Settings() {
 
   useEffect(() => {
     let memoryPollTimer: number | null = null;
+    let runtimePollTimer: number | null = null;
     if (activeTab === 'memory') {
       void loadMemories();
       memoryPollTimer = window.setInterval(() => {
@@ -497,14 +511,26 @@ export function Settings() {
     }
     if (activeTab === 'tools' && formData.developer_mode_enabled) {
       void loadToolDiagnostics();
+      void loadRuntimeDeveloperData();
+      runtimePollTimer = window.setInterval(() => {
+        void loadRuntimeTasks();
+      }, 8000);
     }
 
     return () => {
       if (memoryPollTimer) {
         window.clearInterval(memoryPollTimer);
       }
+      if (runtimePollTimer) {
+        window.clearInterval(runtimePollTimer);
+      }
     };
   }, [activeTab, formData.developer_mode_enabled]);
+
+  useEffect(() => {
+    if (activeTab !== 'tools' || !formData.developer_mode_enabled) return;
+    void loadRuntimeTaskTraces(selectedRuntimeTaskId);
+  }, [activeTab, formData.developer_mode_enabled, selectedRuntimeTaskId]);
 
   useEffect(() => {
     setTestStatus('idle');
@@ -1172,6 +1198,116 @@ export function Settings() {
     }
   };
 
+  const loadRuntimeRoles = async () => {
+    try {
+      const result = await window.ipcRenderer.aiRoles.list();
+      setRuntimeRoles(Array.isArray(result) ? result : []);
+    } catch (e) {
+      console.error('Failed to load runtime roles', e);
+      setRuntimeRoles([]);
+    }
+  };
+
+  const loadRuntimeTasks = async (preserveSelection = true) => {
+    setIsRuntimeLoading(true);
+    try {
+      const result = await window.ipcRenderer.tasks.list({ limit: 40 });
+      const taskList = Array.isArray(result) ? result : [];
+      setRuntimeTasks(taskList);
+      setSelectedRuntimeTaskId((prev) => {
+        if (preserveSelection && prev && taskList.some((task) => task.id === prev)) {
+          return prev;
+        }
+        return taskList[0]?.id || '';
+      });
+    } catch (e) {
+      console.error('Failed to load runtime tasks', e);
+      setRuntimeTasks([]);
+      if (!preserveSelection) {
+        setSelectedRuntimeTaskId('');
+      }
+    } finally {
+      setIsRuntimeLoading(false);
+    }
+  };
+
+  const loadRuntimeTaskTraces = async (taskId: string) => {
+    const normalizedTaskId = String(taskId || '').trim();
+    if (!normalizedTaskId) {
+      setRuntimeTaskTraces([]);
+      return;
+    }
+    setIsRuntimeTraceLoading(true);
+    try {
+      const result = await window.ipcRenderer.tasks.trace({ taskId: normalizedTaskId, limit: 120 });
+      setRuntimeTaskTraces(Array.isArray(result) ? result : []);
+    } catch (e) {
+      console.error('Failed to load runtime task traces', e);
+      setRuntimeTaskTraces([]);
+    } finally {
+      setIsRuntimeTraceLoading(false);
+    }
+  };
+
+  const loadRuntimeDeveloperData = async () => {
+    await Promise.all([
+      loadRuntimeRoles(),
+      loadRuntimeTasks(),
+    ]);
+  };
+
+  const handleCreateRuntimeTask = async () => {
+    setIsRuntimeCreating(true);
+    try {
+      const created = await window.ipcRenderer.tasks.create({
+        runtimeMode: runtimeDraftMode,
+        sessionId: `dev_task_${Date.now()}`,
+        userInput: runtimeDraftInput.trim() || '开发者手动创建任务',
+        metadata: {
+          source: 'settings-developer-runtime',
+        },
+      });
+      setRuntimeDraftInput('');
+      if (created?.id) {
+        setSelectedRuntimeTaskId(created.id);
+        await loadRuntimeTasks(false);
+        await loadRuntimeTaskTraces(created.id);
+      } else {
+        await loadRuntimeTasks(false);
+      }
+    } catch (e) {
+      console.error('Failed to create runtime task', e);
+    } finally {
+      setIsRuntimeCreating(false);
+    }
+  };
+
+  const handleResumeRuntimeTask = async (taskId: string) => {
+    setRuntimeTaskActionRunning((prev) => ({ ...prev, [taskId]: 'resume' }));
+    try {
+      await window.ipcRenderer.tasks.resume({ taskId });
+      await loadRuntimeTasks();
+      await loadRuntimeTaskTraces(taskId);
+    } catch (e) {
+      console.error('Failed to resume runtime task', e);
+    } finally {
+      setRuntimeTaskActionRunning((prev) => ({ ...prev, [taskId]: undefined }));
+    }
+  };
+
+  const handleCancelRuntimeTask = async (taskId: string) => {
+    setRuntimeTaskActionRunning((prev) => ({ ...prev, [taskId]: 'cancel' }));
+    try {
+      await window.ipcRenderer.tasks.cancel({ taskId });
+      await loadRuntimeTasks();
+      await loadRuntimeTaskTraces(taskId);
+    } catch (e) {
+      console.error('Failed to cancel runtime task', e);
+    } finally {
+      setRuntimeTaskActionRunning((prev) => ({ ...prev, [taskId]: undefined }));
+    }
+  };
+
   const runToolDiagnostic = async (toolName: string, mode: 'direct' | 'ai') => {
     setToolDiagnosticRunning((prev) => ({ ...prev, [toolName]: mode }));
     try {
@@ -1241,6 +1377,7 @@ export function Settings() {
       void persistDeveloperModeState(true, unlockedAt);
       if (activeTab === 'tools') {
         void loadToolDiagnostics();
+        void loadRuntimeDeveloperData();
       }
       window.alert('开发者模式已开启（24 小时内有效）');
       return 0;
@@ -2323,6 +2460,23 @@ export function Settings() {
                 handleRefreshToolDiagnostics={loadToolDiagnostics}
                 handleRunAllDirectToolDiagnostics={() => runAllToolDiagnostics('direct')}
                 handleRunAllAiToolDiagnostics={() => runAllToolDiagnostics('ai')}
+                runtimeTasks={runtimeTasks}
+                runtimeRoles={runtimeRoles}
+                selectedRuntimeTaskId={selectedRuntimeTaskId}
+                setSelectedRuntimeTaskId={setSelectedRuntimeTaskId}
+                runtimeTaskTraces={runtimeTaskTraces}
+                runtimeDraftInput={runtimeDraftInput}
+                setRuntimeDraftInput={setRuntimeDraftInput}
+                runtimeDraftMode={runtimeDraftMode}
+                setRuntimeDraftMode={setRuntimeDraftMode}
+                isRuntimeLoading={isRuntimeLoading}
+                isRuntimeTraceLoading={isRuntimeTraceLoading}
+                isRuntimeCreating={isRuntimeCreating}
+                runtimeTaskActionRunning={runtimeTaskActionRunning}
+                handleRefreshRuntimeData={loadRuntimeDeveloperData}
+                handleCreateRuntimeTask={handleCreateRuntimeTask}
+                handleResumeRuntimeTask={handleResumeRuntimeTask}
+                handleCancelRuntimeTask={handleCancelRuntimeTask}
               />
             )}
 

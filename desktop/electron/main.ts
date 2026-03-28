@@ -99,6 +99,7 @@ import {
   runAiToolDiagnostic,
   runDirectToolDiagnostic,
 } from './core/toolDiagnosticsService';
+import { getAgentRuntime, getTaskGraphRuntime, listRoleSpecs, type RuntimeMode } from './core/ai';
 
 if (typeof (globalThis as any).Blob === 'undefined' && typeof NodeBlob !== 'undefined') {
   (globalThis as any).Blob = NodeBlob;
@@ -1067,6 +1068,63 @@ ipcMain.handle('tools:diagnostics:run-ai', async (_event, payload?: { toolName?:
     return { success: false, mode: 'ai', toolName: '', error: 'toolName is required' };
   }
   return runAiToolDiagnostic(toolName);
+});
+
+ipcMain.handle('tasks:create', async (_event, payload?: {
+  runtimeMode?: RuntimeMode;
+  sessionId?: string;
+  userInput?: string;
+  metadata?: Record<string, unknown>;
+}) => {
+  const runtimeMode = (payload?.runtimeMode || 'redclaw') as RuntimeMode;
+  const sessionId = String(payload?.sessionId || `session_${Date.now()}`);
+  const userInput = String(payload?.userInput || '').trim();
+  const prepared = getAgentRuntime().prepareExecution({
+    runtimeContext: {
+      sessionId,
+      runtimeMode,
+      userInput: userInput || '开发者手动创建任务',
+      metadata: payload?.metadata || {},
+    },
+    baseSystemPrompt: '',
+  });
+  return prepared.task;
+});
+
+ipcMain.handle('tasks:list', async (_event, payload?: { status?: string; ownerSessionId?: string; limit?: number }) => {
+  return getTaskGraphRuntime().listTasks({
+    status: payload?.status as any,
+    ownerSessionId: payload?.ownerSessionId,
+    limit: payload?.limit,
+  });
+});
+
+ipcMain.handle('tasks:get', async (_event, payload?: { taskId?: string }) => {
+  const taskId = String(payload?.taskId || '').trim();
+  if (!taskId) return null;
+  return getTaskGraphRuntime().getTask(taskId);
+});
+
+ipcMain.handle('tasks:resume', async (_event, payload?: { taskId?: string }) => {
+  const taskId = String(payload?.taskId || '').trim();
+  if (!taskId) return null;
+  return getTaskGraphRuntime().resumeTask(taskId);
+});
+
+ipcMain.handle('tasks:cancel', async (_event, payload?: { taskId?: string }) => {
+  const taskId = String(payload?.taskId || '').trim();
+  if (!taskId) return null;
+  return getTaskGraphRuntime().cancelTask(taskId);
+});
+
+ipcMain.handle('tasks:trace', async (_event, payload?: { taskId?: string; limit?: number }) => {
+  const taskId = String(payload?.taskId || '').trim();
+  if (!taskId) return [];
+  return getTaskGraphRuntime().listTraces(taskId, payload?.limit);
+});
+
+ipcMain.handle('ai:roles:list', async () => {
+  return listRoleSpecs();
 });
 
 ipcMain.handle('app:get-version', () => app.getVersion());

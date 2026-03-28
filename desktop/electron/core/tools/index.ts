@@ -73,6 +73,8 @@ const ensureBuiltinToolDescriptorsRegistered = (): void => {
 
     const publicAllContexts: BuiltinToolPack[] = ['redclaw', 'knowledge', 'chatroom', 'diagnostics'];
     const developerOnlyContexts: BuiltinToolPack[] = ['diagnostics'];
+    const compactRedClawContexts: BuiltinToolPack[] = ['redclaw', 'diagnostics'];
+    const nonRedClawPublicContexts: BuiltinToolPack[] = ['knowledge', 'chatroom', 'diagnostics'];
     const register = (descriptor: Parameters<typeof registerBuiltinToolDescriptor>[0]) => {
         registerBuiltinToolDescriptor(descriptor);
     };
@@ -142,7 +144,7 @@ const ensureBuiltinToolDescriptorsRegistered = (): void => {
         displayName: 'List Directory',
         description: 'List files and directories in a given path.',
         kind: ToolKind.Read,
-        contexts: publicAllContexts,
+        contexts: ['knowledge', 'chatroom', 'diagnostics'],
         visibility: 'public',
         requiresContext: null,
         create: () => new ListDirTool(),
@@ -162,7 +164,7 @@ const ensureBuiltinToolDescriptorsRegistered = (): void => {
         displayName: 'Calculator',
         description: 'Evaluate mathematical expressions.',
         kind: ToolKind.Other,
-        contexts: ['redclaw', 'knowledge', 'chatroom', 'diagnostics'],
+        contexts: nonRedClawPublicContexts,
         visibility: 'public',
         requiresContext: null,
         create: () => new CalculatorTool(),
@@ -172,7 +174,7 @@ const ensureBuiltinToolDescriptorsRegistered = (): void => {
         displayName: 'Save Memory',
         description: 'Save a piece of user information to long-term memory.',
         kind: ToolKind.Other,
-        contexts: ['redclaw', 'knowledge', 'chatroom', 'diagnostics'],
+        contexts: compactRedClawContexts,
         visibility: 'public',
         requiresContext: null,
         create: () => new SaveMemoryTool(),
@@ -182,7 +184,7 @@ const ensureBuiltinToolDescriptorsRegistered = (): void => {
         displayName: 'RedClaw Update Profile Document',
         description: 'Update Agent.md, Soul.md, user.md, or CreatorProfile.md.',
         kind: ToolKind.Edit,
-        contexts: ['redclaw', 'knowledge', 'diagnostics'],
+        contexts: compactRedClawContexts,
         visibility: 'public',
         requiresContext: null,
         create: () => new RedClawUpdateProfileDocTool(),
@@ -192,7 +194,7 @@ const ensureBuiltinToolDescriptorsRegistered = (): void => {
         displayName: 'RedClaw Update Creator Profile',
         description: 'Update CreatorProfile.md, the long-term creator strategy document.',
         kind: ToolKind.Edit,
-        contexts: ['redclaw', 'knowledge', 'diagnostics'],
+        contexts: ['knowledge', 'diagnostics'],
         visibility: 'public',
         requiresContext: null,
         create: () => new RedClawUpdateCreatorProfileTool(),
@@ -202,7 +204,7 @@ const ensureBuiltinToolDescriptorsRegistered = (): void => {
         displayName: 'RedClaw Create Project',
         description: 'Create a RedClaw content project.',
         kind: ToolKind.Edit,
-        contexts: ['redclaw', 'diagnostics'],
+        contexts: ['diagnostics'],
         visibility: 'public',
         requiresContext: null,
         create: () => new RedClawCreateProjectTool(),
@@ -212,7 +214,7 @@ const ensureBuiltinToolDescriptorsRegistered = (): void => {
         displayName: 'RedClaw Save Copy Pack',
         description: 'Save a RedClaw manuscript/copy pack to a project.',
         kind: ToolKind.Edit,
-        contexts: ['redclaw', 'diagnostics'],
+        contexts: ['diagnostics'],
         visibility: 'public',
         requiresContext: null,
         create: () => new RedClawSaveCopyPackTool(),
@@ -222,7 +224,7 @@ const ensureBuiltinToolDescriptorsRegistered = (): void => {
         displayName: 'RedClaw Save Image Pack',
         description: 'Save a RedClaw image pack to a project.',
         kind: ToolKind.Edit,
-        contexts: ['redclaw', 'diagnostics'],
+        contexts: ['diagnostics'],
         visibility: 'public',
         requiresContext: null,
         create: () => new RedClawSaveImagePackTool(),
@@ -232,7 +234,7 @@ const ensureBuiltinToolDescriptorsRegistered = (): void => {
         displayName: 'RedClaw Save Retrospective',
         description: 'Save a RedClaw project retrospective.',
         kind: ToolKind.Edit,
-        contexts: ['redclaw', 'diagnostics'],
+        contexts: ['diagnostics'],
         visibility: 'public',
         requiresContext: null,
         create: () => new RedClawSaveRetrospectiveTool(),
@@ -242,7 +244,7 @@ const ensureBuiltinToolDescriptorsRegistered = (): void => {
         displayName: 'RedClaw List Projects',
         description: 'List recent RedClaw projects.',
         kind: ToolKind.Read,
-        contexts: ['redclaw', 'diagnostics'],
+        contexts: ['diagnostics'],
         visibility: 'public',
         requiresContext: null,
         create: () => new RedClawListProjectsTool(),

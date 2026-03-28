@@ -2219,7 +2219,33 @@ export class PiChatService {
   }
 
   private buildAvailableToolsSummary(): string {
-    const tools = this.toolRegistry.getAllTools();
+    const tools = this.toolRegistry.getAllTools().slice().sort((a, b) => {
+      const priority = (name: string) => {
+        switch (name) {
+          case 'app_cli':
+            return 0;
+          case 'read_file':
+            return 1;
+          case 'grep':
+            return 2;
+          case 'edit_file':
+            return 3;
+          case 'write_file':
+            return 4;
+          case 'web_search':
+            return 5;
+          case 'save_memory':
+            return 6;
+          case 'redclaw_update_profile_doc':
+            return 7;
+          case 'bash':
+            return 8;
+          default:
+            return 99;
+        }
+      };
+      return priority(String(a.name || '')) - priority(String(b.name || ''));
+    });
     if (!tools.length) {
       return '- (no tools registered)';
     }

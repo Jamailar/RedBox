@@ -92,10 +92,16 @@ export class RedClawCreateProjectTool extends DeclarativeTool<typeof RedClawProj
   async execute(params: RedClawProjectCreateParams): Promise<ToolResult> {
     try {
       const result = await createRedClawProject(params);
-      return createSuccessResult(
+      const response = createSuccessResult(
         `Project created: ${result.project.id}\nGoal: ${result.project.goal}\nPath: ${result.projectDir}`,
         `已创建项目 ${result.project.id}`
       );
+      response.data = {
+        projectId: result.project.id,
+        projectDir: result.projectDir,
+        project: result.project,
+      };
+      return response;
     } catch (error) {
       return createErrorResult(`Failed to create RedClaw project: ${String(error)}`);
     }
@@ -118,10 +124,17 @@ export class RedClawSaveCopyPackTool extends DeclarativeTool<typeof RedClawCopyP
   async execute(params: RedClawCopyPackParams): Promise<ToolResult> {
     try {
       const result = await saveRedClawCopyPack(params);
-      return createSuccessResult(
+      const response = createSuccessResult(
         `Copy pack saved: ${result.filePath}\nProject: ${result.project.id}\nStatus: ${result.project.status}\nManuscript: manuscripts/${result.manuscriptPath}`,
         `文案包已保存（${result.project.id}）`
       );
+      response.data = {
+        projectId: result.project.id,
+        filePath: result.filePath,
+        manuscriptPath: result.manuscriptPath,
+        project: result.project,
+      };
+      return response;
     } catch (error) {
       return createErrorResult(`Failed to save copy pack: ${String(error)}`);
     }
@@ -144,10 +157,17 @@ export class RedClawSaveImagePackTool extends DeclarativeTool<typeof RedClawImag
   async execute(params: RedClawImagePackParams): Promise<ToolResult> {
     try {
       const result = await saveRedClawImagePack(params);
-      return createSuccessResult(
+      const response = createSuccessResult(
         `Image pack saved: ${result.filePath}\nProject: ${result.project.id}\nStatus: ${result.project.status}\nPlanned media assets created: ${result.plannedAssetCount}`,
         `配图包已保存（${result.project.id}）`
       );
+      response.data = {
+        projectId: result.project.id,
+        filePath: result.filePath,
+        plannedAssetCount: result.plannedAssetCount,
+        project: result.project,
+      };
+      return response;
     } catch (error) {
       return createErrorResult(`Failed to save image pack: ${String(error)}`);
     }
@@ -170,10 +190,16 @@ export class RedClawSaveRetrospectiveTool extends DeclarativeTool<typeof RedClaw
   async execute(params: RedClawRetrospectiveParams): Promise<ToolResult> {
     try {
       const result = await saveRedClawRetrospective(params);
-      return createSuccessResult(
+      const response = createSuccessResult(
         `Retrospective saved: ${result.filePath}\nProject: ${result.project.id}\nStatus: ${result.project.status}`,
         `复盘已保存（${result.project.id}）`
       );
+      response.data = {
+        projectId: result.project.id,
+        filePath: result.filePath,
+        project: result.project,
+      };
+      return response;
     } catch (error) {
       return createErrorResult(`Failed to save retrospective: ${String(error)}`);
     }

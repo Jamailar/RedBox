@@ -474,6 +474,17 @@ export function Settings() {
     checkTools();
     loadVectorStats();
     loadAppVersion();
+
+    const handleProgress = (_: unknown, progress: number) => {
+      setInstallProgress(progress);
+    };
+    window.ipcRenderer.on('youtube:install-progress', handleProgress);
+    return () => {
+      window.ipcRenderer.off('youtube:install-progress', handleProgress);
+    };
+  }, []);
+
+  useEffect(() => {
     let memoryPollTimer: number | null = null;
     if (activeTab === 'memory') {
       void loadMemories();
@@ -484,21 +495,16 @@ export function Settings() {
     if (activeTab === 'general') {
       void loadRecentDebugLogs();
     }
-    if (activeTab === 'tools') {
+    if (activeTab === 'tools' && formData.developer_mode_enabled) {
       void loadToolDiagnostics();
     }
 
-    const handleProgress = (_: unknown, progress: number) => {
-      setInstallProgress(progress);
-    };
-    window.ipcRenderer.on('youtube:install-progress', handleProgress);
     return () => {
       if (memoryPollTimer) {
         window.clearInterval(memoryPollTimer);
       }
-      window.ipcRenderer.off('youtube:install-progress', handleProgress);
     };
-  }, [activeTab]);
+  }, [activeTab, formData.developer_mode_enabled]);
 
   useEffect(() => {
     setTestStatus('idle');
@@ -1233,10 +1239,13 @@ export function Settings() {
         developer_mode_unlocked_at: unlockedAt,
       }));
       void persistDeveloperModeState(true, unlockedAt);
+      if (activeTab === 'tools') {
+        void loadToolDiagnostics();
+      }
       window.alert('开发者模式已开启（24 小时内有效）');
       return 0;
     });
-  }, [persistDeveloperModeState]);
+  }, [activeTab, persistDeveloperModeState]);
 
   const loadSettings = async () => {
     try {

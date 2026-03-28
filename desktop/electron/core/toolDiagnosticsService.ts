@@ -83,13 +83,12 @@ const createRedClawProjectForTests = async () => {
         successCriteria: '工具链正常',
         tags: ['devtool', 'diagnostic'],
     } as any, new AbortController().signal);
-
-    const text = String(result.llmContent || '');
-    const match = text.match(/Project created:\s+([^\n]+)/i);
-    if (!match?.[1]) {
-        throw new Error(`unable to extract project id from result: ${text}`);
+    const structuredProjectId = (result.data as { projectId?: unknown } | undefined)?.projectId;
+    const projectId = String(structuredProjectId || '').trim();
+    if (!projectId) {
+        throw new Error(`unable to extract project id from structured result: ${JSON.stringify(result.data || null)}`);
     }
-    return match[1].trim();
+    return projectId;
 };
 
 const buildScenario = async (toolName: string): Promise<ToolTestScenario> => {

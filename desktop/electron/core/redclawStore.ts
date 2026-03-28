@@ -60,7 +60,7 @@ function buildProjectId(goal: string): string {
 function normalizeProjectId(input: string): string {
   const raw = String(input || '').trim();
   if (!raw) return '';
-  const matched = raw.match(/rc_[a-z0-9_-]+/i);
+  const matched = raw.match(/rc_[^\s/\\]+/i);
   return (matched ? matched[0] : raw).trim();
 }
 

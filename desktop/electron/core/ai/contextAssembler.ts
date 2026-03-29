@@ -35,7 +35,7 @@ export const assembleRuntimeSystemPrompt = (params: {
     params.role.systemPrompt,
     '',
     '## Execution Rules',
-    '- 先按当前 intent 和 role 完成你的职责，不要把所有事情混在一起。',
+    '- 先按当前 runtimeMode 和 role 完成你的职责，不要把所有事情混在一起。',
     '- 如果任务需要长期执行或多角色协作，先产出阶段计划，再推进当前最关键的一步。',
     '- 当工具成功回执不足时，不得宣称任务已完成。',
     '- 如果已经形成可交付产物，必须推动保存并在回复中引用真实工具回执。',

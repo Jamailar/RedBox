@@ -24,7 +24,7 @@ const createNode = (type: string, title: string): AgentTaskNodeRecord => ({
 
 const buildGraphForIntent = (params: { intent: string; multiAgent: boolean; longRunning: boolean }): AgentTaskNodeRecord[] => {
   const basePrefix = [
-    createNode('route', '识别任务意图'),
+    createNode('route', '初始化任务上下文'),
     createNode('plan', '生成执行计划'),
   ];
   const collaborationPrefix = params.multiAgent

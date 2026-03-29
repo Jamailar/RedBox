@@ -1,5 +1,4 @@
 import { assembleRuntimeSystemPrompt } from './contextAssembler';
-import { routeIntent } from './intentRouter';
 import { getRoleSpec } from './roleRegistry';
 import { runSubagentOrchestration } from './subagentRuntime';
 import { getTaskGraphRuntime } from './taskGraphRuntime';
@@ -8,14 +7,79 @@ import type {
   PreparedRuntimeExecution,
   RuntimeContext,
   RuntimeMode,
+  RoleId,
   ThinkingBudget,
 } from './types';
+
+const MULTI_AGENT_TRIGGER_PARTS = [
+  '多角色',
+  '多智能体',
+  '多 agent',
+  '多agent',
+  'multiagent',
+  'multi-agent',
+  'subagent',
+  '子agent',
+  '分角色',
+  '协作执行',
+  '多人协作',
+];
+
+const DANGEROUS_ACTION_PARTS = ['删除', '覆盖', '批量', '清空', '重置'];
+
+const DEFAULT_INTENT_BY_MODE: Record<RuntimeMode, IntentRoute['intent']> = {
+  redclaw: 'manuscript_creation',
+  knowledge: 'knowledge_retrieval',
+  chatroom: 'discussion',
+  'advisor-discussion': 'discussion',
+  'background-maintenance': 'automation',
+};
+
+const DEFAULT_ROLE_BY_MODE: Record<RuntimeMode, RoleId> = {
+  redclaw: 'copywriter',
+  knowledge: 'researcher',
+  chatroom: 'planner',
+  'advisor-discussion': 'planner',
+  'background-maintenance': 'ops-coordinator',
+};
+
+const DEFAULT_CAPABILITIES_BY_MODE: Record<RuntimeMode, string[]> = {
+  redclaw: ['planning', 'writing', 'artifact-save'],
+  knowledge: ['knowledge-retrieval', 'evidence-synthesis'],
+  chatroom: ['multi-agent-discussion'],
+  'advisor-discussion': ['multi-agent-discussion'],
+  'background-maintenance': ['task-graph', 'background-runner', 'artifact-save'],
+};
+
+const containsAny = (text: string, parts: string[]): boolean => parts.some((part) => text.includes(part));
+
+const buildDirectRoute = (context: RuntimeContext): IntentRoute => {
+  const normalizedInput = String(context.userInput || '').toLowerCase();
+  const runtimeMode = context.runtimeMode;
+  const requiresMultiAgent = runtimeMode === 'advisor-discussion' || containsAny(normalizedInput, MULTI_AGENT_TRIGGER_PARTS);
+  const requiresLongRunningTask = runtimeMode === 'background-maintenance';
+  return {
+    intent: DEFAULT_INTENT_BY_MODE[runtimeMode],
+    secondaryIntents: [],
+    goal: String(context.userInput || '').trim() || '处理当前用户请求',
+    deliverables: [],
+    requiredCapabilities: DEFAULT_CAPABILITIES_BY_MODE[runtimeMode],
+    recommendedRole: DEFAULT_ROLE_BY_MODE[runtimeMode],
+    requiresLongRunningTask,
+    requiresMultiAgent,
+    requiresHumanApproval: containsAny(normalizedInput, DANGEROUS_ACTION_PARTS),
+    confidence: 1,
+    reasoning: `runtime-mode-default:${runtimeMode}`,
+    source: 'rule',
+  };
+};
 
 const resolveThinkingBudget = (runtimeMode: RuntimeMode, route: IntentRoute): ThinkingBudget => {
   if (route.requiresMultiAgent) return 'medium';
   if (route.requiresLongRunningTask) return 'high';
-  if (runtimeMode === 'redclaw' && route.intent === 'manuscript_creation') return 'medium';
-  if (route.intent === 'direct_answer') return 'minimal';
+  if (runtimeMode === 'redclaw') return 'medium';
+  if (runtimeMode === 'knowledge') return 'medium';
+  if (runtimeMode === 'advisor-discussion') return 'medium';
   return 'low';
 };
 
@@ -24,28 +88,12 @@ const shouldRunSubagentOrchestration = (params: {
   userInput: string;
   route: IntentRoute;
 }): boolean => {
-  if (!params.route.requiresMultiAgent) {
-    return false;
-  }
-
-  if (params.route.intent === 'advisor_persona') {
+  if (params.runtimeMode === 'advisor-discussion') {
     return true;
   }
 
   const normalized = String(params.userInput || '').toLowerCase();
-  return [
-    '多角色',
-    '多智能体',
-    '多 agent',
-    '多agent',
-    'multiagent',
-    'multi-agent',
-    'subagent',
-    '子agent',
-    '分角色',
-    '协作执行',
-    '多人协作',
-  ].some((part) => normalized.includes(part));
+  return containsAny(normalized, MULTI_AGENT_TRIGGER_PARTS);
 };
 
 export class AgentRuntime {
@@ -59,10 +107,7 @@ export class AgentRuntime {
       timeoutMs?: number;
     };
   }): Promise<PreparedRuntimeExecution> {
-    const route = await routeIntent({
-      context: params.runtimeContext,
-      llm: params.llm,
-    });
+    const route = buildDirectRoute(params.runtimeContext);
     const role = getRoleSpec(route.recommendedRole);
     const runtime = getTaskGraphRuntime();
     const task = runtime.createInteractiveTask({

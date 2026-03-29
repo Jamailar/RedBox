@@ -686,6 +686,7 @@ export const getWorkspacePathsForSpace = (spaceId: string) => {
     manuscripts: path.join(spaceBaseDir, 'manuscripts'),
     media: path.join(spaceBaseDir, 'media'),
     cover: path.join(spaceBaseDir, 'cover'),
+    subjects: path.join(spaceBaseDir, 'subjects'),
     redclaw: path.join(spaceBaseDir, 'redclaw'),
   };
 };

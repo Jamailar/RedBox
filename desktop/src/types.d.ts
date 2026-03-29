@@ -132,6 +132,33 @@ declare global {
     created_at: string;
   }
 
+  interface SubjectCategory {
+    id: string;
+    name: string;
+    createdAt: string;
+    updatedAt: string;
+  }
+
+  interface SubjectAttribute {
+    key: string;
+    value: string;
+  }
+
+  interface SubjectRecord {
+    id: string;
+    name: string;
+    categoryId?: string;
+    description?: string;
+    tags: string[];
+    attributes: SubjectAttribute[];
+    imagePaths: string[];
+    createdAt: string;
+    updatedAt: string;
+    absoluteImagePaths?: string[];
+    previewUrls?: string[];
+    primaryPreviewUrl?: string;
+  }
+
   interface Window {
     ipcRenderer: {
       saveSettings: (settings: { api_endpoint: string; api_key: string; model_name: string; model_name_wander?: string; model_name_chatroom?: string; model_name_knowledge?: string; model_name_redclaw?: string; workspace_dir?: string; active_space_id?: string; role_mapping?: Record<string, string> | string; transcription_model?: string; transcription_endpoint?: string; transcription_key?: string; embedding_endpoint?: string; embedding_key?: string; embedding_model?: string; ai_sources_json?: string; default_ai_source_id?: string; image_provider?: string; image_endpoint?: string; image_api_key?: string; image_model?: string; image_provider_template?: string; image_aspect_ratio?: string; image_size?: string; image_quality?: string; mcp_servers_json?: string; redclaw_compact_target_tokens?: number; wander_deep_think_enabled?: boolean; debug_log_enabled?: boolean; developer_mode_enabled?: boolean; developer_mode_unlocked_at?: string | null; chat_max_tokens_default?: number; chat_max_tokens_deepseek?: number }) => Promise<unknown>;
@@ -148,6 +175,20 @@ declare global {
         resume: (payload: { taskId: string }) => Promise<AgentTaskSnapshot | null>;
         cancel: (payload: { taskId: string }) => Promise<AgentTaskSnapshot | null>;
         trace: (payload: { taskId: string; limit?: number }) => Promise<AgentTaskTrace[]>;
+      };
+      subjects: {
+        list: (payload?: { limit?: number }) => Promise<{ success?: boolean; error?: string; subjects?: SubjectRecord[] }>;
+        get: (payload: { id: string }) => Promise<{ success?: boolean; error?: string; subject?: SubjectRecord }>;
+        create: (payload: unknown) => Promise<{ success?: boolean; error?: string; subject?: SubjectRecord }>;
+        update: (payload: unknown) => Promise<{ success?: boolean; error?: string; subject?: SubjectRecord }>;
+        delete: (payload: { id: string }) => Promise<{ success?: boolean; error?: string }>;
+        search: (payload?: { query?: string; categoryId?: string; limit?: number }) => Promise<{ success?: boolean; error?: string; subjects?: SubjectRecord[] }>;
+        categories: {
+          list: () => Promise<{ success?: boolean; error?: string; categories?: SubjectCategory[] }>;
+          create: (payload: { name: string }) => Promise<{ success?: boolean; error?: string; category?: SubjectCategory }>;
+          update: (payload: { id: string; name: string }) => Promise<{ success?: boolean; error?: string; category?: SubjectCategory }>;
+          delete: (payload: { id: string }) => Promise<{ success?: boolean; error?: string }>;
+        };
       };
       getAppVersion: () => Promise<string>;
       checkAppUpdate: (force?: boolean) => Promise<{ success: boolean; hasUpdate: boolean; throttled?: boolean; inFlight?: boolean; message?: string; notice?: { currentVersion: string; latestVersion: string; htmlUrl: string; name: string; publishedAt: string; body: string } }>;

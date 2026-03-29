@@ -1,4 +1,5 @@
 import type { ComponentType } from 'react';
+import { hasOfficialAiPanel as generatedHasOfficialAiPanel } from './generatedOfficialAiPanel';
 
 export interface OfficialAiPanelProps {
   onReloadSettings: () => Promise<void> | void;
@@ -9,7 +10,7 @@ export interface OfficialAiPanelModule {
   tabLabel?: string;
 }
 
-export const hasOfficialAiPanel = true;
+export const hasOfficialAiPanel = generatedHasOfficialAiPanel;
 
 let cachedOfficialAiPanelPromise: Promise<OfficialAiPanelModule | null> | null = null;
 
@@ -17,8 +18,10 @@ export const loadOfficialAiPanelModule = async (): Promise<OfficialAiPanelModule
   if (!cachedOfficialAiPanelPromise) {
     cachedOfficialAiPanelPromise = (async () => {
       try {
-        const modulePath = '../../../private/renderer/OfficialAiPanel';
-        const loaded = await import(/* @vite-ignore */ modulePath);
+        if (!generatedHasOfficialAiPanel) {
+          return null;
+        }
+        const loaded = await import('./generatedOfficialAiPanel');
         return loaded as OfficialAiPanelModule;
       } catch {
         return null;

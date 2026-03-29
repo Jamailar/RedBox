@@ -55,6 +55,18 @@ import {
     updateMediaAssetMetadata,
     getAbsoluteMediaPath,
 } from '../mediaLibraryStore';
+import {
+    listSubjectCategories,
+    createSubjectCategory,
+    updateSubjectCategory,
+    deleteSubjectCategory,
+    listSubjects,
+    getSubject,
+    createSubject,
+    updateSubject,
+    deleteSubject,
+    searchSubjects,
+} from '../subjectsLibraryStore';
 import { generateImagesToMediaLibrary } from '../imageGenerationService';
 import { SkillManager } from '../skillManager';
 import {
@@ -88,6 +100,11 @@ interface GeneratedImageCliResult {
     model: string;
     generationMode?: 'text-to-image' | 'image-to-image' | 'reference-guided';
     referenceImageCount?: number;
+    subjects?: Array<{
+        id: string;
+        name: string;
+        imageCount: number;
+    }>;
     aspectRatio?: string;
     size: string;
     quality: string;
@@ -215,6 +232,19 @@ function parseList(input: unknown): string[] {
     return raw.split(delimiter).map((item) => item.trim()).filter(Boolean);
 }
 
+function dedupeList(input: string[], limit?: number): string[] {
+    const seen = new Set<string>();
+    const output: string[] = [];
+    for (const item of input) {
+        const normalized = String(item || '').trim();
+        if (!normalized || seen.has(normalized)) continue;
+        seen.add(normalized);
+        output.push(normalized);
+        if (limit && output.length >= limit) break;
+    }
+    return output;
+}
+
 function requireString(value: unknown, fieldName: string): string {
     const text = String(value || '').trim();
     if (!text) {
@@ -234,6 +264,20 @@ function normalizeRelativePath(input: string): string {
     return normalized;
 }
 
+function buildReferenceAwarePrompt(basePrompt: string, referenceLabels: string[]): string {
+    const normalizedPrompt = basePrompt.trim();
+    if (!referenceLabels.length) {
+        return normalizedPrompt;
+    }
+    return [
+        normalizedPrompt,
+        '',
+        '参考图说明（生成时必须遵守）：',
+        ...referenceLabels.map((item, index) => `- 图${index + 1}：${item}`),
+        '- 若存在参考图，必须优先保留参考图中的主体特征、款式、配色、材质、轮廓和关键视觉元素，不要退回纯文生图思路。',
+    ].join('\n');
+}
+
 function helpText(): string {
     return [
         'App CLI - 命令一览',
@@ -250,6 +294,11 @@ function helpText(): string {
         '- manuscripts organize --dry-run true',
         '- manuscripts write --path "redclaw/xxx.md" --content "...markdown..."',
         '- redclaw create --goal "做一条民宿选题"',
+        '- subjects search --query "张三 Z001 跑鞋"',
+        '- subjects get --id subject_xxx',
+        '- subjects categories list',
+        '- image generate --prompt "保留人物主体和鞋款细节" --mode reference-guided --reference-images "/abs/a.jpg,/abs/b.jpg"',
+        '- image generate --prompt "张三穿 Z001 跑鞋在城市街头" --mode reference-guided',
         '- redclaw save-copy --project-id rc_xxx --titles "标题A|标题B" --content "正文..."',
         '- redclaw save-image --project-id rc_xxx --prompts "提示词1|提示词2"',
         '- redclaw runner-status',
@@ -322,7 +371,7 @@ async function listManuscripts(root: string): Promise<string[]> {
 export class AppCliTool extends DeclarativeTool<typeof AppCliParamsSchema> {
     readonly name = 'app_cli';
     readonly displayName = 'App CLI';
-    readonly description = 'CLI-style app control layer. Manage spaces/manuscripts/redclaw/media/image/settings/skills/memory with terminal-like commands.';
+    readonly description = 'CLI-style app control layer. Manage spaces/manuscripts/redclaw/media/subjects/image/settings/skills/memory with terminal-like commands.';
     readonly kind = ToolKind.Execute;
     readonly parameterSchema = AppCliParamsSchema;
     readonly requiresConfirmation = false;
@@ -438,6 +487,8 @@ export class AppCliTool extends DeclarativeTool<typeof AppCliParamsSchema> {
                 return this.handleRedclaw(parsed, payload);
             case 'media':
                 return this.handleMedia(parsed, payload);
+            case 'subjects':
+                return this.handleSubjects(parsed, payload);
             case 'image':
                 return this.handleImage(parsed, payload);
             case 'mcp':
@@ -1040,6 +1091,86 @@ export class AppCliTool extends DeclarativeTool<typeof AppCliParamsSchema> {
         throw new Error(`Unsupported redclaw action: ${action}`);
     }
 
+    private async handleSubjects(parsed: ParsedCommand, payload: Record<string, unknown>) {
+        const action = parsed.action;
+        if (action === 'list') {
+            const limit = parseNumber(readFlag(parsed.flags, 'limit') || payload.limit) || 200;
+            const categoryId = readFlag(parsed.flags, 'category-id', 'category') || (payload.categoryId as string | undefined);
+            const subjects = categoryId
+                ? await searchSubjects('', { categoryId, limit })
+                : await listSubjects(limit);
+            return { count: subjects.length, subjects };
+        }
+
+        if (action === 'get') {
+            const id = requireString(readFlag(parsed.flags, 'id') || payload.id, 'id');
+            return getSubject(id);
+        }
+
+        if (action === 'search') {
+            const query = requireString(readFlag(parsed.flags, 'query') || payload.query, 'query');
+            const categoryId = readFlag(parsed.flags, 'category-id', 'category') || (payload.categoryId as string | undefined);
+            const limit = parseNumber(readFlag(parsed.flags, 'limit') || payload.limit) || 20;
+            const subjects = await searchSubjects(query, { categoryId, limit });
+            return { query, count: subjects.length, subjects };
+        }
+
+        if (action === 'create') {
+            return createSubject({
+                name: requireString(readFlag(parsed.flags, 'name') || payload.name, 'name'),
+                categoryId: readFlag(parsed.flags, 'category-id', 'category') || (payload.categoryId as string | undefined),
+                description: readFlag(parsed.flags, 'description', 'desc') || (payload.description as string | undefined),
+                tags: parseList(readFlag(parsed.flags, 'tags') || payload.tags),
+                attributes: Array.isArray(payload.attributes) ? payload.attributes as Array<{ key: string; value: string }> : undefined,
+                images: Array.isArray(payload.images) ? payload.images as Array<{ name?: string; dataUrl?: string; relativePath?: string }> : undefined,
+            });
+        }
+
+        if (action === 'update') {
+            const id = requireString(readFlag(parsed.flags, 'id') || payload.id, 'id');
+            return updateSubject({
+                id,
+                name: readFlag(parsed.flags, 'name') || (payload.name as string | undefined),
+                categoryId: readFlag(parsed.flags, 'category-id', 'category') || (payload.categoryId as string | undefined),
+                description: readFlag(parsed.flags, 'description', 'desc') || (payload.description as string | undefined),
+                tags: readFlag(parsed.flags, 'tags') || (payload.tags as string[] | string | undefined),
+                attributes: Array.isArray(payload.attributes) ? payload.attributes as Array<{ key: string; value: string }> : undefined,
+                images: Array.isArray(payload.images) ? payload.images as Array<{ name?: string; dataUrl?: string; relativePath?: string }> : undefined,
+            });
+        }
+
+        if (action === 'delete') {
+            const id = requireString(readFlag(parsed.flags, 'id') || payload.id, 'id');
+            await deleteSubject(id);
+            return { success: true, id };
+        }
+
+        if (action === 'categories') {
+            const subAction = (parsed.args[0] || 'list').toLowerCase();
+            if (subAction === 'list') {
+                const categories = await listSubjectCategories();
+                return { count: categories.length, categories };
+            }
+            if (subAction === 'create') {
+                const name = requireString(readFlag(parsed.flags, 'name') || payload.name || parsed.args[1], 'name');
+                return createSubjectCategory(name);
+            }
+            if (subAction === 'update') {
+                const id = requireString(readFlag(parsed.flags, 'id') || payload.id || parsed.args[1], 'id');
+                const name = requireString(readFlag(parsed.flags, 'name') || payload.name || parsed.args[2], 'name');
+                return updateSubjectCategory({ id, name });
+            }
+            if (subAction === 'delete') {
+                const id = requireString(readFlag(parsed.flags, 'id') || payload.id || parsed.args[1], 'id');
+                await deleteSubjectCategory(id);
+                return { success: true, id };
+            }
+            throw new Error(`Unsupported subjects categories action: ${subAction}`);
+        }
+
+        throw new Error(`Unsupported subjects action: ${action}`);
+    }
+
     private async handleMedia(parsed: ParsedCommand, payload: Record<string, unknown>) {
         const action = parsed.action;
         if (action === 'list') {
@@ -1091,7 +1222,7 @@ export class AppCliTool extends DeclarativeTool<typeof AppCliParamsSchema> {
         }
         const prompt = requireString(readFlag(parsed.flags, 'prompt') || payload.prompt, 'prompt');
         const generationModeRaw = readFlag(parsed.flags, 'mode', 'generation-mode') || payload.generationMode;
-        const generationMode = (() => {
+        let generationMode = (() => {
             const normalized = String(generationModeRaw || '').trim().toLowerCase();
             if (normalized === 'image-to-image' || normalized === 'reference-guided' || normalized === 'text-to-image') {
                 return normalized;
@@ -1099,15 +1230,51 @@ export class AppCliTool extends DeclarativeTool<typeof AppCliParamsSchema> {
             return undefined;
         })();
         const referenceImagesRaw = readFlag(parsed.flags, 'reference-images', 'refs') || payload.referenceImages;
-        const referenceImages = Array.isArray(referenceImagesRaw)
+        const directReferenceImages = Array.isArray(referenceImagesRaw)
             ? referenceImagesRaw.map((item) => String(item || '').trim()).filter(Boolean).slice(0, 4)
             : String(referenceImagesRaw || '')
                 .split(',')
                 .map((item) => item.trim())
                 .filter(Boolean)
                 .slice(0, 4);
+        const subjectIds = parseList(readFlag(parsed.flags, 'subject-ids', 'subjects') || payload.subjectIds);
+        const subjectQuery = readFlag(parsed.flags, 'subject-query', 'query-subjects') || (payload.subjectQuery as string | undefined);
+        const matchedSubjects = subjectIds.length > 0
+            ? await Promise.all(subjectIds.slice(0, 4).map(async (id) => getSubject(id)))
+            : (subjectQuery ? await searchSubjects(subjectQuery, { limit: 4 }) : []);
+        const subjectReferenceImages: string[] = [];
+        const referenceLabels: string[] = [];
+
+        if (directReferenceImages.length > 0) {
+            referenceLabels.push(...directReferenceImages.map((_, index) => `用户上传的参考图${index + 1}`));
+        }
+
+        if (matchedSubjects.length > 0) {
+            if (matchedSubjects.length === 1) {
+                const subject = matchedSubjects[0];
+                for (const imagePath of (subject.absoluteImagePaths || []).slice(0, 4)) {
+                    subjectReferenceImages.push(imagePath);
+                    referenceLabels.push(`${subject.name}${subject.categoryId ? `（${subject.categoryId}）` : ''} 的主体参考图`);
+                }
+            } else {
+                for (const subject of matchedSubjects) {
+                    const firstImage = (subject.absoluteImagePaths || [])[0];
+                    if (!firstImage) continue;
+                    subjectReferenceImages.push(firstImage);
+                    const categoryLabel = subject.categoryId ? `，分类=${subject.categoryId}` : '';
+                    const tagLabel = Array.isArray(subject.tags) && subject.tags.length > 0 ? `，标签=${subject.tags.slice(0, 4).join('/')}` : '';
+                    referenceLabels.push(`${subject.name}${categoryLabel}${tagLabel}`);
+                }
+            }
+        }
+
+        const referenceImages = dedupeList([...directReferenceImages, ...subjectReferenceImages], 4);
+        if (!generationMode && referenceImages.length > 0) {
+            generationMode = 'reference-guided';
+        }
+        const effectivePrompt = buildReferenceAwarePrompt(prompt, referenceLabels);
         const result = await generateImagesToMediaLibrary({
-            prompt,
+            prompt: effectivePrompt,
             projectId: readFlag(parsed.flags, 'project-id') || (payload.projectId as string | undefined),
             title: readFlag(parsed.flags, 'title') || (payload.title as string | undefined),
             generationMode,
@@ -1126,6 +1293,11 @@ export class AppCliTool extends DeclarativeTool<typeof AppCliParamsSchema> {
             model: result.model,
             generationMode: result.generationMode,
             referenceImageCount: result.referenceImageCount,
+            subjects: matchedSubjects.map((subject) => ({
+                id: subject.id,
+                name: subject.name,
+                imageCount: (subject.absoluteImagePaths || []).length,
+            })),
             aspectRatio: result.aspectRatio,
             size: result.size,
             quality: result.quality,

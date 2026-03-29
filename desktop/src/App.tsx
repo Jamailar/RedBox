@@ -16,6 +16,7 @@ const XhsBrowserPage = lazy(async () => ({ default: (await import('./pages/XhsBr
 const RedClawPage = lazy(async () => ({ default: (await import('./pages/RedClaw')).RedClaw }));
 const MediaLibraryPage = lazy(async () => ({ default: (await import('./pages/MediaLibrary')).MediaLibrary }));
 const CoverStudioPage = lazy(async () => ({ default: (await import('./pages/CoverStudio')).CoverStudio }));
+const SubjectsPage = lazy(async () => ({ default: (await import('./pages/Subjects')).Subjects }));
 
 const VIEW_PRELOADERS: Array<() => Promise<unknown>> = [
   () => import('./pages/Knowledge'),
@@ -23,9 +24,10 @@ const VIEW_PRELOADERS: Array<() => Promise<unknown>> = [
   () => import('./pages/RedClaw'),
   () => import('./pages/MediaLibrary'),
   () => import('./pages/CoverStudio'),
+  () => import('./pages/Subjects'),
 ];
 
-export type ViewType = 'chat' | 'creative-chat' | 'skills' | 'knowledge' | 'advisors' | 'settings' | 'manuscripts' | 'archives' | 'wander' | 'xhs-browser' | 'redclaw' | 'media-library' | 'cover-studio';
+export type ViewType = 'chat' | 'creative-chat' | 'skills' | 'knowledge' | 'advisors' | 'settings' | 'manuscripts' | 'archives' | 'wander' | 'xhs-browser' | 'redclaw' | 'media-library' | 'cover-studio' | 'subjects';
 
 // 待发送的聊天消息（用于跨页面传递）
 export interface PendingChatMessage {
@@ -395,6 +397,13 @@ function App() {
                 pendingMessage={pendingRedClawMessage}
                 onPendingMessageConsumed={clearPendingRedClawMessage}
               />
+            </Suspense>
+          </div>
+        )}
+        {mountedViews.has('subjects') && (
+          <div className={currentView === 'subjects' ? 'h-full min-h-0 flex flex-col' : 'hidden'}>
+            <Suspense fallback={currentView === 'subjects' ? <ViewLoadingFallback /> : null}>
+              <SubjectsPage />
             </Suspense>
           </div>
         )}

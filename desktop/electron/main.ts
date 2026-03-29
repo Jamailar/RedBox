@@ -150,6 +150,18 @@ import {
   type DocumentSourceRecord,
   type DocumentSourceKind,
 } from './core/documentKnowledgeStore';
+import {
+  listSubjectCategories,
+  createSubjectCategory,
+  updateSubjectCategory,
+  deleteSubjectCategory,
+  listSubjects,
+  getSubject,
+  createSubject,
+  updateSubject,
+  deleteSubject,
+  searchSubjects,
+} from './core/subjectsLibraryStore';
 
 protocol.registerSchemesAsPrivileged([
   {
@@ -669,6 +681,7 @@ async function ensureWorkspaceStructureFor(paths: ReturnType<typeof getWorkspace
     paths.manuscripts,
     paths.media,
     paths.cover || path.join(paths.base, 'cover'),
+    paths.subjects || path.join(paths.base, 'subjects'),
     paths.redclaw,
     path.join(paths.redclaw, 'profile'),
     path.join(paths.base, 'memory'),
@@ -1863,6 +1876,130 @@ ipcMain.handle('media:open-root', async () => {
     return { success: true };
   } catch (error) {
     console.error('Failed to open media library root:', error);
+    return { success: false, error: String(error) };
+  }
+});
+
+ipcMain.handle('subjects:list', async (_, { limit }: { limit?: number } = {}) => {
+  try {
+    const subjects = await listSubjects(limit || 500);
+    return { success: true, subjects };
+  } catch (error) {
+    console.error('Failed to list subjects:', error);
+    return { success: false, error: String(error), subjects: [] };
+  }
+});
+
+ipcMain.handle('subjects:get', async (_, { id }: { id: string }) => {
+  try {
+    if (!id) {
+      return { success: false, error: 'id is required' };
+    }
+    const subject = await getSubject(id);
+    return { success: true, subject };
+  } catch (error) {
+    console.error('Failed to get subject:', error);
+    return { success: false, error: String(error) };
+  }
+});
+
+ipcMain.handle('subjects:create', async (_, payload: {
+  name: string;
+  categoryId?: string;
+  description?: string;
+  tags?: string[] | string;
+  attributes?: Array<{ key: string; value: string }>;
+  images?: Array<{ name?: string; dataUrl?: string; relativePath?: string }>;
+}) => {
+  try {
+    const subject = await createSubject(payload || { name: '' });
+    return { success: true, subject };
+  } catch (error) {
+    console.error('Failed to create subject:', error);
+    return { success: false, error: String(error) };
+  }
+});
+
+ipcMain.handle('subjects:update', async (_, payload: {
+  id: string;
+  name?: string;
+  categoryId?: string;
+  description?: string;
+  tags?: string[] | string;
+  attributes?: Array<{ key: string; value: string }>;
+  images?: Array<{ name?: string; dataUrl?: string; relativePath?: string }>;
+}) => {
+  try {
+    if (!payload?.id) {
+      return { success: false, error: 'id is required' };
+    }
+    const subject = await updateSubject(payload);
+    return { success: true, subject };
+  } catch (error) {
+    console.error('Failed to update subject:', error);
+    return { success: false, error: String(error) };
+  }
+});
+
+ipcMain.handle('subjects:delete', async (_, { id }: { id: string }) => {
+  try {
+    if (!id) {
+      return { success: false, error: 'id is required' };
+    }
+    await deleteSubject(id);
+    return { success: true };
+  } catch (error) {
+    console.error('Failed to delete subject:', error);
+    return { success: false, error: String(error) };
+  }
+});
+
+ipcMain.handle('subjects:search', async (_, { query, categoryId, limit }: { query?: string; categoryId?: string; limit?: number } = {}) => {
+  try {
+    const subjects = await searchSubjects(String(query || ''), { categoryId, limit });
+    return { success: true, subjects };
+  } catch (error) {
+    console.error('Failed to search subjects:', error);
+    return { success: false, error: String(error), subjects: [] };
+  }
+});
+
+ipcMain.handle('subjects:categories:list', async () => {
+  try {
+    const categories = await listSubjectCategories();
+    return { success: true, categories };
+  } catch (error) {
+    console.error('Failed to list subject categories:', error);
+    return { success: false, error: String(error), categories: [] };
+  }
+});
+
+ipcMain.handle('subjects:categories:create', async (_, { name }: { name: string }) => {
+  try {
+    const category = await createSubjectCategory(name);
+    return { success: true, category };
+  } catch (error) {
+    console.error('Failed to create subject category:', error);
+    return { success: false, error: String(error) };
+  }
+});
+
+ipcMain.handle('subjects:categories:update', async (_, payload: { id: string; name: string }) => {
+  try {
+    const category = await updateSubjectCategory(payload);
+    return { success: true, category };
+  } catch (error) {
+    console.error('Failed to update subject category:', error);
+    return { success: false, error: String(error) };
+  }
+});
+
+ipcMain.handle('subjects:categories:delete', async (_, { id }: { id: string }) => {
+  try {
+    await deleteSubjectCategory(id);
+    return { success: true };
+  } catch (error) {
+    console.error('Failed to delete subject category:', error);
     return { success: false, error: String(error) };
   }
 });
@@ -5927,6 +6064,17 @@ const transcribeVideoToText = async (videoPath: string): Promise<{ text: string 
       return '';
     }
   })();
+  const modelName = String(settings?.transcription_model || 'whisper-1').trim() || 'whisper-1';
+  const isOfficialOpenAiTranscriptionModel = /^(whisper-1|gpt-4o-transcribe|gpt-4o-mini-transcribe(?:-\d{4}-\d{2}-\d{2})?|gpt-4o-transcribe-diarize)$/i.test(modelName);
+  const isOfficialGeminiEndpoint =
+    endpointHost === 'generativelanguage.googleapis.com' || endpointHost.endsWith('.googleapis.com');
+  const detectGeminiApiVersionFromEndpoint = (value: string): 'v1' | 'v1beta' => {
+    const normalized = String(value || '').toLowerCase();
+    if (normalized.includes('/v1/') || normalized.endsWith('/v1')) {
+      return 'v1';
+    }
+    return 'v1beta';
+  };
   const isLikelyUnsupportedTranscriptionEndpoint =
     endpointHost.includes('dashscope.aliyuncs.com') ||
     endpointHost.includes('volces.com');
@@ -5968,12 +6116,11 @@ const transcribeVideoToText = async (videoPath: string): Promise<{ text: string 
     endpoint,
     officialGateway: isOfficialGatewayEndpoint,
     authMode: String(apiKey || '').trim().startsWith('rbx_') ? 'api-key' : 'access-token',
-    model: String(settings?.transcription_model || 'whisper-1'),
+    model: modelName,
   });
 
   let preparedAudioCleanup: (() => Promise<void>) | undefined;
   try {
-    const modelName = String(settings?.transcription_model || 'whisper-1').trim() || 'whisper-1';
     const preparedAudio = await prepareTranscriptionAudio(videoPath);
     preparedAudioCleanup = preparedAudio.cleanup;
     const audioBuffer = preparedAudio.audioBuffer;
@@ -5989,7 +6136,68 @@ const transcribeVideoToText = async (videoPath: string): Promise<{ text: string 
       bytes: audioBuffer.byteLength,
       fileName,
       fileMimeType,
-    });
+      });
+
+    if (!isOfficialGatewayEndpoint && isOfficialOpenAiTranscriptionModel) {
+      const OpenAI = require('openai').default;
+      const { toFile } = require('openai');
+      const client = new OpenAI({
+        apiKey,
+        baseURL: endpoint,
+        timeout: 180000,
+        maxRetries: 0,
+      });
+      const file = await toFile(Buffer.from(audioBuffer), fileName || 'audio.wav', {
+        type: fileMimeType || 'application/octet-stream',
+      });
+      const sdkResponse = await client.audio.transcriptions.create({
+        model: modelName,
+        file,
+      });
+      const text = typeof sdkResponse === 'string'
+        ? sdkResponse
+        : String((sdkResponse as { text?: string }).text || '').trim();
+      return { text: text || null };
+    }
+
+    if (!isOfficialGatewayEndpoint && isOfficialGeminiEndpoint) {
+      const { GoogleGenAI } = require('@google/genai');
+      const client = new GoogleGenAI({
+        apiKey,
+        apiVersion: detectGeminiApiVersionFromEndpoint(endpoint),
+        httpOptions: {
+          timeout: 180000,
+          retryOptions: {
+            attempts: 1,
+          },
+          baseUrl: `${new URL(endpoint).protocol}//${new URL(endpoint).host}`,
+        },
+      });
+      const sdkResponse = await client.models.generateContent({
+        model: modelName,
+        contents: [
+          {
+            role: 'user',
+            parts: [
+              {
+                text: '请将这段音频完整转写为纯文本。不要总结，不要解释，不要补充格式，只返回转写结果。',
+              },
+              {
+                inlineData: {
+                  mimeType: fileMimeType || 'audio/mpeg',
+                  data: Buffer.from(audioBuffer).toString('base64'),
+                },
+              },
+            ],
+          },
+        ],
+        config: {
+          temperature: 0,
+        },
+      });
+      const text = String(sdkResponse?.text || '').trim();
+      return { text: text || null };
+    }
 
     // Align with gateway-api-node OpenAI compat controller:
     // it accepts both multipart file upload and file_base64.

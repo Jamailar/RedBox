@@ -59,6 +59,7 @@ export const loadOfficialFeatureModule = async (): Promise<OfficialFeatureModule
           const loaded = require(candidatePath) as OfficialFeatureModule & { default?: OfficialFeatureModule };
           const resolvedModule = loaded?.default || loaded;
           if (resolvedModule && typeof resolvedModule === 'object') {
+            console.log('[official-features] runtime module loaded', candidatePath);
             return resolvedModule;
           }
           attemptedErrors.push(`${candidatePath}: module loaded but no usable export found`);

@@ -778,6 +778,26 @@ export function Settings() {
       const deduped = Array.from(new Set((models || []).map((item) => String(item.id || '').trim()).filter(Boolean)))
         .map((id) => ({ id }));
       setModelsBySource((prev) => ({ ...prev, [source.id]: deduped }));
+      updateAiSource(source.id, (prev) => {
+        const fetchedIds = deduped.map((item) => item.id);
+        const mergedModels = normalizeSourceModels([
+          ...(prev.models || []),
+          ...fetchedIds,
+          prev.model,
+        ]);
+        const nextModel = String(prev.model || '').trim() || mergedModels[0] || '';
+        if (
+          nextModel === String(prev.model || '').trim()
+          && mergedModels.join('\n') === normalizeSourceModels(prev.models || []).join('\n')
+        ) {
+          return prev;
+        }
+        return {
+          ...prev,
+          models: mergedModels,
+          model: nextModel,
+        };
+      });
 
       setTestStatus('success');
       setTestMsg(`模型列表已更新（${deduped.length} 个）`);

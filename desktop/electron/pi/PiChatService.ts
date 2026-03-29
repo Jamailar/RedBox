@@ -2398,6 +2398,7 @@ export class PiChatService {
     const identityPath = path.join(profileRoot, 'identity.md');
     const userPath = path.join(profileRoot, 'user.md');
     const creatorProfilePath = path.join(profileRoot, 'CreatorProfile.md');
+    const subjectsPath = path.join(workspacePaths.base, 'subjects');
     const appCliPath = path.join(process.cwd(), 'desktop', 'electron', 'core', 'tools', 'appCliTool.ts');
     const promptsLibraryPath = path.join(process.cwd(), 'desktop', 'electron', 'prompts', 'library');
 
@@ -2411,6 +2412,7 @@ export class PiChatService {
       `- Identity document: ${identityPath}`,
       `- User profile document: ${userPath}`,
       `- Creator strategy document: ${creatorProfilePath}`,
+      `- Subjects library root: ${subjectsPath}`,
     ].join('\n');
   }
 
@@ -2469,6 +2471,82 @@ export class PiChatService {
     return parts.join('\n\n');
   }
 
+  private buildSubjectsSection(workspacePaths: ReturnType<typeof getWorkspacePaths>): string {
+    const subjectsRoot = path.join(workspacePaths.base, 'subjects');
+    const catalogPath = path.join(subjectsRoot, 'catalog.json');
+    const categoriesPath = path.join(subjectsRoot, 'categories.json');
+
+    try {
+      const categoriesRaw = fs.existsSync(categoriesPath) ? fs.readFileSync(categoriesPath, 'utf-8') : '';
+      const categoriesParsed = categoriesRaw ? JSON.parse(categoriesRaw) as { categories?: Array<{ id?: string; name?: string }> } : {};
+      const categoryMap = new Map(
+        Array.isArray(categoriesParsed.categories)
+          ? categoriesParsed.categories.map((item) => [String(item?.id || '').trim(), String(item?.name || '').trim()])
+          : [],
+      );
+
+      const catalogRaw = fs.existsSync(catalogPath) ? fs.readFileSync(catalogPath, 'utf-8') : '';
+      const catalogParsed = catalogRaw ? JSON.parse(catalogRaw) as {
+        subjects?: Array<{
+          id?: string;
+          name?: string;
+          categoryId?: string;
+          tags?: string[];
+          attributes?: Array<{ key?: string; value?: string }>;
+          imagePaths?: string[];
+        }>;
+      } : {};
+      const subjects = Array.isArray(catalogParsed.subjects) ? catalogParsed.subjects : [];
+      if (!subjects.length) {
+        return [
+          '当前空间还没有注册主体。',
+          `Subjects root: ${subjectsRoot}`,
+          '如果用户提到具体人物、商品、场景，仍应优先查询主体库；若结果为空，再明确说明未找到。',
+        ].join('\n');
+      }
+
+      const subjectNodes = subjects
+        .slice(0, 200)
+        .map((subject) => {
+          const id = String(subject?.id || '').trim();
+          const name = String(subject?.name || '').trim();
+          const categoryId = String(subject?.categoryId || '').trim();
+          const categoryName = categoryMap.get(categoryId) || (categoryId ? categoryId : '未分类');
+          const tags = Array.isArray(subject?.tags) ? subject.tags.map((item) => String(item || '').trim()).filter(Boolean) : [];
+          const attributeKeys = Array.isArray(subject?.attributes)
+            ? subject.attributes.map((item) => String(item?.key || '').trim()).filter(Boolean)
+            : [];
+          const hasImages = Array.isArray(subject?.imagePaths) && subject.imagePaths.length > 0 ? 'true' : 'false';
+          const location = id ? path.join(subjectsRoot, id, 'subject.json') : '';
+          return [
+            '  <subject>',
+            `    <id>${id}</id>`,
+            `    <name>${name}</name>`,
+            `    <category>${categoryName}</category>`,
+            `    <tags>${tags.join(', ')}</tags>`,
+            `    <attribute_keys>${attributeKeys.join(', ')}</attribute_keys>`,
+            `    <has_images>${hasImages}</has_images>`,
+            `    <location>${location}</location>`,
+            '  </subject>',
+          ].join('\n');
+        })
+        .join('\n');
+
+      return [
+        'These subject names have reference materials in the current space.',
+        'When the user mentions one of these names or a close combination of them, use `app_cli subjects search/get` before answering.',
+        '<available_subjects>',
+        subjectNodes,
+        '</available_subjects>',
+      ].join('\n');
+    } catch (error) {
+      return [
+        `Subjects root: ${subjectsRoot}`,
+        `读取主体索引失败: ${String(error)}`,
+      ].join('\n');
+    }
+  }
+
   private async loadLongTermMemoryContext(): Promise<string> {
     try {
       return await getLongTermMemoryPrompt(40);
@@ -2506,6 +2584,7 @@ export class PiChatService {
         pi_documentation: this.buildPiDocumentationSection(workspacePaths, redClawProfileBundle),
         project_context: this.buildProjectContextSection(workspacePaths),
         skills_section: this.buildSkillsSection(skillsXml, activeSkillContents),
+        subjects_section: this.buildSubjectsSection(workspacePaths),
         current_date: new Date().toISOString(),
         current_working_directory: workspace,
         workspace,
@@ -2519,6 +2598,7 @@ export class PiChatService {
         advisors_path: workspacePaths.advisors,
         manuscripts_path: workspacePaths.manuscripts,
         media_path: workspacePaths.media,
+        subjects_path: `${workspacePaths.base}/subjects`,
         redclaw_path: workspacePaths.redclaw,
         redclaw_profile_path: `${workspacePaths.redclaw}/profile`,
         memory_path: `${workspacePaths.base}/memory`,
@@ -2630,6 +2710,12 @@ export class PiChatService {
         '- 不能只在聊天里展示最终文案；完整内容产出后必须保存，并在回复中明确回显工具返回的真实保存路径。',
         '- 未收到工具成功返回前，禁止声称“已保存”“已写入稿件”“文件路径是 ...”。若保存失败或尚未执行，必须明确说明未保存。',
         '- 在继续历史任务前，可先调用 `app_cli(command="redclaw list")` 或 `app_cli(command="redclaw get --project-id ...")` 确认项目状态。',
+        '- 当用户提到具体人物、商品、场景、道具、品牌款式时，先查询主体库：`app_cli(command="subjects search --query ...")`，命中后再 `subjects get --id ...` 读取属性和图片路径。',
+        '- 如果主体库没有结果，必须明确说未找到，不要自行臆测主体长相、服饰、商品款式或细节。',
+        '- 当生图任务存在用户上传参考图、主体库图片、模板图、人物图、商品图时，必须优先使用 `app_cli(command="image generate ...")` 的参考图模式，不要退回纯文生图。',
+        '- 如果已经命中主体库且主体含图片，优先通过 `payload.subjectIds` 或 `referenceImages` 把主体图片传进生图工具。',
+        '- 多图参考时，提示词必须明确写出“图1/图2/图3 各自代表什么”，例如：图1是人物主体，图2是商品主体，图3是场景氛围参考。',
+        '- 若本轮生图调用有参考图，但工具返回 `referenceImageCount = 0`，不能宣称“已按参考图生成成功”，必须说明参考图没有真正带入。',
         '',
         '### RedClaw 自动化能力（强约束）',
         '- 你具备后台自动化能力：可以创建/修改/删除/执行 定时任务、长周期任务、心跳与后台轮询。',

@@ -4,6 +4,7 @@ import {
     getImageProviderAdapter,
     getImageProviderCapabilities,
     normalizeImageAspectRatio,
+    normalizeImageSize,
     normalizeImageProviderTemplate,
     type ImageProviderTemplate,
     type ImageGenerationMode,
@@ -115,18 +116,18 @@ export async function generateImagesToMediaLibrary(input: GenerateImagesInput): 
     const model = providerTemplate === 'dashscope-wan-native'
         ? DASHSCOPE_LOCKED_IMAGE_MODEL
         : resolvedModel;
-    const size = String(input.size || settings.image_size || '').trim();
+    const size = normalizeImageSize(String(input.size || settings.image_size || '').trim());
     const quality = String(input.quality || settings.image_quality || 'standard').trim();
+    const rawReferenceImages = Array.isArray(input.referenceImages)
+        ? input.referenceImages.map((item) => String(item || '').trim()).filter(Boolean).slice(0, 4)
+        : [];
     const requestedGenerationMode = (
         input.generationMode === 'image-to-image' ||
         input.generationMode === 'reference-guided' ||
         input.generationMode === 'text-to-image'
             ? input.generationMode
             : undefined
-    ) || 'text-to-image';
-    const rawReferenceImages = Array.isArray(input.referenceImages)
-        ? input.referenceImages.map((item) => String(item || '').trim()).filter(Boolean).slice(0, 4)
-        : [];
+    ) || (rawReferenceImages.length > 0 ? 'reference-guided' : 'text-to-image');
     const aspectRatio = normalizeImageAspectRatio(
         String(input.aspectRatio || settings.image_aspect_ratio || '').trim()
     );

@@ -54,6 +54,8 @@ export interface ImageProviderCapabilities {
 const OPENAI_LANDSCAPE_SIZE = '1536x1024';
 const OPENAI_PORTRAIT_SIZE = '1024x1536';
 const OPENAI_SQUARE_SIZE = '1024x1024';
+const SEEDREAM_MIN_PIXELS = 3_686_400;
+const SIZE_STEP = 64;
 const IMAGE_PROVIDER_CAPABILITIES: Record<ImageProviderTemplate, ImageProviderCapabilities> = {
     'openai-images': {
         supportedModes: ['text-to-image', 'image-to-image', 'reference-guided'],
@@ -233,6 +235,14 @@ function createOpenAiSdkClient(endpoint: string, apiKey: string): any {
     });
 }
 
+async function createOpenAiUploadable(raw: string): Promise<any> {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { toFile } = require('openai');
+    const reference = await readReferenceImageForMultipart(raw);
+    const buffer = Buffer.from(await reference.blob.arrayBuffer());
+    return toFile(buffer, reference.filename, { type: reference.blob.type || 'image/png' });
+}
+
 function detectGeminiApiVersionFromEndpoint(endpoint: string): 'v1' | 'v1beta' {
     const normalized = normalizeEndpoint(endpoint).toLowerCase();
     if (normalized.includes('/v1/') || normalized.endsWith('/v1')) {
@@ -308,8 +318,8 @@ function buildGeminiContentParts(prompt: string, refs: string[]): Array<Record<s
 }
 
 function mapAspectRatioToOpenAiSize(aspectRatio?: ImageAspectRatio, preferredSize?: string): string {
-    const normalizedSize = String(preferredSize || '').trim();
-    if (normalizedSize && normalizedSize !== 'auto') {
+    const normalizedSize = normalizeImageSize(preferredSize);
+    if (normalizedSize) {
         return normalizedSize;
     }
     switch (aspectRatio) {
@@ -326,11 +336,114 @@ function mapAspectRatioToOpenAiSize(aspectRatio?: ImageAspectRatio, preferredSiz
     }
 }
 
+function isSeedreamModel(model?: string): boolean {
+    const normalized = String(model || '').trim().toLowerCase();
+    return normalized.includes('seedream');
+}
+
+function parseWxH(size: string): { width: number; height: number } | null {
+    const matched = String(size || '').trim().match(/^(\d{2,5})x(\d{2,5})$/i);
+    if (!matched) return null;
+    const width = Number(matched[1]);
+    const height = Number(matched[2]);
+    if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+        return null;
+    }
+    return { width, height };
+}
+
+function roundUpToStep(value: number, step = SIZE_STEP): number {
+    return Math.ceil(value / step) * step;
+}
+
+function clampSizeEdge(value: number): number {
+    return Math.min(4096, Math.max(1024, Math.round(value)));
+}
+
+function enforceMinPixelsForModel(size: string, model?: string): string {
+    if (!isSeedreamModel(model)) {
+        return size;
+    }
+    const parsed = parseWxH(size);
+    if (!parsed) {
+        return '2048x2048';
+    }
+    const currentPixels = parsed.width * parsed.height;
+    if (currentPixels >= SEEDREAM_MIN_PIXELS) {
+        return size;
+    }
+    const scale = Math.sqrt(SEEDREAM_MIN_PIXELS / currentPixels);
+    const width = clampSizeEdge(roundUpToStep(parsed.width * scale));
+    const height = clampSizeEdge(roundUpToStep(parsed.height * scale));
+    return `${width}x${height}`;
+}
+
+function enforceMinPixels(size: string, minPixels: number): string {
+    const normalizedMinPixels = Number.isFinite(minPixels) ? Math.max(1, Math.floor(minPixels)) : 0;
+    if (!normalizedMinPixels) return size;
+    const parsed = parseWxH(size);
+    if (!parsed) {
+        const edge = clampSizeEdge(roundUpToStep(Math.sqrt(normalizedMinPixels)));
+        return `${edge}x${edge}`;
+    }
+    const currentPixels = parsed.width * parsed.height;
+    if (currentPixels >= normalizedMinPixels) {
+        return size;
+    }
+    const scale = Math.sqrt(normalizedMinPixels / currentPixels);
+    let width = clampSizeEdge(roundUpToStep(parsed.width * scale));
+    let height = clampSizeEdge(roundUpToStep(parsed.height * scale));
+    if (width * height < normalizedMinPixels) {
+        const retryScale = Math.sqrt(normalizedMinPixels / Math.max(1, width * height));
+        width = clampSizeEdge(roundUpToStep(width * retryScale));
+        height = clampSizeEdge(roundUpToStep(height * retryScale));
+    }
+    return `${width}x${height}`;
+}
+
+function extractMinimumPixelConstraint(errorText: string): number | null {
+    const raw = String(errorText || '').trim();
+    if (!raw) return null;
+    const candidates: string[] = [raw];
+    try {
+        const parsed = JSON.parse(raw) as Record<string, any>;
+        const message = String(parsed?.error?.message || parsed?.message || '').trim();
+        if (message) candidates.push(message);
+    } catch {
+        // ignore non-json payload
+    }
+    for (const candidate of candidates) {
+        const normalized = candidate.replace(/[,_]/g, '');
+        const match = normalized.match(/at least\s+(\d{5,})\s*pixels?/i);
+        if (match?.[1]) {
+            const parsedValue = Number.parseInt(match[1], 10);
+            if (Number.isFinite(parsedValue) && parsedValue > 0) {
+                return parsedValue;
+            }
+        }
+    }
+    return null;
+}
+
+function resolveOpenAiSizeForRequest(request: ImageGenerationRequest): string {
+    const baseSize = mapAspectRatioToOpenAiSize(request.aspectRatio, request.size);
+    const adjusted = enforceMinPixelsForModel(baseSize, request.model);
+    if (adjusted !== baseSize) {
+        logImageGenDebug('openai-size', 'adjust_for_model_constraint', {
+            model: request.model,
+            baseSize,
+            adjustedSize: adjusted,
+            minPixels: SEEDREAM_MIN_PIXELS,
+        });
+    }
+    return adjusted;
+}
+
 function mapAspectRatioToGemini(aspectRatio?: ImageAspectRatio, preferredSize?: string): string {
     if (aspectRatio && aspectRatio !== 'auto') {
         return aspectRatio;
     }
-    switch (String(preferredSize || '').trim()) {
+    switch (normalizeImageSize(preferredSize)) {
         case '1024x1536':
             return '3:4';
         case '1536x1024':
@@ -368,7 +481,7 @@ function mapQualityToJimengResolution(quality?: string): string {
 function mapSizeToNativeTier(size?: string, quality?: string): '1K' | '2K' | '4K' {
     const normalizedQuality = String(quality || '').trim().toLowerCase();
     if (normalizedQuality === 'high' || normalizedQuality === 'hd') return '4K';
-    const normalizedSize = String(size || '').trim().toLowerCase();
+    const normalizedSize = normalizeImageSize(size).toLowerCase();
     if (normalizedSize.includes('1536') || normalizedSize.includes('2048') || normalizedSize.includes('2k')) {
         return '2K';
     }
@@ -376,10 +489,11 @@ function mapSizeToNativeTier(size?: string, quality?: string): '1K' | '2K' | '4K
 }
 
 function mapSizeToDashScope(size?: string, aspectRatio?: ImageAspectRatio): string {
-    const normalized = String(size || '').trim().toLowerCase();
-    if (normalized.includes('x')) {
-        return normalized.replace(/\s+/g, '').replace('x', '*');
+    const normalizedSize = normalizeImageSize(size);
+    if (normalizedSize) {
+        return normalizedSize.replace('x', '*');
     }
+    const normalized = String(size || '').trim().toLowerCase();
     if (normalized === '1k') return '1024*1024';
     if (normalized === '2k') return '2048*2048';
     if (normalized === '4k') return '4096*4096';
@@ -396,9 +510,8 @@ function mapSizeToDashScope(size?: string, aspectRatio?: ImageAspectRatio): stri
 }
 
 function mapSizeToDashscopeWanInterleave(size?: string, aspectRatio?: ImageAspectRatio): string {
-    const normalized = String(size || '').trim().toLowerCase();
-    if (normalized.includes('*')) return normalized;
-    if (normalized.includes('x')) return normalized.replace(/\s+/g, '').replace('x', '*');
+    const normalizedSize = normalizeImageSize(size);
+    if (normalizedSize) return normalizedSize.replace('x', '*');
     switch (aspectRatio) {
         case '3:4':
             return '960*1280';
@@ -606,7 +719,14 @@ function extractInvalidValueParameterFromError(errorText: string): string | null
     }
     if (
         lower.includes('size') &&
-        (lower.includes('1024x1024') || lower.includes('1536x1024') || lower.includes('1024x1536'))
+        (
+            lower.includes('1024x1024') ||
+            lower.includes('1536x1024') ||
+            lower.includes('1024x1536') ||
+            lower.includes('parameter `size`') ||
+            lower.includes('parameter "size"') ||
+            lower.includes('parameter size')
+        )
     ) {
         return 'size';
     }
@@ -635,6 +755,111 @@ function extractSdkErrorInfo(error: unknown): { status: number; message: string 
         'Unknown error'
     ).trim();
     return { status, message };
+}
+
+function shouldFallbackEditToGeneration(status: number, message: string): boolean {
+    if (status !== 400) return false;
+    const text = String(message || '').toLowerCase();
+    return (
+        text.includes('no body') ||
+        text.includes('unexpected field') ||
+        text.includes('invalid url') ||
+        text.includes('invalid_request_error')
+    );
+}
+
+async function tryOpenAiGenerationFallbackWithReferences(args: {
+    request: ImageGenerationRequest;
+    refs: string[];
+    size: string;
+    quality?: string;
+    preferredResponseFormat: 'b64_json' | 'url';
+    removedParams: Set<string>;
+}): Promise<GeneratedImageOutput[]> {
+    const endpoint = resolveOpenAiImagesEndpoint(args.request.endpoint);
+    const baseBody: Record<string, unknown> = {};
+    if (!args.removedParams.has('model')) {
+        baseBody.model = args.request.model;
+    }
+    if (!args.removedParams.has('prompt')) {
+        baseBody.prompt = args.request.prompt;
+    }
+    if (!args.removedParams.has('n')) {
+        baseBody.n = Math.max(1, args.request.count || 1);
+    }
+    if (!args.removedParams.has('size')) {
+        baseBody.size = args.size;
+    }
+    if (args.quality && !args.removedParams.has('quality')) {
+        baseBody.quality = args.quality;
+    }
+    if (!args.removedParams.has('response_format')) {
+        baseBody.response_format = args.preferredResponseFormat;
+    }
+
+    const payloadVariants: Array<{ name: string; payload: Record<string, unknown> }> = [];
+    if (args.refs.length > 0) {
+        payloadVariants.push({
+            name: 'images-array',
+            payload: {
+                ...baseBody,
+                images: args.refs,
+            },
+        });
+    }
+    if (args.refs.length > 0) {
+        payloadVariants.push({
+            name: 'image-single',
+            payload: {
+                ...baseBody,
+                image: args.refs[0],
+            },
+        });
+    }
+    payloadVariants.push({
+        name: 'text-only',
+        payload: {
+            ...baseBody,
+        },
+    });
+
+    let lastError = '';
+    let lastStatus = 0;
+    for (const variant of payloadVariants) {
+        const response = await fetch(endpoint, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                Authorization: `Bearer ${args.request.apiKey}`,
+            },
+            body: JSON.stringify(variant.payload),
+        });
+        if (!response.ok) {
+            const errorText = await response.text().catch(() => '');
+            lastStatus = response.status;
+            lastError = errorText || response.statusText || `HTTP ${response.status}`;
+            logImageGenDebug('openai-images', 'edit_fallback_variant_failed', {
+                endpoint,
+                variant: variant.name,
+                status: response.status,
+                statusText: response.statusText,
+                errorText: String(errorText || ''),
+            });
+            continue;
+        }
+        const payload = await parseJsonSafe(response);
+        const outputs = await normalizeGeneratedImages(payload);
+        if (outputs.length > 0) {
+            logImageGenDebug('openai-images', 'edit_fallback_variant_succeeded', {
+                endpoint,
+                variant: variant.name,
+                outputCount: outputs.length,
+            });
+            return outputs;
+        }
+        lastError = `Fallback variant ${variant.name} returned no image payload`;
+    }
+    throw new Error(`Image generation fallback failed (${lastStatus || 'unknown'}): ${lastError || 'no successful response'}`);
 }
 
 async function parseJsonSafe(response: Response): Promise<any> {
@@ -1141,176 +1366,157 @@ const openAiAdapter: ImageProviderAdapter = {
         const preferredResponseFormat = resolvePreferredOpenAiResponseFormat(endpoint);
         const removedParams = new Set<string>();
         const maxRetryRounds = 4;
+        let forcedSize = '';
+        let attemptedEditFallback = false;
         let response: Response | null = null;
         let lastErrorText = '';
-        if (useEditApi) {
-            const references = await Promise.all(refs.map((item) => readReferenceImageForMultipart(item)));
-            const quality = mapQualityToOpenAi(request.quality);
-            for (let i = 0; i < maxRetryRounds; i += 1) {
-                const form = new FormData();
-                if (!removedParams.has('model')) {
-                    form.append('model', request.model);
+        const quality = mapQualityToOpenAi(request.quality);
+        const client = createOpenAiSdkClient(request.endpoint, request.apiKey);
+        const maxUpstreamTimeoutRetries = resolveImage524RetryCount();
+        for (let i = 0; i < maxRetryRounds; i += 1) {
+            const body: Record<string, unknown> = {};
+            if (!removedParams.has('model')) {
+                body.model = request.model;
+            }
+            if (!removedParams.has('prompt')) {
+                body.prompt = request.prompt;
+            }
+            if (!removedParams.has('n')) {
+                body.n = Math.max(1, request.count || 1);
+            }
+            if (!removedParams.has('size')) {
+                body.size = forcedSize || resolveOpenAiSizeForRequest(request);
+            }
+            if (quality && !removedParams.has('quality')) {
+                body.quality = quality;
+            }
+            if (!useEditApi && !removedParams.has('response_format')) {
+                body.response_format = preferredResponseFormat;
+            }
+            if (useEditApi) {
+                body.image = await Promise.all(refs.map((item) => createOpenAiUploadable(item)));
+            }
+            try {
+                for (let attempt = 0; attempt <= maxUpstreamTimeoutRetries; attempt += 1) {
+                    try {
+                        const sdkResult = useEditApi
+                            ? await client.images.edit(body)
+                            : await client.images.generate(body);
+                        return normalizeGeneratedImages(sdkResult);
+                    } catch (error) {
+                        logImageGenSdkFailure(useEditApi ? 'openai-images.edit' : 'openai-images.generate', error, {
+                            endpoint,
+                            model: request.model,
+                            body: {
+                                ...body,
+                                ...(useEditApi ? { image: `[${refs.length} uploadable file(s)]` } : {}),
+                            },
+                            attempt: attempt + 1,
+                        });
+                        const { status, message } = extractSdkErrorInfo(error);
+                        if (attempt < maxUpstreamTimeoutRetries && isLikelyUpstreamTimeoutError(status, message)) {
+                            const waitMs = 1200 * (attempt + 1);
+                            logImageGenDebug('openai-images', 'retry_after_upstream_timeout', {
+                                endpoint,
+                                model: request.model,
+                                status,
+                                attempt: attempt + 1,
+                                maxRetries: maxUpstreamTimeoutRetries,
+                                waitMs,
+                                mode: useEditApi ? 'edit' : 'generate',
+                            });
+                            await delay(waitMs);
+                            continue;
+                        }
+                        throw error;
+                    }
                 }
-                if (!removedParams.has('prompt')) {
-                    form.append('prompt', request.prompt);
+            } catch (error) {
+                let { status, message } = extractSdkErrorInfo(error);
+                lastErrorText = message;
+
+                if (useEditApi && !attemptedEditFallback && shouldFallbackEditToGeneration(status, message)) {
+                    attemptedEditFallback = true;
+                    const currentSize = String(body.size || resolveOpenAiSizeForRequest(request));
+                    try {
+                        logImageGenDebug('openai-images', 'edit_fallback_to_generation', {
+                            model: request.model,
+                            endpoint: resolveOpenAiImagesEndpoint(request.endpoint),
+                            refs: refs.length,
+                            size: currentSize,
+                        });
+                        const outputs = await tryOpenAiGenerationFallbackWithReferences({
+                            request,
+                            refs,
+                            size: currentSize,
+                            quality,
+                            preferredResponseFormat,
+                            removedParams,
+                        });
+                        return outputs;
+                    } catch (fallbackError) {
+                        const fallbackInfo = extractSdkErrorInfo(fallbackError);
+                        status = fallbackInfo.status || status;
+                        message = fallbackInfo.message || message;
+                        lastErrorText = message;
+                    }
                 }
-                if (!removedParams.has('n')) {
-                    form.append('n', String(Math.max(1, request.count || 1)));
-                }
+
                 if (!removedParams.has('size')) {
-                    form.append('size', mapAspectRatioToOpenAiSize(request.aspectRatio, request.size));
+                    const minPixels = extractMinimumPixelConstraint(message);
+                    if (minPixels) {
+                        const currentSize = String(body.size || '');
+                        const adjustedSize = enforceMinPixels(currentSize, minPixels);
+                        if (adjustedSize && adjustedSize !== currentSize) {
+                            forcedSize = adjustedSize;
+                            logImageGenDebug('openai-images', 'retry_with_resized_size', {
+                                endpoint,
+                                model: request.model,
+                                baseSize: currentSize,
+                                adjustedSize,
+                                minPixels,
+                                round: i + 1,
+                                mode: useEditApi ? 'edit' : 'generate',
+                            });
+                            continue;
+                        }
+                    }
                 }
-                if (quality && !removedParams.has('quality')) {
-                    form.append('quality', quality);
-                }
-                // OpenAI multipart edits API uses repeated `image` fields for multi-image input,
-                // not `image[]`. Keep this strict to maximize OpenAI-compatibility.
-                for (const reference of references) {
-                    form.append('image', reference.blob, reference.filename);
-                }
-
-                response = await fetch(endpoint, {
-                    method: 'POST',
-                    headers: {
-                        Authorization: `Bearer ${request.apiKey}`,
-                    },
-                    body: form,
-                });
-
-                if (response.ok) {
-                    break;
-                }
-
-                lastErrorText = await response.text().catch(() => '');
-                const retryParam = resolveRetryableUnknownParam(lastErrorText, removedParams);
+                const retryParam = resolveRetryableUnknownParam(message, removedParams);
                 if (retryParam) {
                     removedParams.add(retryParam);
                     logImageGenDebug('openai-images', 'retry_without_unknown_param', {
                         endpoint,
                         removedParam: retryParam,
                         round: i + 1,
+                        via: 'openai-sdk',
+                        mode: useEditApi ? 'edit' : 'generate',
                     });
                     continue;
                 }
-                const invalidValueParam = resolveRetryableInvalidValueParam(lastErrorText, removedParams);
+                const invalidValueParam = resolveRetryableInvalidValueParam(message, removedParams);
                 if (invalidValueParam) {
                     removedParams.add(invalidValueParam);
                     logImageGenDebug('openai-images', 'retry_without_invalid_value_param', {
                         endpoint,
                         removedParam: invalidValueParam,
                         round: i + 1,
+                        via: 'openai-sdk',
+                        mode: useEditApi ? 'edit' : 'generate',
                     });
                     continue;
                 }
-                ensureSuccess(response, `Image generation failed (${response.status}): ${lastErrorText || response.statusText}`);
-            }
-        } else {
-            const quality = mapQualityToOpenAi(request.quality);
-            const client = createOpenAiSdkClient(request.endpoint, request.apiKey);
-            const maxUpstreamTimeoutRetries = resolveImage524RetryCount();
-            for (let i = 0; i < maxRetryRounds; i += 1) {
-                const body: Record<string, unknown> = {};
-                if (!removedParams.has('model')) {
-                    body.model = request.model;
+                if (status === 524 || /receive timeout from origin/i.test(message)) {
+                    throw new Error(
+                        `Image generation failed (524): Receive timeout from origin. ` +
+                        `上游网关超时，任务可能已在供应商侧执行成功。Raw: ${message}`
+                    );
                 }
-                if (!removedParams.has('prompt')) {
-                    body.prompt = request.prompt;
-                }
-                if (!removedParams.has('n')) {
-                    body.n = Math.max(1, request.count || 1);
-                }
-                if (!removedParams.has('size')) {
-                    body.size = mapAspectRatioToOpenAiSize(request.aspectRatio, request.size);
-                }
-                if (quality && !removedParams.has('quality')) {
-                    body.quality = quality;
-                }
-                if (!removedParams.has('response_format')) {
-                    body.response_format = preferredResponseFormat;
-                }
-                try {
-                    for (let attempt = 0; attempt <= maxUpstreamTimeoutRetries; attempt += 1) {
-                        try {
-                            const sdkResult = await client.images.generate(body);
-                            return normalizeGeneratedImages(sdkResult);
-                        } catch (error) {
-                            logImageGenSdkFailure('openai-images.generate', error, {
-                                endpoint,
-                                model: request.model,
-                                body,
-                                attempt: attempt + 1,
-                            });
-                            const { status, message } = extractSdkErrorInfo(error);
-                            if (attempt < maxUpstreamTimeoutRetries && isLikelyUpstreamTimeoutError(status, message)) {
-                                const waitMs = 1200 * (attempt + 1);
-                                logImageGenDebug('openai-images', 'retry_after_upstream_timeout', {
-                                    endpoint,
-                                    model: request.model,
-                                    status,
-                                    attempt: attempt + 1,
-                                    maxRetries: maxUpstreamTimeoutRetries,
-                                    waitMs,
-                                });
-                                await delay(waitMs);
-                                continue;
-                            }
-                            throw error;
-                        }
-                    }
-                } catch (error) {
-                    const { status, message } = extractSdkErrorInfo(error);
-                    lastErrorText = message;
-                    const retryParam = resolveRetryableUnknownParam(message, removedParams);
-                    if (retryParam) {
-                        removedParams.add(retryParam);
-                        logImageGenDebug('openai-images', 'retry_without_unknown_param', {
-                            endpoint,
-                            removedParam: retryParam,
-                            round: i + 1,
-                            via: 'openai-sdk',
-                        });
-                        continue;
-                    }
-                    const invalidValueParam = resolveRetryableInvalidValueParam(message, removedParams);
-                    if (invalidValueParam) {
-                        removedParams.add(invalidValueParam);
-                        logImageGenDebug('openai-images', 'retry_without_invalid_value_param', {
-                            endpoint,
-                            removedParam: invalidValueParam,
-                            round: i + 1,
-                            via: 'openai-sdk',
-                        });
-                        continue;
-                    }
-                    if (status === 524 || /receive timeout from origin/i.test(message)) {
-                        throw new Error(
-                            `Image generation failed (524): Receive timeout from origin. ` +
-                            `上游网关超时，任务可能已在供应商侧执行成功。Raw: ${message}`
-                        );
-                    }
-                    throw new Error(`Image generation failed (${status || 'unknown'}): ${message}`);
-                }
+                throw new Error(`Image generation failed (${status || 'unknown'}): ${message}`);
             }
         }
 
-        if (!response) {
-            throw new Error(`Image generation failed: no HTTP response from ${endpoint}`);
-        }
-        if (!response.ok) {
-            const status = response.status || 0;
-            const statusText = response.statusText || 'Unknown Error';
-            if (status === 524) {
-                const fallbackMessage = [
-                    'Image generation failed (524): Receive timeout from origin.',
-                    '上游网关超时，任务可能已在供应商侧执行成功。',
-                    '建议改用官方端点或降低规格后重试（n=1、standard、1024x1024）。',
-                ].join(' ');
-                ensureSuccess(response, `${fallbackMessage}${lastErrorText ? ` Raw: ${lastErrorText}` : ''}`);
-            }
-            ensureSuccess(response, `Image generation failed (${status}): ${lastErrorText || statusText}`);
-        }
-
-        return normalizeGeneratedImages(await response.json());
+        throw new Error(`Image generation failed (${useEditApi ? 'edit' : 'generate'}): ${lastErrorText || 'no successful SDK response'}`);
     },
 };
 
@@ -1318,27 +1524,62 @@ const geminiOpenAiAdapter: ImageProviderAdapter = {
     template: 'gemini-openai-images',
     supportsMultiCount: true,
     async generate(request) {
-        const response = await fetch(resolveGeminiOpenAiEndpoint(request.endpoint), {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                Authorization: `Bearer ${request.apiKey}`,
-            },
-            body: JSON.stringify({
-                model: request.model,
-                prompt: request.prompt,
-                n: Math.max(1, request.count || 1),
-                size: mapAspectRatioToOpenAiSize(request.aspectRatio, request.size),
-                response_format: 'b64_json',
-            }),
-        });
-
-        if (!response.ok) {
-            const errorText = await response.text().catch(() => '');
-            ensureSuccess(response, `Gemini OpenAI image generation failed (${response.status}): ${errorText || response.statusText}`);
+        if (isOfficialGeminiEndpoint(request.endpoint)) {
+            const normalizedModel = String(request.model || '').trim().toLowerCase();
+            if (normalizedModel.includes('imagen')) {
+                return geminiImagenNativeAdapter.generate({
+                    ...request,
+                    providerTemplate: 'gemini-imagen-native',
+                });
+            }
+            return geminiGenerateContentAdapter.generate({
+                ...request,
+                providerTemplate: 'gemini-generate-content',
+            });
         }
 
-        return normalizeGeneratedImages(await response.json());
+        let forcedSize = '';
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+            const response = await fetch(resolveGeminiOpenAiEndpoint(request.endpoint), {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    Authorization: `Bearer ${request.apiKey}`,
+                },
+                body: JSON.stringify({
+                    model: request.model,
+                    prompt: request.prompt,
+                    n: Math.max(1, request.count || 1),
+                    size: forcedSize || resolveOpenAiSizeForRequest(request),
+                    response_format: 'b64_json',
+                }),
+            });
+
+            if (!response.ok) {
+                const errorText = await response.text().catch(() => '');
+                const minPixels = extractMinimumPixelConstraint(errorText);
+                if (minPixels) {
+                    const currentSize = forcedSize || resolveOpenAiSizeForRequest(request);
+                    const adjustedSize = enforceMinPixels(currentSize, minPixels);
+                    if (adjustedSize !== currentSize) {
+                        forcedSize = adjustedSize;
+                        logImageGenDebug('gemini-openai-images', 'retry_with_resized_size', {
+                            endpoint: request.endpoint,
+                            model: request.model,
+                            baseSize: currentSize,
+                            adjustedSize,
+                            minPixels,
+                            attempt: attempt + 1,
+                        });
+                        continue;
+                    }
+                }
+                ensureSuccess(response, `Gemini OpenAI image generation failed (${response.status}): ${errorText || response.statusText}`);
+            }
+
+            return normalizeGeneratedImages(await response.json());
+        }
+        throw new Error('Gemini OpenAI image generation failed: cannot satisfy size constraint.');
     },
 };
 
@@ -1614,29 +1855,50 @@ const arkSeedreamAdapter: ImageProviderAdapter = {
         const refs = await normalizeReferenceImagesForTransport(
             pickReferenceImages(request, IMAGE_PROVIDER_CAPABILITIES['ark-seedream-native'].maxReferenceImages)
         );
-        const response = await fetch(resolveOpenAiImagesEndpoint(request.endpoint), {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                Authorization: `Bearer ${request.apiKey}`,
-            },
-            body: JSON.stringify({
-                model: request.model,
-                prompt: request.prompt,
-                n: Math.max(1, request.count || 1),
-                size: mapAspectRatioToOpenAiSize(request.aspectRatio, request.size),
-                quality: mapQualityToOpenAi(request.quality),
-                response_format: 'b64_json',
-                ...(mode !== 'text-to-image' && refs.length > 0 ? { images: refs } : {}),
-            }),
-        });
+        let forcedSize = '';
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+            const response = await fetch(resolveOpenAiImagesEndpoint(request.endpoint), {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    Authorization: `Bearer ${request.apiKey}`,
+                },
+                body: JSON.stringify({
+                    model: request.model,
+                    prompt: request.prompt,
+                    n: Math.max(1, request.count || 1),
+                    size: forcedSize || resolveOpenAiSizeForRequest(request),
+                    quality: mapQualityToOpenAi(request.quality),
+                    response_format: 'b64_json',
+                    ...(mode !== 'text-to-image' && refs.length > 0 ? { images: refs } : {}),
+                }),
+            });
 
-        if (!response.ok) {
-            const errorText = await response.text().catch(() => '');
-            ensureSuccess(response, `Ark/Seedream generation failed (${response.status}): ${errorText || response.statusText}`);
+            if (!response.ok) {
+                const errorText = await response.text().catch(() => '');
+                const minPixels = extractMinimumPixelConstraint(errorText);
+                if (minPixels) {
+                    const currentSize = forcedSize || resolveOpenAiSizeForRequest(request);
+                    const adjustedSize = enforceMinPixels(currentSize, minPixels);
+                    if (adjustedSize !== currentSize) {
+                        forcedSize = adjustedSize;
+                        logImageGenDebug('ark-seedream-native', 'retry_with_resized_size', {
+                            endpoint: request.endpoint,
+                            model: request.model,
+                            baseSize: currentSize,
+                            adjustedSize,
+                            minPixels,
+                            attempt: attempt + 1,
+                        });
+                        continue;
+                    }
+                }
+                ensureSuccess(response, `Ark/Seedream generation failed (${response.status}): ${errorText || response.statusText}`);
+            }
+
+            return normalizeGeneratedImages(await response.json());
         }
-
-        return normalizeGeneratedImages(await response.json());
+        throw new Error('Ark/Seedream generation failed: cannot satisfy size constraint.');
     },
 };
 
@@ -1819,6 +2081,32 @@ export function normalizeImageAspectRatio(aspectRatio?: string): ImageAspectRati
         return normalized;
     }
     return undefined;
+}
+
+export function normalizeImageSize(size?: string): string {
+    const raw = String(size || '').trim().toLowerCase();
+    if (!raw || raw === 'auto') {
+        return '';
+    }
+    if (raw === '1k') {
+        return '1024x1024';
+    }
+    if (raw === '2k') {
+        return '2048x2048';
+    }
+    if (raw === '4k') {
+        return '4096x4096';
+    }
+
+    const matched = raw.match(/^(\d{2,5})\s*[x*]\s*(\d{2,5})$/i);
+    if (!matched) {
+        return '';
+    }
+
+    const clamp = (value: number) => Math.min(4096, Math.max(1024, Math.round(value)));
+    const width = clamp(Number(matched[1]));
+    const height = clamp(Number(matched[2]));
+    return `${width}x${height}`;
 }
 
 export function getImageProviderCapabilities(providerTemplate?: string, provider?: string): ImageProviderCapabilities {

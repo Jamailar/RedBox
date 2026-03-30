@@ -232,6 +232,56 @@ const SIX_HAT_PROMPTS = {
 let appUpdateLastNotifiedVersion = '';
 const advisorAvatarLocalizationInFlight = new Set<string>();
 let localAssetProtocolsRegistered = false;
+const BROWSER_PLUGIN_BUNDLE_RELATIVE_PATH = path.join('.plugin-runtime', 'browser-extension');
+const BROWSER_PLUGIN_EXPORT_RELATIVE_PATH = path.join('integrations', 'browser-extension', 'redbox-capture');
+
+const getBundledBrowserPluginCandidateDirs = (): string[] => {
+  const candidates = [
+    path.join(app.getAppPath(), BROWSER_PLUGIN_BUNDLE_RELATIVE_PATH),
+    path.join(process.cwd(), BROWSER_PLUGIN_BUNDLE_RELATIVE_PATH),
+    path.join(process.cwd(), 'desktop', BROWSER_PLUGIN_BUNDLE_RELATIVE_PATH),
+    path.join(process.cwd(), 'Plugin'),
+    path.join(path.resolve(app.getAppPath(), '..'), 'Plugin'),
+  ];
+  return Array.from(new Set(candidates.map((item) => path.resolve(item))));
+};
+
+const findBundledBrowserPluginDir = async (): Promise<string | null> => {
+  const candidates = getBundledBrowserPluginCandidateDirs();
+  for (const candidate of candidates) {
+    if (await pathExists(path.join(candidate, 'manifest.json'))) {
+      return candidate;
+    }
+  }
+  return null;
+};
+
+const getExportedBrowserPluginDir = (): string => {
+  return path.join(app.getPath('userData'), BROWSER_PLUGIN_EXPORT_RELATIVE_PATH);
+};
+
+const pathExists = async (targetPath: string): Promise<boolean> => {
+  try {
+    await fs.access(targetPath);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+const ensureBrowserPluginPrepared = async (): Promise<{ path: string; alreadyPrepared: boolean }> => {
+  const sourceDir = await findBundledBrowserPluginDir();
+  if (!sourceDir) {
+    throw new Error(`内置插件资源不存在，已检查：${getBundledBrowserPluginCandidateDirs().join(' | ')}`);
+  }
+
+  const targetDir = getExportedBrowserPluginDir();
+  const alreadyPrepared = await pathExists(targetDir);
+  await fs.rm(targetDir, { recursive: true, force: true });
+  await fs.mkdir(path.dirname(targetDir), { recursive: true });
+  await fs.cp(sourceDir, targetDir, { recursive: true });
+  return { path: targetDir, alreadyPrepared };
+};
 
 const getAllowedLocalFileRoots = (): string[] => {
   const workspacePaths = getWorkspacePaths();
@@ -1111,6 +1161,45 @@ ipcMain.handle('ai:roles:list', async () => {
 });
 
 ipcMain.handle('app:get-version', () => app.getVersion());
+ipcMain.handle('plugin:browser-extension-status', async () => {
+  try {
+    const bundledDir = await findBundledBrowserPluginDir();
+    const bundled = Boolean(bundledDir);
+    const exportPath = getExportedBrowserPluginDir();
+    const exported = await pathExists(exportPath);
+    return { success: true, bundled, exportPath, exported, bundledPath: bundledDir || '' };
+  } catch (error) {
+    return {
+      success: false,
+      bundled: false,
+      exportPath: getExportedBrowserPluginDir(),
+      exported: false,
+      error: String(error),
+    };
+  }
+});
+ipcMain.handle('plugin:prepare-browser-extension', async () => {
+  try {
+    const result = await ensureBrowserPluginPrepared();
+    return { success: true, path: result.path, alreadyPrepared: result.alreadyPrepared };
+  } catch (error) {
+    console.error('Failed to prepare browser extension:', error);
+    return { success: false, path: '', error: String(error) };
+  }
+});
+ipcMain.handle('plugin:open-browser-extension-dir', async () => {
+  try {
+    const result = await ensureBrowserPluginPrepared();
+    const openError = await shell.openPath(result.path);
+    if (openError) {
+      return { success: false, path: result.path, error: openError };
+    }
+    return { success: true, path: result.path };
+  } catch (error) {
+    console.error('Failed to open browser extension dir:', error);
+    return { success: false, path: '', error: String(error) };
+  }
+});
 
 ipcMain.handle('app:check-update', async (_, payload?: { force?: boolean }) => {
   const force = Boolean(payload?.force);
@@ -7219,21 +7308,86 @@ function startHttpServer() {
       req.on("end", async () => {
         try {
           const data = JSON.parse(body);
-          const noteId = `text_${Date.now()}`;
+          const isLinkArticle = String(data.type || '').trim() === 'link-article';
+          const noteId = `${isLinkArticle ? 'link' : 'text'}_${Date.now()}`;
           const noteDir = path.join(getKnowledgeRedbookDir(), noteId);
           await fs.mkdir(noteDir, { recursive: true });
 
-          const meta = {
+          const meta: {
+            id: string;
+            type: 'link-article' | 'text';
+            title: string;
+            content: string;
+            sourceUrl: string;
+            siteName: string;
+            excerpt: string;
+            createdAt: string;
+            author: string;
+            stats: { likes: number; collects: number };
+            images: string[];
+            cover: string;
+          } = {
             id: noteId,
-            type: "text",
-            title: data.title || "Text Clipping",
+            type: isLinkArticle ? 'link-article' : 'text',
+            title: data.title || (isLinkArticle ? 'Link Article' : 'Text Clipping'),
             content: data.text || "",
             sourceUrl: data.url || "",
+            siteName: data.siteName || '',
+            excerpt: data.excerpt || '',
             createdAt: new Date().toISOString(),
-            author: "User",
+            author: data.author || 'User',
             stats: { likes: 0, collects: 0 },
-            images: []
+            images: [],
+            cover: '',
           };
+
+          const imagesDir = path.join(noteDir, 'images');
+          let nextImageIndex = 0;
+          const persistImage = async (imageSource: string, preferredName?: string) => {
+            if (!imageSource || typeof imageSource !== 'string') return '';
+            await fs.mkdir(imagesDir, { recursive: true });
+            const fileName = preferredName || `${nextImageIndex++}.jpg`;
+            const outputPath = path.join(imagesDir, fileName);
+            if (imageSource.startsWith('data:image')) {
+              const base64Data = imageSource.split(',')[1];
+              await fs.writeFile(outputPath, Buffer.from(base64Data, 'base64'));
+              return `images/${fileName}`;
+            }
+            if (imageSource.startsWith('http')) {
+              await downloadImageToFile(imageSource, outputPath);
+              return `images/${fileName}`;
+            }
+            return '';
+          };
+
+          if (typeof data.coverUrl === 'string' && data.coverUrl.trim()) {
+            try {
+              const coverPath = await persistImage(data.coverUrl.trim(), 'cover.jpg');
+              if (coverPath) {
+                meta.cover = coverPath;
+                meta.images.push(coverPath);
+              }
+            } catch (error) {
+              console.error('Failed to persist link cover:', error);
+            }
+          }
+
+          if (Array.isArray(data.images)) {
+            for (const imageSource of data.images.slice(0, 4)) {
+              try {
+                const imagePath = await persistImage(String(imageSource || '').trim());
+                if (imagePath && !meta.images.includes(imagePath)) {
+                  meta.images.push(imagePath);
+                }
+              } catch (error) {
+                console.error('Failed to persist link image:', error);
+              }
+            }
+          }
+
+          if (!meta.cover && meta.images.length > 0) {
+            meta.cover = meta.images[0];
+          }
 
           await fs.writeFile(path.join(noteDir, "meta.json"), JSON.stringify(meta, null, 2));
           await fs.writeFile(path.join(noteDir, "content.md"), data.text || "");

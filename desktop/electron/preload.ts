@@ -69,6 +69,11 @@ contextBridge.exposeInMainWorld('ipcRenderer', {
   getAppVersion: () => ipcRenderer.invoke('app:get-version'),
   checkAppUpdate: (force = false) => ipcRenderer.invoke('app:check-update', { force }),
   openAppReleasePage: (url?: string) => ipcRenderer.invoke('app:open-release-page', { url }),
+  browserPlugin: {
+    getStatus: () => ipcRenderer.invoke('plugin:browser-extension-status'),
+    prepare: () => ipcRenderer.invoke('plugin:prepare-browser-extension'),
+    openDir: () => ipcRenderer.invoke('plugin:open-browser-extension-dir'),
+  },
 
   // AI (Legacy)
   fetchModels: (config: { apiKey: string, baseURL: string, presetId?: string, protocol?: 'openai' | 'anthropic' | 'gemini', purpose?: 'chat' | 'image' }) => ipcRenderer.invoke('ai:fetch-models', config),

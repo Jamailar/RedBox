@@ -25,6 +25,15 @@ type YtdlpStatus = {
     path?: string;
 } | null;
 
+type BrowserPluginStatus = {
+    success: boolean;
+    bundled: boolean;
+    exportPath: string;
+    exported: boolean;
+    bundledPath?: string;
+    error?: string;
+} | null;
+
 type McpOauthState = Record<string, { connected?: boolean; tokenPath?: string } | undefined>;
 
 type FeatureFlags = {
@@ -619,6 +628,10 @@ interface ToolsSettingsSectionProps {
     ytdlpStatus: YtdlpStatus;
     handleInstallYtdlp: () => Promise<void>;
     handleUpdateYtdlp: () => Promise<void>;
+    browserPluginStatus: BrowserPluginStatus;
+    isPreparingBrowserPlugin: boolean;
+    handlePrepareBrowserPlugin: () => Promise<void>;
+    handleOpenBrowserPluginDir: () => Promise<void>;
     isInstallingTool: boolean;
     installProgress: number;
     showDeveloperDiagnostics: boolean;
@@ -667,6 +680,10 @@ export function ToolsSettingsSection({
     ytdlpStatus,
     handleInstallYtdlp,
     handleUpdateYtdlp,
+    browserPluginStatus,
+    isPreparingBrowserPlugin,
+    handlePrepareBrowserPlugin,
+    handleOpenBrowserPluginDir,
     isInstallingTool,
     installProgress,
     showDeveloperDiagnostics,
@@ -919,6 +936,54 @@ export function ToolsSettingsSection({
                         ))}
                     </div>
                 )}
+            </div>
+
+            <div className="bg-surface-secondary/30 rounded-lg border border-border p-4">
+                <div className="flex items-start justify-between gap-3">
+                    <div>
+                        <h3 className="text-sm font-medium text-text-primary flex items-center gap-2">
+                            浏览器采集插件
+                            {browserPluginStatus?.bundled ? (
+                                <span className="px-1.5 py-0.5 rounded text-[10px] bg-green-500/10 text-green-500 font-medium">已内置</span>
+                            ) : (
+                                <span className="px-1.5 py-0.5 rounded text-[10px] bg-red-500/10 text-red-500 font-medium">未发现</span>
+                            )}
+                        </h3>
+                        <p className="text-xs text-text-tertiary mt-1">
+                            安装包内已自带 Chrome / Edge 采集插件。由于浏览器安全限制，无法静默安装；这里提供一键准备和打开目录，降低安装难度。
+                        </p>
+                        <div className="mt-2 text-[10px] text-text-tertiary font-mono space-y-1">
+                            <div>状态: {browserPluginStatus?.bundled ? '内置资源可用' : (browserPluginStatus?.error || '插件资源缺失')}</div>
+                            <div>内置路径: {browserPluginStatus?.bundledPath || '未解析到'}</div>
+                            <div>导出目录: {browserPluginStatus?.exportPath || '尚未生成'}</div>
+                        </div>
+                        <div className="mt-3 text-[11px] text-text-secondary space-y-1">
+                            <div>1. 点击“一键准备插件”</div>
+                            <div>2. 在 Chrome / Edge 打开扩展管理页并开启开发者模式</div>
+                            <div>3. 点击“加载已解压的扩展程序”，选择上方导出目录</div>
+                        </div>
+                    </div>
+                    <div className="flex flex-col gap-2 shrink-0">
+                        <button
+                            type="button"
+                            onClick={() => void handlePrepareBrowserPlugin()}
+                            disabled={isPreparingBrowserPlugin}
+                            className="flex items-center gap-2 px-3 py-1.5 bg-accent-primary text-white text-xs font-medium rounded hover:opacity-90 disabled:opacity-50"
+                        >
+                            {isPreparingBrowserPlugin ? <RefreshCw className="w-3 h-3 animate-spin" /> : <Download className="w-3 h-3" />}
+                            {isPreparingBrowserPlugin ? '准备中...' : '一键准备插件'}
+                        </button>
+                        <button
+                            type="button"
+                            onClick={() => void handleOpenBrowserPluginDir()}
+                            disabled={isPreparingBrowserPlugin}
+                            className="flex items-center gap-2 px-3 py-1.5 border border-border text-text-primary text-xs font-medium rounded hover:bg-surface-secondary disabled:opacity-50"
+                        >
+                            <FolderOpen className="w-3 h-3" />
+                            打开插件目录
+                        </button>
+                    </div>
+                </div>
             </div>
 
             <div className="bg-surface-secondary/30 rounded-lg border border-border p-4">

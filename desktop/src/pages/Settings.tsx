@@ -361,6 +361,15 @@ export function Settings() {
   const [ytdlpStatus, setYtdlpStatus] = useState<{ installed: boolean; version?: string; path?: string } | null>(null);
   const [isInstallingTool, setIsInstallingTool] = useState(false);
   const [installProgress, setInstallProgress] = useState(0);
+  const [browserPluginStatus, setBrowserPluginStatus] = useState<{
+    success: boolean;
+    bundled: boolean;
+    exportPath: string;
+    exported: boolean;
+    bundledPath?: string;
+    error?: string;
+  } | null>(null);
+  const [isPreparingBrowserPlugin, setIsPreparingBrowserPlugin] = useState(false);
   const [mcpServers, setMcpServers] = useState<McpServerConfig[]>([]);
   const [mcpStatusMessage, setMcpStatusMessage] = useState('');
   const [isSyncingMcp, setIsSyncingMcp] = useState(false);
@@ -485,6 +494,7 @@ export function Settings() {
   useEffect(() => {
     loadSettings();
     checkTools();
+    loadBrowserPluginStatus();
     loadVectorStats();
     loadAppVersion();
 
@@ -1542,6 +1552,23 @@ export function Settings() {
     }
   };
 
+  const loadBrowserPluginStatus = async () => {
+    try {
+      const status = await window.ipcRenderer.browserPlugin.getStatus();
+      setBrowserPluginStatus(status);
+    } catch (error) {
+      console.error('Failed to load browser plugin status', error);
+      setBrowserPluginStatus({
+        success: false,
+        bundled: false,
+        exportPath: '',
+        exported: false,
+        bundledPath: '',
+        error: String(error),
+      });
+    }
+  };
+
   const loadVectorStats = async () => {
     try {
       const stats = await window.ipcRenderer.invoke('indexing:get-stats') as { totalStats: { vectors: number; documents: number } } | null;
@@ -1600,6 +1627,38 @@ export function Settings() {
       alert('更新出错');
     } finally {
       setIsInstallingTool(false);
+    }
+  };
+
+  const handlePrepareBrowserPlugin = async () => {
+    setIsPreparingBrowserPlugin(true);
+    try {
+      const result = await window.ipcRenderer.browserPlugin.prepare();
+      if (!result.success) {
+        window.alert(`插件准备失败：${result.error || '未知错误'}`);
+        return;
+      }
+      await loadBrowserPluginStatus();
+      window.alert(`插件已准备完成。\n\n目录：${result.path}\n\n下一步请打开 Chrome / Edge 扩展管理页，开启开发者模式后，选择“加载已解压的扩展程序”，并指向该目录。`);
+    } catch (error) {
+      console.error('Failed to prepare browser plugin', error);
+      window.alert(`插件准备失败：${String(error)}`);
+    } finally {
+      setIsPreparingBrowserPlugin(false);
+    }
+  };
+
+  const handleOpenBrowserPluginDir = async () => {
+    try {
+      const result = await window.ipcRenderer.browserPlugin.openDir();
+      if (!result.success) {
+        window.alert(`打开插件目录失败：${result.error || '未知错误'}`);
+        return;
+      }
+      await loadBrowserPluginStatus();
+    } catch (error) {
+      console.error('Failed to open browser plugin dir', error);
+      window.alert(`打开插件目录失败：${String(error)}`);
     }
   };
 
@@ -2469,6 +2528,10 @@ export function Settings() {
                 ytdlpStatus={ytdlpStatus}
                 handleInstallYtdlp={handleInstallYtdlp}
                 handleUpdateYtdlp={handleUpdateYtdlp}
+                browserPluginStatus={browserPluginStatus}
+                isPreparingBrowserPlugin={isPreparingBrowserPlugin}
+                handlePrepareBrowserPlugin={handlePrepareBrowserPlugin}
+                handleOpenBrowserPluginDir={handleOpenBrowserPluginDir}
                 isInstallingTool={isInstallingTool}
                 installProgress={installProgress}
                 showDeveloperDiagnostics={Boolean(formData.developer_mode_enabled)}

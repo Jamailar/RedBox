@@ -92,6 +92,8 @@ interface RunnerLongCycleTask {
 
 interface RunnerStatus {
     enabled: boolean;
+    lockState: 'owner' | 'passive';
+    blockedBy: string | null;
     intervalMinutes: number;
     keepAliveWhenNoWindow: boolean;
     maxProjectsPerTick: number;
@@ -99,6 +101,10 @@ interface RunnerStatus {
     isTicking: boolean;
     currentProjectId: string | null;
     currentAutomationTaskId?: string | null;
+    nextAutomationFireAt?: string | null;
+    inFlightTaskIds?: string[];
+    inFlightLongCycleTaskIds?: string[];
+    heartbeatInFlight?: boolean;
     lastTickAt: string | null;
     nextTickAt: string | null;
     nextMaintenanceAt?: string | null;
@@ -1102,11 +1108,35 @@ export function RedClaw({ pendingMessage, onPendingMessageConsumed }: RedClawPro
                                     </span>
                                 </div>
 
+                                {runnerStatus?.enabled && (
+                                    <div className="flex items-center gap-2 flex-wrap">
+                                        <span className={clsx(
+                                            'text-[10px] px-2 py-0.5 rounded-full border',
+                                            runnerStatus.lockState === 'owner'
+                                                ? 'text-emerald-600 border-emerald-500/40'
+                                                : 'text-amber-600 border-amber-500/40'
+                                        )}>
+                                            {runnerStatus.lockState === 'owner' ? '当前实例为主调度器' : '当前实例为被动副本'}
+                                        </span>
+                                        {runnerStatus.blockedBy && runnerStatus.lockState !== 'owner' && (
+                                            <span className="text-[10px] text-text-tertiary">
+                                                锁被 {runnerStatus.blockedBy} 持有
+                                            </span>
+                                        )}
+                                    </div>
+                                )}
+
                                 <div className="text-[11px] text-text-tertiary">
                                     上次轮询: {formatDateTime(runnerStatus?.lastTickAt)}
                                 </div>
                                 <div className="text-[11px] text-text-tertiary">
                                     下次轮询: {formatDateTime(runnerStatus?.nextTickAt)}
+                                </div>
+                                <div className="text-[11px] text-text-tertiary">
+                                    下次自动触发: {formatDateTime(runnerStatus?.nextAutomationFireAt)}
+                                </div>
+                                <div className="text-[11px] text-text-tertiary">
+                                    In-flight: {(runnerStatus?.inFlightTaskIds?.length || 0) + (runnerStatus?.inFlightLongCycleTaskIds?.length || 0) + (runnerStatus?.heartbeatInFlight ? 1 : 0)}
                                 </div>
 
                                 <div className="space-y-1.5">

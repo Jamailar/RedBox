@@ -16,6 +16,11 @@ import { getTaskGraphRuntime } from './ai/taskGraphRuntime';
 import type { IntentRoute, RoleId, RuntimeMode } from './ai/types';
 import { nextCronRunMs } from './backgroundCron';
 import { findMissedScheduledTasks } from './backgroundScheduledTasks';
+import { BackgroundCronScheduler } from './backgroundCronScheduler';
+import {
+  releaseBackgroundRuntimeLock,
+  tryAcquireBackgroundRuntimeLock,
+} from './backgroundRuntimeLock';
 
 type RunResult = 'success' | 'error' | 'skipped';
 type ScheduleMode = 'interval' | 'daily' | 'weekly' | 'once';
@@ -93,6 +98,8 @@ interface RedClawBackgroundConfig {
 
 export interface RedClawBackgroundRunnerStatus {
   enabled: boolean;
+  lockState: 'owner' | 'passive';
+  blockedBy: string | null;
   intervalMinutes: number;
   keepAliveWhenNoWindow: boolean;
   maxProjectsPerTick: number;
@@ -100,6 +107,10 @@ export interface RedClawBackgroundRunnerStatus {
   isTicking: boolean;
   currentProjectId: string | null;
   currentAutomationTaskId: string | null;
+  nextAutomationFireAt: string | null;
+  inFlightTaskIds: string[];
+  inFlightLongCycleTaskIds: string[];
+  heartbeatInFlight: boolean;
   lastTickAt: string | null;
   nextTickAt: string | null;
   lastError: string | null;
@@ -130,6 +141,7 @@ const DEFAULT_CONFIG: RedClawBackgroundConfig = {
 };
 
 const MAINTENANCE_CHECK_MS = 30 * 1000;
+const LOCK_PROBE_INTERVAL_MS = 5 * 1000;
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -532,9 +544,16 @@ export class RedClawBackgroundRunner extends EventEmitter {
   private isTicking = false;
   private timer: NodeJS.Timeout | null = null;
   private maintenanceTimer: NodeJS.Timeout | null = null;
+  private lockProbeTimer: NodeJS.Timeout | null = null;
   private currentProjectId: string | null = null;
   private currentAutomationTaskId: string | null = null;
   private readonly pendingCatchUpTaskIds = new Set<string>();
+  private readonly scheduledTaskScheduler = new BackgroundCronScheduler<RedClawScheduledTask>();
+  private readonly longCycleTaskScheduler = new BackgroundCronScheduler<RedClawLongCycleTask & { mode: 'interval'; recurring: true }>();
+  private heartbeatInFlight = false;
+  private readonly lockOwnerId = `redclaw-bg:${process.pid}:${Date.now().toString(36)}`;
+  private lockState: 'owner' | 'passive' = 'passive';
+  private blockedBy: string | null = null;
   private lastTickAt: string | null = null;
   private nextTickAt: string | null = null;
   private nextMaintenanceAt: string | null = null;
@@ -543,6 +562,10 @@ export class RedClawBackgroundRunner extends EventEmitter {
 
   private getConfigPath(): string {
     return path.join(getWorkspacePaths().redclaw, 'background-runner.json');
+  }
+
+  private getLockPath(): string {
+    return path.join(getWorkspacePaths().redclaw, 'background-runner.lock');
   }
 
   private async ensureLoaded(): Promise<void> {
@@ -616,6 +639,16 @@ export class RedClawBackgroundRunner extends EventEmitter {
     } else {
       heartbeat.nextRunAt = undefined;
     }
+
+    this.scheduledTaskScheduler.sync(Object.values(this.config.scheduledTasks), nowMs);
+    const longCycleSchedulerItems = Object.values(this.config.longCycleTasks)
+      .filter((task) => task.enabled && task.status === 'running')
+      .map((task) => ({
+        ...task,
+        mode: 'interval' as const,
+        recurring: true as const,
+      }));
+    this.longCycleTaskScheduler.sync(longCycleSchedulerItems, nowMs);
   }
 
   private refreshCatchUpQueue(nowMs: number): void {
@@ -623,6 +656,27 @@ export class RedClawBackgroundRunner extends EventEmitter {
     for (const task of missed) {
       this.pendingCatchUpTaskIds.add(task.id);
     }
+  }
+
+  private getNextAutomationFireAt(): string | null {
+    if (!this.config.enabled || this.lockState !== 'owner') {
+      return null;
+    }
+
+    const candidates: number[] = [];
+    const scheduledNext = this.scheduledTaskScheduler.getNextFireTime();
+    if (scheduledNext !== null) candidates.push(scheduledNext);
+    const longNext = this.longCycleTaskScheduler.getNextFireTime();
+    if (longNext !== null) candidates.push(longNext);
+    if (this.config.heartbeat.enabled && !this.heartbeatInFlight) {
+      const ms = parseIsoMs(this.config.heartbeat.nextRunAt);
+      if (ms !== null) candidates.push(ms);
+    }
+
+    if (candidates.length === 0) {
+      return null;
+    }
+    return new Date(Math.min(...candidates)).toISOString();
   }
 
   private async loadConfig(): Promise<void> {
@@ -648,13 +702,92 @@ export class RedClawBackgroundRunner extends EventEmitter {
     await fs.writeFile(configPath, JSON.stringify(this.config, null, 2), 'utf-8');
   }
 
+  private clearLockProbe(): void {
+    if (this.lockProbeTimer) {
+      clearTimeout(this.lockProbeTimer);
+      this.lockProbeTimer = null;
+    }
+  }
+
+  private scheduleLockProbe(): void {
+    this.clearLockProbe();
+    if (!this.config.enabled || this.lockState === 'owner') {
+      return;
+    }
+    this.lockProbeTimer = setTimeout(() => {
+      void this.tryBecomeOwnerFromPassive();
+    }, LOCK_PROBE_INTERVAL_MS);
+  }
+
+  private async acquireOwnership(): Promise<boolean> {
+    const result = await tryAcquireBackgroundRuntimeLock(this.getLockPath(), this.lockOwnerId);
+    if (result.acquired) {
+      this.lockState = 'owner';
+      this.blockedBy = null;
+      this.clearLockProbe();
+      return true;
+    }
+
+    this.lockState = 'passive';
+    this.blockedBy = result.blockedBy || null;
+    this.scheduleLockProbe();
+    return false;
+  }
+
+  private async releaseOwnership(): Promise<void> {
+    this.clearLockProbe();
+    await releaseBackgroundRuntimeLock(this.getLockPath(), this.lockOwnerId);
+    this.lockState = 'passive';
+    this.blockedBy = null;
+  }
+
+  private async tryBecomeOwnerFromPassive(): Promise<void> {
+    if (!this.config.enabled || this.lockState === 'owner') {
+      return;
+    }
+
+    try {
+      const acquired = await this.acquireOwnership();
+      if (!acquired) {
+        this.emitStatus();
+        return;
+      }
+
+      this.emit('log', {
+        level: 'info',
+        message: 'Background runner lock acquired; switching to owner mode',
+        reason: 'scheduler-lock',
+        at: nowIso(),
+      });
+      this.scheduleNextTick();
+      this.scheduleMaintenanceCheck();
+      void this.runProjectTick('scheduled');
+      void this.runMaintenanceTick('scheduled');
+      this.emitStatus();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.lastError = message;
+      this.emit('log', {
+        level: 'warn',
+        message: `Background runner lock probe failed: ${message}`,
+        reason: 'scheduler-lock',
+        at: nowIso(),
+      });
+      this.scheduleLockProbe();
+      this.emitStatus();
+    }
+  }
+
   private scheduleNextTick(): void {
     if (this.timer) {
       clearTimeout(this.timer);
       this.timer = null;
     }
-    if (!this.config.enabled) {
+    if (!this.config.enabled || this.lockState !== 'owner') {
       this.nextTickAt = null;
+      if (this.config.enabled && this.lockState !== 'owner') {
+        this.scheduleLockProbe();
+      }
       this.emitStatus();
       return;
     }
@@ -673,8 +806,11 @@ export class RedClawBackgroundRunner extends EventEmitter {
       this.maintenanceTimer = null;
     }
 
-    if (!this.config.enabled) {
+    if (!this.config.enabled || this.lockState !== 'owner') {
       this.nextMaintenanceAt = null;
+      if (this.config.enabled && this.lockState !== 'owner') {
+        this.scheduleLockProbe();
+      }
       this.emitStatus();
       return;
     }
@@ -698,10 +834,16 @@ export class RedClawBackgroundRunner extends EventEmitter {
   async init(): Promise<void> {
     await this.ensureLoaded();
     if (this.config.enabled) {
-      this.scheduleNextTick();
-      this.scheduleMaintenanceCheck();
-      void this.runProjectTick('init');
-      void this.runMaintenanceTick('init');
+      const isOwner = await this.acquireOwnership();
+      this.emitStatus();
+      if (isOwner) {
+        this.scheduleNextTick();
+        this.scheduleMaintenanceCheck();
+        void this.runProjectTick('init');
+        void this.runMaintenanceTick('init');
+      } else {
+        this.scheduleLockProbe();
+      }
     }
   }
 
@@ -711,10 +853,15 @@ export class RedClawBackgroundRunner extends EventEmitter {
     this.pendingCatchUpTaskIds.clear();
     await this.ensureLoaded();
     if (this.config.enabled) {
-      this.scheduleNextTick();
-      this.scheduleMaintenanceCheck();
-      void this.runProjectTick('workspace-change');
-      void this.runMaintenanceTick('workspace-change');
+      const isOwner = await this.acquireOwnership();
+      if (isOwner) {
+        this.scheduleNextTick();
+        this.scheduleMaintenanceCheck();
+        void this.runProjectTick('workspace-change');
+        void this.runMaintenanceTick('workspace-change');
+      } else {
+        this.scheduleLockProbe();
+      }
     } else {
       this.emitStatus();
     }
@@ -723,6 +870,8 @@ export class RedClawBackgroundRunner extends EventEmitter {
   getStatus(): RedClawBackgroundRunnerStatus {
     return {
       enabled: this.config.enabled,
+      lockState: this.lockState,
+      blockedBy: this.blockedBy,
       intervalMinutes: this.config.intervalMinutes,
       keepAliveWhenNoWindow: this.config.keepAliveWhenNoWindow,
       maxProjectsPerTick: this.config.maxProjectsPerTick,
@@ -730,6 +879,10 @@ export class RedClawBackgroundRunner extends EventEmitter {
       isTicking: this.isTicking,
       currentProjectId: this.currentProjectId,
       currentAutomationTaskId: this.currentAutomationTaskId,
+      nextAutomationFireAt: this.getNextAutomationFireAt(),
+      inFlightTaskIds: this.scheduledTaskScheduler.getInFlightTaskIds(),
+      inFlightLongCycleTaskIds: this.longCycleTaskScheduler.getInFlightTaskIds(),
+      heartbeatInFlight: this.heartbeatInFlight,
       lastTickAt: this.lastTickAt,
       nextTickAt: this.nextTickAt,
       lastError: this.lastError,
@@ -790,8 +943,15 @@ export class RedClawBackgroundRunner extends EventEmitter {
     await this.persistConfig();
 
     if (this.config.enabled) {
-      this.scheduleNextTick();
-      this.scheduleMaintenanceCheck();
+      const isOwner = await this.acquireOwnership();
+      if (isOwner) {
+        this.scheduleNextTick();
+        this.scheduleMaintenanceCheck();
+      } else {
+        this.nextTickAt = null;
+        this.nextMaintenanceAt = null;
+        this.scheduleLockProbe();
+      }
     } else {
       await this.stop({ persist: false });
     }
@@ -897,6 +1057,7 @@ export class RedClawBackgroundRunner extends EventEmitter {
     ensureScheduledTaskNextRun(task, Date.now());
     this.pendingCatchUpTaskIds.delete(task.id);
     this.config.scheduledTasks[task.id] = task;
+    this.normalizeSchedules(Date.now());
     await this.persistConfig();
     this.emitStatus();
     return task;
@@ -982,6 +1143,7 @@ export class RedClawBackgroundRunner extends EventEmitter {
     current.nextRunAt = undefined;
     ensureScheduledTaskNextRun(current, Date.now());
     this.pendingCatchUpTaskIds.delete(current.id);
+    this.normalizeSchedules(Date.now());
 
     await this.persistConfig();
     this.emitStatus();
@@ -994,6 +1156,7 @@ export class RedClawBackgroundRunner extends EventEmitter {
     if (!id) throw new Error('taskId is required');
     delete this.config.scheduledTasks[id];
     this.pendingCatchUpTaskIds.delete(id);
+    this.scheduledTaskScheduler.markRemoved(id);
     await this.persistConfig();
     this.emitStatus();
     return this.getStatus();
@@ -1013,6 +1176,7 @@ export class RedClawBackgroundRunner extends EventEmitter {
     } else {
       this.pendingCatchUpTaskIds.delete(task.id);
     }
+    this.normalizeSchedules(Date.now());
     await this.persistConfig();
     this.emitStatus();
     return task;
@@ -1065,6 +1229,7 @@ export class RedClawBackgroundRunner extends EventEmitter {
     };
 
     this.config.longCycleTasks[task.id] = task;
+    this.normalizeSchedules(Date.now());
     await this.persistConfig();
     this.emitStatus();
     return task;
@@ -1126,6 +1291,7 @@ export class RedClawBackgroundRunner extends EventEmitter {
     }
     current.updatedAt = nowIso();
     ensureLongCycleNextRun(current, Date.now());
+    this.normalizeSchedules(Date.now());
 
     await this.persistConfig();
     this.emitStatus();
@@ -1137,6 +1303,7 @@ export class RedClawBackgroundRunner extends EventEmitter {
     const id = String(taskId || '').trim();
     if (!id) throw new Error('taskId is required');
     delete this.config.longCycleTasks[id];
+    this.longCycleTaskScheduler.markRemoved(id);
     await this.persistConfig();
     this.emitStatus();
     return this.getStatus();
@@ -1157,6 +1324,7 @@ export class RedClawBackgroundRunner extends EventEmitter {
     if (task.enabled && task.status !== 'completed') {
       ensureLongCycleNextRun(task, Date.now());
     }
+    this.normalizeSchedules(Date.now());
     await this.persistConfig();
     this.emitStatus();
     return task;
@@ -1191,9 +1359,17 @@ export class RedClawBackgroundRunner extends EventEmitter {
       clearTimeout(this.maintenanceTimer);
       this.maintenanceTimer = null;
     }
+    this.clearLockProbe();
 
     this.nextTickAt = null;
     this.nextMaintenanceAt = null;
+    for (const taskId of this.scheduledTaskScheduler.getInFlightTaskIds()) {
+      this.scheduledTaskScheduler.markRemoved(taskId);
+    }
+    for (const taskId of this.longCycleTaskScheduler.getInFlightTaskIds()) {
+      this.longCycleTaskScheduler.markRemoved(taskId);
+    }
+    this.heartbeatInFlight = false;
 
     if (this.currentService) {
       this.currentService.abort();
@@ -1205,12 +1381,17 @@ export class RedClawBackgroundRunner extends EventEmitter {
       await this.persistConfig();
     }
 
+    await this.releaseOwnership();
+
     this.emitStatus();
     return this.getStatus();
   }
 
   async runNow(projectId?: string): Promise<RedClawBackgroundRunnerStatus> {
     await this.ensureLoaded();
+    if (this.config.enabled && this.lockState !== 'owner') {
+      await this.acquireOwnership();
+    }
     await this.runProjectTick('manual', projectId);
     await this.runMaintenanceTick('manual');
     return this.getStatus();
@@ -1218,6 +1399,9 @@ export class RedClawBackgroundRunner extends EventEmitter {
 
   async runScheduledTaskNow(taskId: string): Promise<RedClawBackgroundRunnerStatus> {
     await this.ensureLoaded();
+    if (this.config.enabled && this.lockState !== 'owner') {
+      await this.acquireOwnership();
+    }
     await this.executeScheduledTask(taskId, 'manual');
     await this.persistConfig();
     this.emitStatus();
@@ -1226,6 +1410,9 @@ export class RedClawBackgroundRunner extends EventEmitter {
 
   async runLongCycleTaskNow(taskId: string): Promise<RedClawBackgroundRunnerStatus> {
     await this.ensureLoaded();
+    if (this.config.enabled && this.lockState !== 'owner') {
+      await this.acquireOwnership();
+    }
     await this.executeLongCycleTask(taskId, 'manual');
     await this.persistConfig();
     this.emitStatus();
@@ -1234,7 +1421,7 @@ export class RedClawBackgroundRunner extends EventEmitter {
 
   async shouldKeepAliveWhenNoWindow(): Promise<boolean> {
     await this.ensureLoaded();
-    return this.config.enabled && this.config.keepAliveWhenNoWindow;
+    return this.config.enabled && this.config.keepAliveWhenNoWindow && this.lockState === 'owner';
   }
 
   private updateProjectRunResult(projectId: string, result: RunResult, error?: string): void {
@@ -1384,6 +1571,11 @@ export class RedClawBackgroundRunner extends EventEmitter {
 
   private async runProjectTick(reason: 'scheduled' | 'manual' | 'init' | 'workspace-change', onlyProjectId?: string): Promise<void> {
     await this.ensureLoaded();
+    if (!this.config.enabled) return;
+    if (this.lockState !== 'owner') {
+      this.scheduleLockProbe();
+      return;
+    }
     if (this.isBusy()) return;
 
     const settings = (getSettings() || {}) as Record<string, unknown>;
@@ -1460,6 +1652,9 @@ export class RedClawBackgroundRunner extends EventEmitter {
   private async executeScheduledTask(taskId: string, reason: 'scheduled' | 'manual'): Promise<void> {
     const task = this.config.scheduledTasks[taskId];
     if (!task) throw new Error('Scheduled task not found');
+    if (this.scheduledTaskScheduler.isInFlight(taskId)) {
+      return;
+    }
     const runtime = getTaskGraphRuntime();
     const runtimeTaskId = this.createRuntimeTask({
       runtimeMode: 'background-maintenance',
@@ -1472,6 +1667,7 @@ export class RedClawBackgroundRunner extends EventEmitter {
     });
 
     this.currentAutomationTaskId = task.id;
+    this.scheduledTaskScheduler.markInFlight(task.id);
     this.emitStatus();
 
     try {
@@ -1528,6 +1724,7 @@ export class RedClawBackgroundRunner extends EventEmitter {
       runtime.failTask(runtimeTaskId, message, 'execute_tools');
       this.emit('log', { level: 'error', message: `Scheduled task failed: ${task.id}: ${message}`, reason, at: nowIso() });
     } finally {
+      this.scheduledTaskScheduler.markSettled(task, Date.now());
       this.currentAutomationTaskId = null;
       this.emitStatus();
     }
@@ -1553,6 +1750,9 @@ export class RedClawBackgroundRunner extends EventEmitter {
   private async executeLongCycleTask(taskId: string, reason: 'scheduled' | 'manual'): Promise<void> {
     const task = this.config.longCycleTasks[taskId];
     if (!task) throw new Error('Long cycle task not found');
+    if (this.longCycleTaskScheduler.isInFlight(taskId)) {
+      return;
+    }
     const runtime = getTaskGraphRuntime();
     const runtimeTaskId = this.createRuntimeTask({
       runtimeMode: 'background-maintenance',
@@ -1565,6 +1765,7 @@ export class RedClawBackgroundRunner extends EventEmitter {
     });
 
     this.currentAutomationTaskId = task.id;
+    this.longCycleTaskScheduler.markInFlight(task.id);
     this.emitStatus();
 
     try {
@@ -1627,6 +1828,11 @@ export class RedClawBackgroundRunner extends EventEmitter {
       runtime.failTask(runtimeTaskId, message, 'execute_tools');
       this.emit('log', { level: 'error', message: `Long-cycle task failed: ${task.id}: ${message}`, reason, at: nowIso() });
     } finally {
+      this.longCycleTaskScheduler.markSettled({
+        ...task,
+        mode: 'interval',
+        recurring: true,
+      }, Date.now());
       this.currentAutomationTaskId = null;
       this.emitStatus();
     }
@@ -1706,6 +1912,11 @@ export class RedClawBackgroundRunner extends EventEmitter {
     if (!heartbeat.enabled) {
       return;
     }
+    if (this.heartbeatInFlight) {
+      return;
+    }
+    this.heartbeatInFlight = true;
+    this.emitStatus();
     const runtime = getTaskGraphRuntime();
     const runtimeTaskId = this.createRuntimeTask({
       runtimeMode: 'background-maintenance',
@@ -1716,78 +1927,87 @@ export class RedClawBackgroundRunner extends EventEmitter {
       userInput: 'heartbeat',
       metadata: { reason },
     });
+    try {
+      const now = nowIso();
+      const { summary, digest } = this.buildHeartbeatSummary(now);
+      const shouldSuppress = heartbeat.suppressEmptyReport && heartbeat.lastDigest === digest;
 
-    const now = nowIso();
-    const { summary, digest } = this.buildHeartbeatSummary(now);
-    const shouldSuppress = heartbeat.suppressEmptyReport && heartbeat.lastDigest === digest;
+      heartbeat.lastRunAt = now;
+      heartbeat.nextRunAt = nextIsoFromMinutes(Date.now(), heartbeat.intervalMinutes);
 
-    heartbeat.lastRunAt = now;
-    heartbeat.nextRunAt = nextIsoFromMinutes(Date.now(), heartbeat.intervalMinutes);
+      if (shouldSuppress) {
+        this.emit('log', { level: 'info', message: 'HEARTBEAT_OK', reason, at: now });
+        runtime.skipNode(runtimeTaskId, 'execute_tools', '心跳摘要无变化，按配置抑制输出');
+        runtime.completeTask(runtimeTaskId, 'heartbeat suppressed');
+        return;
+      }
 
-    if (shouldSuppress) {
-      this.emit('log', { level: 'info', message: 'HEARTBEAT_OK', reason, at: now });
-      runtime.skipNode(runtimeTaskId, 'execute_tools', '心跳摘要无变化，按配置抑制输出');
-      runtime.completeTask(runtimeTaskId, 'heartbeat suppressed');
-      return;
+      heartbeat.lastDigest = digest;
+
+      if (heartbeat.prompt) {
+        const prompt = [
+          '[RedClaw 心跳任务]',
+          summary,
+          '',
+          '请基于以上状态输出简要运营汇报，要求：',
+          '1) 如果无异常且无需人工关注，回复 HEARTBEAT_OK。',
+          '2) 如果有风险，输出“风险 + 建议动作 + 优先级”。',
+          '',
+          heartbeat.prompt,
+        ].join('\n');
+
+        await this.runAgentPrompt({
+          contextId: `redclaw-heartbeat:${getWorkspacePaths().activeSpaceId}`,
+          title: 'RedClaw Heartbeat',
+          contextContent: '这是 RedClaw 的后台心跳汇报会话。',
+          prompt,
+          displayContent: '[后台心跳任务]',
+        });
+        runtime.completeNode(runtimeTaskId, 'execute_tools', '心跳 AI 汇报完成');
+        runtime.completeTask(runtimeTaskId, 'heartbeat via ai');
+        this.emit('log', { level: 'info', message: 'Heartbeat completed via AI prompt', reason, at: now });
+        return;
+      }
+
+      if (heartbeat.reportToMainSession) {
+        const session = this.ensureMainRedClawSession();
+        addChatMessage({
+          id: `msg_redclaw_hb_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+          session_id: session.id,
+          role: 'assistant',
+          content: summary,
+          display_content: '[后台心跳汇报]',
+        });
+        this.emit('message', {
+          sessionId: session.id,
+          displayContent: '[后台心跳汇报]',
+          source: 'heartbeat',
+          at: now,
+        });
+        runtime.addArtifact(runtimeTaskId, {
+          type: 'heartbeat-report',
+          label: 'RedClaw 心跳汇报',
+          metadata: { sessionId: session.id, reason },
+        });
+      }
+
+      runtime.completeNode(runtimeTaskId, 'execute_tools', '心跳汇报已输出');
+      runtime.completeTask(runtimeTaskId, 'heartbeat emitted');
+      this.emit('log', { level: 'info', message: 'Heartbeat report emitted', reason, at: now, summary });
+    } finally {
+      this.heartbeatInFlight = false;
+      this.emitStatus();
     }
-
-    heartbeat.lastDigest = digest;
-
-    if (heartbeat.prompt) {
-      const prompt = [
-        '[RedClaw 心跳任务]',
-        summary,
-        '',
-        '请基于以上状态输出简要运营汇报，要求：',
-        '1) 如果无异常且无需人工关注，回复 HEARTBEAT_OK。',
-        '2) 如果有风险，输出“风险 + 建议动作 + 优先级”。',
-        '',
-        heartbeat.prompt,
-      ].join('\n');
-
-      await this.runAgentPrompt({
-        contextId: `redclaw-heartbeat:${getWorkspacePaths().activeSpaceId}`,
-        title: 'RedClaw Heartbeat',
-        contextContent: '这是 RedClaw 的后台心跳汇报会话。',
-        prompt,
-        displayContent: '[后台心跳任务]',
-      });
-      runtime.completeNode(runtimeTaskId, 'execute_tools', '心跳 AI 汇报完成');
-      runtime.completeTask(runtimeTaskId, 'heartbeat via ai');
-      this.emit('log', { level: 'info', message: 'Heartbeat completed via AI prompt', reason, at: now });
-      return;
-    }
-
-    if (heartbeat.reportToMainSession) {
-      const session = this.ensureMainRedClawSession();
-      addChatMessage({
-        id: `msg_redclaw_hb_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-        session_id: session.id,
-        role: 'assistant',
-        content: summary,
-        display_content: '[后台心跳汇报]',
-      });
-      this.emit('message', {
-        sessionId: session.id,
-        displayContent: '[后台心跳汇报]',
-        source: 'heartbeat',
-        at: now,
-      });
-      runtime.addArtifact(runtimeTaskId, {
-        type: 'heartbeat-report',
-        label: 'RedClaw 心跳汇报',
-        metadata: { sessionId: session.id, reason },
-      });
-    }
-
-    runtime.completeNode(runtimeTaskId, 'execute_tools', '心跳汇报已输出');
-    runtime.completeTask(runtimeTaskId, 'heartbeat emitted');
-    this.emit('log', { level: 'info', message: 'Heartbeat report emitted', reason, at: now, summary });
   }
 
   private async runMaintenanceTick(reason: 'scheduled' | 'manual' | 'init' | 'workspace-change'): Promise<void> {
     await this.ensureLoaded();
     if (!this.config.enabled) {
+      this.scheduleMaintenanceCheck();
+      return;
+    }
+    if (this.lockState !== 'owner') {
+      this.scheduleLockProbe();
       this.scheduleMaintenanceCheck();
       return;
     }
@@ -1804,11 +2024,10 @@ export class RedClawBackgroundRunner extends EventEmitter {
       this.normalizeSchedules(nowMs);
       this.refreshCatchUpQueue(nowMs);
 
-      const dueScheduled = Object.values(this.config.scheduledTasks)
-        .filter((task) => {
-          ensureScheduledTaskNextRun(task, nowMs);
-          return isScheduledTaskDue(task, nowMs);
-        })
+      const scheduledTasks = Object.values(this.config.scheduledTasks);
+      const dueScheduled = this.scheduledTaskScheduler
+        .getDueTaskIds(scheduledTasks, nowMs)
+        .map((id) => this.config.scheduledTasks[id]!)
         .sort((a, b) => {
           const aCatchUp = this.pendingCatchUpTaskIds.has(a.id) ? 0 : 1;
           const bCatchUp = this.pendingCatchUpTaskIds.has(b.id) ? 0 : 1;
@@ -1827,11 +2046,16 @@ export class RedClawBackgroundRunner extends EventEmitter {
         }
       }
 
-      const dueLongCycle = Object.values(this.config.longCycleTasks)
-        .filter((task) => {
-          ensureLongCycleNextRun(task, nowMs);
-          return isLongCycleTaskDue(task, nowMs);
-        })
+      const longCycleSchedulerItems = Object.values(this.config.longCycleTasks)
+        .filter((task) => task.enabled && task.status === 'running')
+        .map((task) => ({
+          ...task,
+          mode: 'interval' as const,
+          recurring: true as const,
+        }));
+      const dueLongCycle = this.longCycleTaskScheduler
+        .getDueTaskIds(longCycleSchedulerItems, nowMs)
+        .map((id) => this.config.longCycleTasks[id]!)
         .sort((a, b) => (parseIsoMs(a.nextRunAt || '') || 0) - (parseIsoMs(b.nextRunAt || '') || 0));
 
       let automationBudget = this.config.maxAutomationPerTick;

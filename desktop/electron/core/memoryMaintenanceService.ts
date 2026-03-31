@@ -1,4 +1,5 @@
-import { getChatMessages, getChatSessions, getSettings, type ChatMessage, type ChatSession } from '../db';
+import path from 'node:path';
+import { getChatMessages, getChatSessions, getSettings, getWorkspacePaths, type ChatMessage, type ChatSession } from '../db';
 import { resolveScopedModelName } from './modelScopeSettings';
 import { loadAndRenderPrompt } from '../prompts/runtime';
 import { normalizeApiBaseUrl, safeUrlJoin } from './urlUtils';
@@ -18,6 +19,10 @@ import {
   type MemoryMutationEvent,
   type MemoryType,
 } from './fileMemoryStore';
+import {
+  releaseBackgroundRuntimeLock,
+  tryAcquireBackgroundRuntimeLock,
+} from './backgroundRuntimeLock';
 
 const MAINTENANCE_PROMPT_PATH = 'runtime/memory/maintenance_manager.txt';
 const DEFAULT_MODEL_FALLBACK = 'gpt-4o-mini';
@@ -32,6 +37,8 @@ const MAX_ACTIONS = 12;
 const MAX_RECENT_SESSION_ITEMS = 5;
 const MAX_RECENT_MESSAGES_PER_SESSION = 12;
 const MAX_MESSAGE_CONTENT_CHARS = 280;
+const SESSION_SCAN_INTERVAL_MS = 10 * 60 * 1000;
+const MIN_RUN_INTERVAL_MS = 20 * 60 * 1000;
 
 function buildMaintenanceRoute(reason: MaintenanceTriggerReason, pendingMutations: number): IntentRoute {
   return {
@@ -66,8 +73,11 @@ type MaintenanceResponse = {
 export interface MemoryMaintenanceStatus {
   started: boolean;
   running: boolean;
+  lockState: 'owner' | 'passive';
+  blockedBy: string | null;
   pendingMutations: number;
   lastRunAt: string | null;
+  lastScanAt: string | null;
   lastReason: MaintenanceTriggerReason | null;
   lastSummary: string;
   lastError: string | null;
@@ -266,8 +276,11 @@ async function requestMaintenancePlan(input: {
 export class MemoryMaintenanceService {
   private started = false;
   private running = false;
+  private lockState: 'owner' | 'passive' = 'passive';
+  private blockedBy: string | null = null;
   private pendingMutations = 0;
   private lastRunAt: string | null = null;
+  private lastScanAt: string | null = null;
   private lastReason: MaintenanceTriggerReason | null = null;
   private lastSummary = '';
   private lastError: string | null = null;
@@ -275,6 +288,29 @@ export class MemoryMaintenanceService {
   private debounceTimer: NodeJS.Timeout | null = null;
   private periodicTimer: NodeJS.Timeout | null = null;
   private unsubscribeMutationListener: (() => void) | null = null;
+  private readonly lockOwnerId = `memory-maintenance:${process.pid}:${Date.now().toString(36)}`;
+
+  private getLockPath(): string {
+    return path.join(getWorkspacePaths().redclaw, 'memory-maintenance.lock');
+  }
+
+  private async acquireRunLock(): Promise<boolean> {
+    const result = await tryAcquireBackgroundRuntimeLock(this.getLockPath(), this.lockOwnerId);
+    if (result.acquired) {
+      this.lockState = 'owner';
+      this.blockedBy = null;
+      return true;
+    }
+    this.lockState = 'passive';
+    this.blockedBy = result.blockedBy || null;
+    return false;
+  }
+
+  private async releaseRunLock(): Promise<void> {
+    await releaseBackgroundRuntimeLock(this.getLockPath(), this.lockOwnerId);
+    this.lockState = 'passive';
+    this.blockedBy = null;
+  }
 
   start(): void {
     if (this.started) return;
@@ -300,16 +336,19 @@ export class MemoryMaintenanceService {
       this.periodicTimer = null;
     }
     this.nextScheduledAt = null;
+    void this.releaseRunLock();
     this.unsubscribeMutationListener?.();
     this.unsubscribeMutationListener = null;
   }
 
   async reloadForWorkspaceChange(): Promise<void> {
     this.pendingMutations = 0;
+    this.lastScanAt = null;
     if (this.debounceTimer) {
       clearTimeout(this.debounceTimer);
       this.debounceTimer = null;
     }
+    await this.releaseRunLock();
     this.scheduleDebouncedRun('workspace-change', 30 * 1000);
   }
 
@@ -317,8 +356,11 @@ export class MemoryMaintenanceService {
     return {
       started: this.started,
       running: this.running,
+      lockState: this.lockState,
+      blockedBy: this.blockedBy,
       pendingMutations: this.pendingMutations,
       lastRunAt: this.lastRunAt,
+      lastScanAt: this.lastScanAt,
       lastReason: this.lastReason,
       lastSummary: this.lastSummary,
       lastError: this.lastError,
@@ -356,26 +398,46 @@ export class MemoryMaintenanceService {
 
   private async runIfNeeded(reason: MaintenanceTriggerReason, force = false): Promise<void> {
     if ((!this.started && !force) || this.running) return;
-    this.running = true;
     this.lastReason = reason;
     this.lastError = null;
     this.nextScheduledAt = null;
+
+    const nowMs = Date.now();
+    const lastRunMs = this.lastRunAt ? new Date(this.lastRunAt).getTime() : 0;
+    if (!force && lastRunMs > 0 && nowMs - lastRunMs < MIN_RUN_INTERVAL_MS) {
+      return;
+    }
+
+    const lastScanMs = this.lastScanAt ? new Date(this.lastScanAt).getTime() : 0;
+    if (!force && lastScanMs > 0 && nowMs - lastScanMs < SESSION_SCAN_INTERVAL_MS) {
+      return;
+    }
+    this.lastScanAt = new Date(nowMs).toISOString();
+
+    const active = await listUserMemoriesFromFile();
+    const archived = await listArchivedMemoriesFromFile();
+    const history = await listMemoryHistoryFromFile();
+    const recentConversations = buildRecentConversationSummaries();
+
+    const shouldRun = force
+      || this.pendingMutations > 0
+      || (reason === 'periodic' && active.length >= 20)
+      || (reason === 'init' && (active.length >= 10 || history.length >= 20))
+      || (recentConversations.length >= 4 && history.length >= 12);
+
+    if (!shouldRun) {
+      return;
+    }
+
+    const acquired = await this.acquireRunLock();
+    if (!acquired) {
+      return;
+    }
+
+    this.running = true;
     let taskId: string | null = null;
 
     try {
-      const active = await listUserMemoriesFromFile();
-      const archived = await listArchivedMemoriesFromFile();
-      const history = await listMemoryHistoryFromFile();
-      const recentConversations = buildRecentConversationSummaries();
-
-      const shouldRun = force
-        || this.pendingMutations > 0
-        || (reason === 'periodic' && active.length >= 20)
-        || (reason === 'init' && (active.length >= 10 || history.length >= 20));
-
-      if (!shouldRun) {
-        return;
-      }
 
       const runtime = getTaskGraphRuntime();
       const task = runtime.createInteractiveTask({
@@ -476,6 +538,7 @@ export class MemoryMaintenanceService {
       }
     } finally {
       this.running = false;
+      await this.releaseRunLock();
     }
   }
 

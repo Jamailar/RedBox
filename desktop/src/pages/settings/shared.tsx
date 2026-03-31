@@ -48,8 +48,11 @@ export interface MemorySearchResult extends UserMemory {
 export interface MemoryMaintenanceStatus {
   started: boolean;
   running: boolean;
+  lockState: 'owner' | 'passive';
+  blockedBy: string | null;
   pendingMutations: number;
   lastRunAt: string | null;
+  lastScanAt: string | null;
   lastReason: 'init' | 'mutation' | 'periodic' | 'workspace-change' | 'manual' | null;
   lastSummary: string;
   lastError: string | null;

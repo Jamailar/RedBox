@@ -325,6 +325,8 @@ declare global {
       redclawRunner: {
         getStatus: () => Promise<{
           enabled: boolean;
+          lockState: 'owner' | 'passive';
+          blockedBy: string | null;
           intervalMinutes: number;
           keepAliveWhenNoWindow: boolean;
           maxProjectsPerTick: number;
@@ -332,6 +334,10 @@ declare global {
           isTicking: boolean;
           currentProjectId: string | null;
           currentAutomationTaskId?: string | null;
+          nextAutomationFireAt?: string | null;
+          inFlightTaskIds?: string[];
+          inFlightLongCycleTaskIds?: string[];
+          heartbeatInFlight?: boolean;
           lastTickAt: string | null;
           nextTickAt: string | null;
           nextMaintenanceAt?: string | null;

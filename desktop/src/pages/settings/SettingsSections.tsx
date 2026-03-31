@@ -317,7 +317,13 @@ export function MemorySettingsSection({
                     <div className="bg-surface-primary/60 rounded border border-border p-3">
                         <div className="text-[10px] text-text-tertiary mb-1">状态</div>
                         <div className="text-sm font-medium text-text-primary">
-                            {maintenanceStatus?.running ? '整理中' : maintenanceStatus?.started ? '已启用' : '未启动'}
+                            {maintenanceStatus?.running
+                                ? '整理中'
+                                : maintenanceStatus?.lockState === 'owner'
+                                    ? '主实例待命'
+                                    : maintenanceStatus?.started
+                                        ? '被动等待'
+                                        : '未启动'}
                         </div>
                     </div>
                     <div className="bg-surface-primary/60 rounded border border-border p-3">
@@ -337,6 +343,26 @@ export function MemorySettingsSection({
                         </div>
                     </div>
                 </div>
+                {(maintenanceStatus?.blockedBy || maintenanceStatus?.lastScanAt) && (
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                        <div className="bg-surface-primary/60 rounded border border-border p-3">
+                            <div className="text-[10px] text-text-tertiary mb-1">锁状态</div>
+                            <div className="text-xs text-text-primary">
+                                {maintenanceStatus?.lockState === 'owner'
+                                    ? '当前实例持有整理锁'
+                                    : maintenanceStatus?.blockedBy
+                                        ? `被 ${maintenanceStatus.blockedBy} 持有`
+                                        : '未持有整理锁'}
+                            </div>
+                        </div>
+                        <div className="bg-surface-primary/60 rounded border border-border p-3">
+                            <div className="text-[10px] text-text-tertiary mb-1">最近扫描</div>
+                            <div className="text-xs text-text-primary">
+                                {maintenanceStatus?.lastScanAt ? new Date(maintenanceStatus.lastScanAt).toLocaleString() : '暂无'}
+                            </div>
+                        </div>
+                    </div>
+                )}
                 {maintenanceStatus?.lastSummary && (
                     <div className="text-xs text-text-secondary">
                         最近摘要：{maintenanceStatus.lastSummary}

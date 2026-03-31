@@ -1,6 +1,6 @@
 {
   "name": "red-convert-desktop",
-  "version": "1.8.7",
+  "version": "1.8.8",
   "repository": {
     "type": "git",
     "url": "https://github.com/Jamailar/RedBox.git"
@@ -77,7 +77,8 @@
     },
     "asarUnpack": [
       "**/*.node",
-      "node_modules/ffmpeg-static/**"
+      "node_modules/ffmpeg-static/**",
+      ".plugin-runtime/**"
     ],
     "win": {
       "target": [

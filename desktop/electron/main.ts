@@ -236,20 +236,38 @@ const BROWSER_PLUGIN_BUNDLE_RELATIVE_PATH = path.join('.plugin-runtime', 'browse
 const BROWSER_PLUGIN_EXPORT_RELATIVE_PATH = path.join('integrations', 'browser-extension', 'redbox-capture');
 
 const getBundledBrowserPluginCandidateDirs = (): string[] => {
+  const appPath = app.getAppPath();
+  const resourcesPath = process.resourcesPath || path.resolve(appPath, '..');
   const candidates = [
-    path.join(app.getAppPath(), BROWSER_PLUGIN_BUNDLE_RELATIVE_PATH),
+    // Packaged app: prefer the unpacked location because directory traversal inside app.asar is unreliable.
+    path.join(resourcesPath, 'app.asar.unpacked', BROWSER_PLUGIN_BUNDLE_RELATIVE_PATH),
+    path.join(resourcesPath, BROWSER_PLUGIN_BUNDLE_RELATIVE_PATH),
+    path.join(appPath, BROWSER_PLUGIN_BUNDLE_RELATIVE_PATH),
     path.join(process.cwd(), BROWSER_PLUGIN_BUNDLE_RELATIVE_PATH),
     path.join(process.cwd(), 'desktop', BROWSER_PLUGIN_BUNDLE_RELATIVE_PATH),
     path.join(process.cwd(), 'Plugin'),
-    path.join(path.resolve(app.getAppPath(), '..'), 'Plugin'),
+    path.join(path.resolve(appPath, '..'), 'Plugin'),
   ];
   return Array.from(new Set(candidates.map((item) => path.resolve(item))));
+};
+
+const isUsableBrowserPluginDir = async (candidate: string): Promise<boolean> => {
+  try {
+    const stats = await fs.stat(candidate);
+    if (!stats.isDirectory()) return false;
+    await fs.access(path.join(candidate, 'manifest.json'));
+    const dir = await fs.opendir(candidate);
+    await dir.close();
+    return true;
+  } catch {
+    return false;
+  }
 };
 
 const findBundledBrowserPluginDir = async (): Promise<string | null> => {
   const candidates = getBundledBrowserPluginCandidateDirs();
   for (const candidate of candidates) {
-    if (await pathExists(path.join(candidate, 'manifest.json'))) {
+    if (await isUsableBrowserPluginDir(candidate)) {
       return candidate;
     }
   }
@@ -281,6 +299,14 @@ const ensureBrowserPluginPrepared = async (): Promise<{ path: string; alreadyPre
   await fs.mkdir(path.dirname(targetDir), { recursive: true });
   await fs.cp(sourceDir, targetDir, { recursive: true });
   return { path: targetDir, alreadyPrepared };
+};
+
+const warmupBrowserPluginPrepared = async (): Promise<void> => {
+  try {
+    await ensureBrowserPluginPrepared();
+  } catch (error) {
+    console.warn('[browser-plugin] warmup skipped:', error);
+  }
 };
 
 const getAllowedLocalFileRoots = (): string[] => {
@@ -934,6 +960,8 @@ app.whenReady().then(async () => {
     } catch (e) {
       console.error('[Workspace] Failed to ensure workspace structure:', e);
     }
+
+    await warmupBrowserPluginPrepared();
 
     try {
       await officialFeatureModule?.syncOfficialAiRoutingOnStartup?.({

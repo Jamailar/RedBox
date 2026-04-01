@@ -1344,7 +1344,7 @@ export class PiChatService {
       names: agentTools.map((tool) => tool.name),
       thinkingLevel,
     });
-    const requiredTools = ['read_file', 'app_cli', 'save_memory'];
+    const requiredTools = ['read_file', 'app_cli'];
     const missingTools = requiredTools.filter((name) => !agentTools.some((tool) => tool.name === name));
     if (!agentTools.length || missingTools.length > 0) {
       this.emitDebugLog('error', 'agent:tools:pack-invalid', {
@@ -1440,7 +1440,6 @@ export class PiChatService {
     const blockedTools = new Set<string>([
       'bash',
       'read_file',
-      'list_dir',
       'grep',
       'write_file',
       'edit_file',
@@ -1465,11 +1464,9 @@ export class PiChatService {
       ...registryNames,
       'read_file',
       'write_file',
-      'list_dir',
       'grep',
       'bash',
       'app_cli',
-      'save_memory',
       'skill',
       'activate_skill',
     ]);
@@ -2163,11 +2160,9 @@ export class PiChatService {
     const explicitToolLikeTags = new Set([
       'read_file',
       'write_file',
-      'list_dir',
       'grep',
       'bash',
       'app_cli',
-      'save_memory',
       'skill',
       'activate_skill',
     ]);
@@ -2588,9 +2583,9 @@ export class PiChatService {
             return 4;
           case 'web_search':
             return 5;
-          case 'save_memory':
-            return 6;
           case 'redclaw_update_profile_doc':
+            return 6;
+          case 'redclaw_update_creator_profile':
             return 7;
           case 'bash':
             return 8;
@@ -2848,7 +2843,7 @@ export class PiChatService {
         '<long_term_memory>',
         this.truncate(longTermMemory, 12000),
         '</long_term_memory>',
-        '回答应优先与长期记忆保持一致；若用户新指令与旧记忆冲突，以最新明确指令为准并调用 save_memory 更新。',
+        '回答应优先与长期记忆保持一致；若用户新指令与旧记忆冲突，以最新明确指令为准，并优先用 `app_cli` 的 `memory add` / `memory update` 子命令更新。',
       );
     }
 
@@ -2879,7 +2874,7 @@ export class PiChatService {
         '- user.md：用户稳定画像与长期事实，例如目标、受众、内容赛道、发布节奏、成功指标。用户明确给出新的长期事实时更新。',
         '- CreatorProfile.md：用户长期自媒体定位与策略主档案，包括定位、目标群体、内容风格、商业目标、运营边界。用户明确给出这类长期变化时更新。',
         '- 如果只是一次性任务要求、单篇稿件偏好或临时实验，不要改这些长期文档；优先体现在当前任务执行里，必要时写入普通长期记忆。',
-        '- 更新这些文档时，优先使用 `redclaw_update_profile_doc`；若只改 CreatorProfile.md，也可使用 `redclaw_update_creator_profile`。',
+        '- 更新这些文档时，优先先读目标 Markdown 文件，再使用 `edit_file` 或 `write_file` 做精确修改。',
       );
 
       if (!redClawProfileBundle.onboardingState.completedAt && redClawProfileBundle.files.bootstrap) {

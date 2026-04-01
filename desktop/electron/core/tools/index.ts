@@ -73,8 +73,6 @@ const ensureBuiltinToolDescriptorsRegistered = (): void => {
 
     const publicAllContexts: BuiltinToolPack[] = ['redclaw', 'knowledge', 'chatroom', 'diagnostics'];
     const developerOnlyContexts: BuiltinToolPack[] = ['diagnostics'];
-    const compactRedClawContexts: BuiltinToolPack[] = ['redclaw', 'diagnostics'];
-    const nonRedClawPublicContexts: BuiltinToolPack[] = ['knowledge', 'chatroom', 'diagnostics'];
     const register = (descriptor: Parameters<typeof registerBuiltinToolDescriptor>[0]) => {
         registerBuiltinToolDescriptor(descriptor);
     };
@@ -174,7 +172,7 @@ const ensureBuiltinToolDescriptorsRegistered = (): void => {
         displayName: 'List Directory',
         description: 'List files and directories in a given path.',
         kind: ToolKind.Read,
-        contexts: ['knowledge', 'chatroom', 'diagnostics'],
+        contexts: ['diagnostics'],
         visibility: 'public',
         requiresContext: null,
         create: () => new ListDirTool(),
@@ -199,7 +197,7 @@ const ensureBuiltinToolDescriptorsRegistered = (): void => {
         displayName: 'Calculator',
         description: 'Evaluate mathematical expressions.',
         kind: ToolKind.Other,
-        contexts: nonRedClawPublicContexts,
+        contexts: ['diagnostics'],
         visibility: 'public',
         requiresContext: null,
         create: () => new CalculatorTool(),
@@ -209,7 +207,7 @@ const ensureBuiltinToolDescriptorsRegistered = (): void => {
         displayName: 'Save Memory',
         description: 'Save a piece of user information to long-term memory.',
         kind: ToolKind.Other,
-        contexts: compactRedClawContexts,
+        contexts: ['diagnostics'],
         visibility: 'public',
         requiresContext: null,
         preconditions: ['content must be long-term useful'],
@@ -224,7 +222,7 @@ const ensureBuiltinToolDescriptorsRegistered = (): void => {
         displayName: 'RedClaw Update Profile Document',
         description: 'Update Agent.md, Soul.md, user.md, or CreatorProfile.md.',
         kind: ToolKind.Edit,
-        contexts: compactRedClawContexts,
+        contexts: ['diagnostics'],
         visibility: 'public',
         requiresContext: null,
         preconditions: ['document type must be valid'],
@@ -239,7 +237,7 @@ const ensureBuiltinToolDescriptorsRegistered = (): void => {
         displayName: 'RedClaw Update Creator Profile',
         description: 'Update CreatorProfile.md, the long-term creator strategy document.',
         kind: ToolKind.Edit,
-        contexts: ['knowledge', 'diagnostics'],
+        contexts: ['diagnostics'],
         visibility: 'public',
         requiresContext: null,
         create: () => new RedClawUpdateCreatorProfileTool(),

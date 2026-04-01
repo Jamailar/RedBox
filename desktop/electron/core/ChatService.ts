@@ -96,7 +96,7 @@ export class ChatService extends EventEmitter {
         this.sessionId = `legacy_chat_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
         this.toolRegistry = new ToolRegistry();
-        this.toolRegistry.registerTools(createBuiltinTools({ chatService: this, pack: 'full' }));
+        this.toolRegistry.registerTools(createBuiltinTools({ chatService: this, pack: 'redclaw' }));
 
         this.toolExecutor = new ToolExecutor(
             this.toolRegistry,
@@ -207,8 +207,8 @@ export class ChatService extends EventEmitter {
                 maxTurns: this.config.maxTurns,
                 maxTimeMinutes: this.config.maxTimeMinutes,
                 temperature: this.config.temperature,
-                toolPack: 'full',
-                runtimeMode: 'chatroom',
+                toolPack: 'redclaw',
+                runtimeMode: 'redclaw',
                 interactive: true,
                 requiresHumanApproval: false,
             },

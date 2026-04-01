@@ -5,7 +5,7 @@
  */
 
 import { type SkillDefinition } from '../skillManager';
-import { type ToolDefinition, type ToolResult, ToolKind } from '../toolRegistry';
+import { type ToolDefinition, type ToolResult } from '../toolRegistry';
 
 export interface SystemPromptOptions {
     /** 可用技能列表 */
@@ -158,10 +158,11 @@ function getWorkspaceContext(paths: { base: string; skills: string; knowledge: s
         ``,
         `## How to Explore`,
         ``,
-        `Use basic file tools to explore and search:`,
-        `- \`list_dir\` - List directory contents`,
+        `Use a compact tool set to explore and search:`,
+        `- \`app_cli\` - List app data such as spaces/manuscripts/knowledge/advisors/subjects/memory/settings`,
         `- \`read_file\` - Read file content`,
         `- \`grep\` - Search for keywords in files`,
+        `- \`bash\` - For shell-style inspection like \`pwd\`, \`ls\`, \`rg\`, \`git status\``,
         ``,
         `## 🔍 Knowledge Base (知识库)`,
         ``,
@@ -181,8 +182,8 @@ function getWorkspaceContext(paths: { base: string; skills: string; knowledge: s
         `\`\`\``,
         ``,
         `### How to Search Knowledge Base`,
-        `1. **List contents**: \`list_dir("${paths.base}/knowledge/redbook")\` or \`list_dir("${paths.base}/knowledge/youtube")\``,
-        `2. **Search keywords**: \`grep("关键词", "${paths.base}/knowledge")\` - finds matching content`,
+        `1. **List knowledge items**: \`app_cli({ "command": "knowledge list --source redbook" })\` or \`app_cli({ "command": "knowledge list --source youtube" })\``,
+        `2. **Search keywords**: \`app_cli({ "command": "knowledge search --query \\"关键词\\"" })\` or \`grep\` under \`${paths.base}/knowledge\``,
         `3. **Read details**: \`read_file("${paths.base}/knowledge/youtube/youtube_xxx/meta.json")\``,
         `4. **Read subtitle**: \`read_file("${paths.base}/knowledge/youtube/youtube_xxx/{videoId}.txt")\``,
         ``,
@@ -221,7 +222,7 @@ function getPlanModeInstructions(): string {
 You are currently in Plan Mode. This mode is for researching and planning complex tasks before implementation.
 
 ## Objectives
-1.  **Research:** Use tools like \`list_dir\`, \`read_file\`, \`grep\`, and \`web_search\` to gather all necessary context.
+1.  **Research:** Use compact primitives like \`app_cli\`, \`read_file\`, \`grep\`, \`bash\`, and \`web_search\` to gather context.
 2.  **Design:** Analyze the requirements and existing codebase to design a solution.
 3.  **Plan:** Update the plan file (usually \`.opencode/PLAN.md\`) with your findings and detailed implementation steps.
 4.  **Exit:** When the plan is solid and you are ready to code, call \`plan_mode_exit\`.
@@ -268,78 +269,48 @@ function getCoreMandates(interactive: boolean, hasSkills: boolean): string {
 
 function getToolUsageGuide(tools: ToolDefinition<unknown, ToolResult>[]): string {
     const toolNames = tools.map(t => t.name);
-    const readTools = tools.filter(t => t.kind === ToolKind.Read).map(t => t.name);
-    const editTools = tools.filter(t => t.kind === ToolKind.Edit).map(t => t.name);
-    const execTools = tools.filter(t => t.kind === ToolKind.Execute).map(t => t.name);
+    const hasTool = (name: string) => toolNames.includes(name);
+    const examples: string[] = [];
+
+    if (hasTool('app_cli')) {
+        examples.push('- List manuscripts: `app_cli({ "command": "manuscripts list" })`');
+        examples.push('- Search knowledge: `app_cli({ "command": "knowledge search --query \\"AI\\"" })`');
+        examples.push('- Add memory: `app_cli({ "command": "memory add --content \\"用户偏好短句风格\\" --type preference" })`');
+    }
+    if (hasTool('read_file')) {
+        examples.push('- Read file: `read_file({ "filePath": "/absolute/path/to/file" })`');
+    }
+    if (hasTool('edit_file')) {
+        examples.push('- Edit existing file after reading it first');
+    }
+    if (hasTool('write_file')) {
+        examples.push('- Create or overwrite a file when you already know the target content');
+    }
+    if (hasTool('bash')) {
+        examples.push('- Use `bash` for shell inspection like `pwd`, `ls`, `rg`, `git status`');
+    }
+    if (hasTool('web_search')) {
+        examples.push('- Use `web_search` only for genuinely current or external information');
+    }
 
     return `# Tool Usage
 
-You have access to the following tools: ${toolNames.join(', ')}.
+You have access to these tools: ${toolNames.join(', ')}.
 
-## App CLI First
-- Use \`app_cli\` as the default interface for built-in app functions.
-- Use file tools (\`read_file\`, \`write_file\`, \`edit_file\`) only when the CLI subcommand does not cover the scenario.
-- For direct shell/system needs, use \`bash\`.
+## Selection Order
+- Prefer \`app_cli\` for built-in app data and actions: spaces, manuscripts, knowledge, advisors, memory, media, subjects, redclaw, settings, skills, archives, wander, MCP.
+- Use \`read_file\`, \`grep\`, \`write_file\`, and \`edit_file\` for direct repository or workspace file operations.
+- Use \`bash\` for shell-native inspection or commands that are simpler than building a file-tool sequence.
+- Use \`web_search\` only when the information is external and likely current.
 
-### Quick \`app_cli\` Examples
-- List spaces: \`app_cli({ "command": "spaces list" })\`
-- List manuscripts: \`app_cli({ "command": "manuscripts list" })\`
-- Create RedClaw project: \`app_cli({ "command": "redclaw create --goal \\"做一条爆款选题\\"" })\`
-- Generate images: \`app_cli({ "command": "image generate --prompt \\"...\\\" --count 2" })\`
+## Rules
+- Keep tool choice minimal. Do not chain multiple overlapping tools when one tool already covers the task.
+- Never call a tool with empty required arguments.
+- If a tool reports missing arguments, retry the same tool with the required fields filled.
+- For app-managed data, do not invent direct filesystem layouts when \`app_cli\` already exposes the operation.
 
-## 🚨 CRITICAL: Tool Selection Rules
-
-### For Exploring Content
-| User Request | Tool to Use |
-|--------------|-------------|
-| 智囊团有什么/多少成员 | \`explore_workspace({ "target": "advisors" })\` |
-| 知识库有什么/有多少笔记 | \`explore_workspace({ "target": "knowledge" })\` |
-| 看看稿件/稿件列表 | \`explore_workspace({ "target": "manuscripts" })\` |
-| 工作区结构/有什么文件 | \`explore_workspace({ "target": "all" })\` |
-
-### For Creating/Editing Content
-| User Request | Tool to Use |
-|--------------|-------------|
-| 新建文章/创建稿件 | \`write_file({ "path": "manuscripts/文章名.md", "content": "..." })\` |
-| 编辑/修改文章 | First \`read_file\`, then \`edit_file\` or \`write_file\` |
-| 读取文件内容 | \`read_file({ "filePath": "/absolute/path/to/file" })\` |
-
-### ⚠️ Important Rules
-1. **DO NOT use \`activate_skill\`** unless user explicitly asks to use a specific skill by name
-2. **DO NOT use \`list_dir\` repeatedly** - use \`explore_workspace\` instead
-3. **For creating articles**, just use \`write_file\` directly - no need to activate skills
-4. **Use relative paths** for manuscripts: \`manuscripts/my-article.md\`
-5. **Never call a tool with empty arguments** - always provide required parameters
-6. **For web search**, always pass a clear \`query\` string (required), using only core keywords (no filler like "帮我/一下")
-7. **If a tool returns a missing-argument error**, immediately retry the SAME tool with the required arguments filled (do not switch tools)
-
-## Examples
-
-<example>
-user: 帮我新建一篇关于AI的文章
-assistant: 我来为您创建一篇关于AI的文章。
-[calls write_file with path: "manuscripts/AI技术发展.md", content: "# AI技术发展\n\n..."]
-</example>
-
-<example>
-user: 智囊团有多少成员？
-assistant: 我来查看智囊团成员。
-[calls explore_workspace with target: "advisors"]
-(Returns advisor list - answer directly)
-</example>
-
-<example>
-user: 知识库里有关于AI的内容吗？
-assistant: 我来查看知识库。
-[calls explore_workspace with target: "knowledge"]
-(Returns notes with previews - check for AI content and answer)
-</example>
-
-<example>
-user: 帮我网络搜索一下 dan koe
-assistant: 我来进行网络搜索。
-[calls web_search with query: "dan koe"]
-</example>`;
+## Quick Examples
+${examples.join('\n')}`;
 }
 
 function getSkillsSection(skills: SkillDefinition[]): string {

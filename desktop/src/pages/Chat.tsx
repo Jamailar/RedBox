@@ -1351,90 +1351,90 @@ export function Chat({
     <div className={clsx('flex h-full min-w-0', wideContent && 'chat-layout-wide')}>
       {/* Sidebar - Session List (可折叠) - Only show if not fixed session */}
       {!fixedSessionId && (
-      <div className={clsx(
-        "bg-surface-secondary border-r border-border flex flex-col transition-all duration-300",
-        sidebarCollapsed ? "w-0 overflow-hidden" : "w-64"
-      )}>
-        <div className="p-4 border-b border-border flex items-center gap-2">
-          <button
-            onClick={createNewSession}
-            className="flex-1 flex items-center justify-center gap-2 bg-accent-primary text-white py-2 rounded-lg hover:bg-accent-primary/90 transition-colors"
-          >
-            <Plus className="w-4 h-4" />
-            新对话
-          </button>
-          <button
-            onClick={() => setSidebarCollapsed(true)}
-            className="p-2 text-text-tertiary hover:text-text-primary hover:bg-surface-tertiary rounded-lg transition-colors"
-            title="收起侧边栏"
-          >
-            <PanelLeftClose className="w-4 h-4" />
-          </button>
-        </div>
-        <div className="flex-1 overflow-y-auto p-2 space-y-1">
-          {sessions.map(session => (
-            <div
-              key={session.id}
-              className={clsx(
-                "group w-full text-left px-3 py-2 rounded-md text-sm transition-colors flex items-center gap-2 cursor-pointer",
-                currentSessionId === session.id
-                  ? "bg-surface-tertiary text-text-primary font-medium"
-                  : "text-text-secondary hover:bg-surface-tertiary/50"
-              )}
-              onClick={() => selectSession(session.id)}
+        <div className={clsx(
+          "bg-surface-secondary border-r border-border flex flex-col transition-all duration-300",
+          sidebarCollapsed ? "w-0 overflow-hidden" : "w-64"
+        )}>
+          <div className="p-4 border-b border-border flex items-center gap-2">
+            <button
+              onClick={createNewSession}
+              className="flex-1 flex items-center justify-center gap-2 bg-accent-primary text-white py-2 rounded-lg hover:bg-accent-primary/90 transition-colors"
             >
-              <MessageSquare className="w-4 h-4 shrink-0 opacity-70" />
-              <span className="truncate flex-1">{session.title || 'Untitled Chat'}</span>
-              <button
-                onClick={(e) => deleteSession(session.id, e)}
-                className="opacity-0 group-hover:opacity-100 p-1 hover:bg-red-500/20 rounded transition-all"
-                title="删除对话"
+              <Plus className="w-4 h-4" />
+              新对话
+            </button>
+            <button
+              onClick={() => setSidebarCollapsed(true)}
+              className="p-2 text-text-tertiary hover:text-text-primary hover:bg-surface-tertiary rounded-lg transition-colors"
+              title="收起侧边栏"
+            >
+              <PanelLeftClose className="w-4 h-4" />
+            </button>
+          </div>
+          <div className="flex-1 overflow-y-auto p-2 space-y-1">
+            {sessions.map(session => (
+              <div
+                key={session.id}
+                className={clsx(
+                  "group w-full text-left px-3 py-2 rounded-md text-sm transition-colors flex items-center gap-2 cursor-pointer",
+                  currentSessionId === session.id
+                    ? "bg-surface-tertiary text-text-primary font-medium"
+                    : "text-text-secondary hover:bg-surface-tertiary/50"
+                )}
+                onClick={() => selectSession(session.id)}
               >
-                <X className="w-3 h-3 text-red-500" />
-              </button>
-            </div>
-          ))}
+                <MessageSquare className="w-4 h-4 shrink-0 opacity-70" />
+                <span className="truncate flex-1">{session.title || 'Untitled Chat'}</span>
+                <button
+                  onClick={(e) => deleteSession(session.id, e)}
+                  className="opacity-0 group-hover:opacity-100 p-1 hover:bg-red-500/20 rounded transition-all"
+                  title="删除对话"
+                >
+                  <X className="w-3 h-3 text-red-500" />
+                </button>
+              </div>
+            ))}
+          </div>
         </div>
-      </div>
       )}
 
       {/* Main Chat Area */}
-      <div className="flex-1 min-w-0 flex flex-col h-full relative">
+      <div className="flex-1 min-w-0 flex flex-col h-full relative overflow-hidden">
         {/* Header - Sidebar Controls - Hide if fixed session */}
         {!fixedSessionId && (
-        <div className="absolute top-4 left-4 z-10 flex items-center gap-2">
-          <button
-            onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
-            className="p-2 text-text-tertiary hover:text-text-primary transition-colors bg-surface-primary/80 backdrop-blur rounded-full shadow-sm border border-border"
-            title={sidebarCollapsed ? "展开侧边栏" : "收起侧边栏"}
-          >
-            <PanelLeft className="w-4 h-4" />
-          </button>
-
-          {sidebarCollapsed && (
+          <div className="absolute top-4 left-4 z-20 flex items-center gap-2">
             <button
-              onClick={createNewSession}
+              onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
               className="p-2 text-text-tertiary hover:text-text-primary transition-colors bg-surface-primary/80 backdrop-blur rounded-full shadow-sm border border-border"
-              title="新对话"
+              title={sidebarCollapsed ? "展开侧边栏" : "收起侧边栏"}
             >
-              <Edit className="w-4 h-4" />
+              <PanelLeft className="w-4 h-4" />
             </button>
-          )}
-        </div>
+
+            {sidebarCollapsed && (
+              <button
+                onClick={createNewSession}
+                className="p-2 text-text-tertiary hover:text-text-primary transition-colors bg-surface-primary/80 backdrop-blur rounded-full shadow-sm border border-border"
+                title="新对话"
+              >
+                <Edit className="w-4 h-4" />
+              </button>
+            )}
+          </div>
         )}
 
         {/* Linked Session Indicator */}
         {fixedSessionId && currentSessionId && fixedSessionBannerText && fixedSessionContextIndicatorMode === 'top' && (
-            <div className="absolute top-0 left-0 right-0 z-10 flex flex-col items-center gap-1 pointer-events-none">
-                <div className="bg-surface-secondary/90 backdrop-blur text-xs font-medium text-text-secondary px-3 py-1 rounded-b-lg shadow-sm border-b border-x border-border">
-                   {fixedSessionBannerText}
-                </div>
-                {contextUsage?.success && (
-                  <div className={clsx('text-[11px] px-2.5 py-1 rounded-full border backdrop-blur', contextBadgeClass)}>
-                    上下文 {contextUsedPercentDisplay}% · {contextUsage.estimatedTotalTokens || 0}/{contextUsage.compactThreshold || 0} tokens · compact {contextUsage.compactRounds || 0} 次
-                  </div>
-                )}
+          <div className="absolute top-0 left-0 right-0 z-10 flex flex-col items-center gap-1 pointer-events-none">
+            <div className="bg-surface-secondary/90 backdrop-blur text-xs font-medium text-text-secondary px-3 py-1 rounded-b-lg shadow-sm border-b border-x border-border">
+              {fixedSessionBannerText}
             </div>
+            {contextUsage?.success && (
+              <div className={clsx('text-[11px] px-2.5 py-1 rounded-full border backdrop-blur', contextBadgeClass)}>
+                上下文 {contextUsedPercentDisplay}% · {contextUsage.estimatedTotalTokens || 0}/{contextUsage.compactThreshold || 0} tokens · compact {contextUsage.compactRounds || 0} 次
+              </div>
+            )}
+          </div>
         )}
 
         {/* Corner Ring Compact Indicator (for fixed session, e.g. RedClaw) */}
@@ -1498,10 +1498,10 @@ export function Chat({
           </div>
         )}
 
-        {/* 空会话时显示居中欢迎界面 */}
+        {/* Content Area */}
         {isEmptySession ? (
-          <div className="flex-1 flex flex-col items-center justify-center px-6">
-            <div className={clsx('text-center space-y-6', emptySessionWidthClass)}>
+          <div className="flex-1 flex flex-col items-center justify-center px-6 overflow-y-auto">
+            <div className={clsx('text-center space-y-6 w-full max-w-2xl mx-auto', emptySessionWidthClass)}>
               {/* Logo/Icon */}
               <div className="flex justify-center">
                 <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-accent-primary to-purple-600 flex items-center justify-center shadow-lg">
@@ -1512,9 +1512,7 @@ export function Chat({
               {/* 欢迎文字 */}
               <div className="space-y-2">
                 <h1 className="text-2xl font-semibold text-text-primary">{welcomeTitle}</h1>
-                <p className="text-sm text-text-tertiary">
-                  {welcomeSubtitle}
-                </p>
+                <p className="text-sm text-text-tertiary">{welcomeSubtitle}</p>
               </div>
 
               {showWelcomeShortcuts && welcomeShortcuts.length > 0 && (
@@ -1533,11 +1531,7 @@ export function Chat({
 
               {/* 居中的输入框 (Codex Style) */}
               <form onSubmit={handleSubmit} className="relative w-full mt-10">
-                <ToolConfirmDialog
-                  request={confirmRequest}
-                  onConfirm={handleConfirmTool}
-                  onCancel={handleCancelTool}
-                />
+                <ToolConfirmDialog request={confirmRequest} onConfirm={handleConfirmTool} onCancel={handleCancelTool} />
                 <div className="group relative flex flex-col w-full bg-[#fdfcf9] border border-[#edebe4] rounded-[28px] p-2 transition-all duration-200 focus-within:shadow-lg focus-within:border-accent-primary/20">
                   <textarea
                     ref={inputRef}
@@ -1553,9 +1547,7 @@ export function Chat({
                       if (e.key === 'Enter' && !e.shiftKey) {
                         e.preventDefault();
                         handleSubmit(e as any);
-                        if (inputRef.current) {
-                          inputRef.current.style.height = 'auto';
-                        }
+                        if (inputRef.current) inputRef.current.style.height = 'auto';
                       }
                     }}
                     placeholder="问我任何问题，使用 @ 引用文件，/ 执行指令..."
@@ -1564,19 +1556,11 @@ export function Chat({
                     autoFocus
                     rows={1}
                   />
-                  
-                  {/* Bottom Toolbar */}
                   <div className="flex items-center justify-between px-2 pb-1">
                     <div className="flex items-center gap-1">
-                      <button
-                        type="button"
-                        onClick={() => void pickAttachment()}
-                        className="p-2 text-text-tertiary hover:text-text-secondary transition-colors"
-                        title="添加文件"
-                      >
+                      <button type="button" onClick={() => void pickAttachment()} className="p-2 text-text-tertiary hover:text-text-secondary transition-colors" title="添加文件">
                         <Plus className="w-[18px] h-[18px]" />
                       </button>
-                      
                       <div className="flex items-center gap-4 px-2">
                         <button type="button" className="flex items-center gap-1.5 text-text-tertiary hover:text-text-secondary transition-colors text-[13px] font-medium">
                           <span>GPT-5.4</span>
@@ -1588,37 +1572,20 @@ export function Chat({
                         </button>
                       </div>
                     </div>
-
                     <div className="flex items-center gap-2">
-                      <button
-                        type="button"
-                        className="p-2 text-text-tertiary hover:text-text-secondary transition-colors"
-                        title="语音输入"
-                      >
+                      <button type="button" className="p-2 text-text-tertiary hover:text-text-secondary transition-colors" title="语音输入">
                         <Mic className="w-[18px] h-[18px]" />
                       </button>
-                      <button
-                        type="submit"
-                        disabled={(!input.trim() && !pendingAttachment) || isProcessing}
-                        className={clsx(
-                          "w-9 h-9 flex items-center justify-center rounded-full transition-all duration-200",
-                          input.trim() || pendingAttachment ? "bg-[#b4b2a8] text-white hover:bg-accent-primary" : "bg-[#edebe4] text-white opacity-60"
-                        )}
-                      >
+                      <button type="submit" disabled={(!input.trim() && !pendingAttachment) || isProcessing} className={clsx("w-9 h-9 flex items-center justify-center rounded-full transition-all duration-200", input.trim() || pendingAttachment ? "bg-[#b4b2a8] text-white hover:bg-accent-primary" : "bg-[#edebe4] text-white opacity-60")}>
                         {isProcessing ? <Loader2 className="w-4 h-4 animate-spin text-[#b4b2a8]" /> : <ArrowUp className="w-5 h-5" />}
                       </button>
                     </div>
                   </div>
                 </div>
-
                 {allowFileUpload && pendingAttachment && (
                   <div className="mt-3 mx-4 rounded-lg border border-border bg-surface-secondary/60 px-3 py-2 text-xs text-text-secondary flex items-center justify-between">
                     <span className="truncate">附件: {pendingAttachment.name}</span>
-                    <button
-                      type="button"
-                      onClick={() => setPendingAttachment(null)}
-                      className="ml-2 text-text-tertiary hover:text-text-primary"
-                    >
+                    <button type="button" onClick={() => setPendingAttachment(null)} className="ml-2 text-text-tertiary hover:text-text-primary">
                       <FileX className="w-3.5 h-3.5" />
                     </button>
                   </div>
@@ -1628,46 +1595,26 @@ export function Chat({
           </div>
         ) : (
           <>
-            {/* Selection Menu - 选中文字快捷菜单 */}
+            {/* Selection Menu */}
             {selectionMenu.visible && (
-              <div
-                data-selection-menu
-                className="fixed z-[1000] transform -translate-x-1/2 -translate-y-full"
-                style={{ left: selectionMenu.x, top: selectionMenu.y }}
-              >
+              <div data-selection-menu className="fixed z-[1000] transform -translate-x-1/2 -translate-y-full" style={{ left: selectionMenu.x, top: selectionMenu.y }}>
                 <div className="bg-surface-primary border border-border rounded-lg shadow-xl overflow-hidden">
                   {!showRoomPicker ? (
-                    <button
-                      onClick={() => void handleOpenRoomPicker()}
-                      className="flex items-center gap-2 px-3 py-2 text-sm text-text-primary hover:bg-surface-secondary transition-colors whitespace-nowrap"
-                    >
-                      <Users className="w-4 h-4" />
-                      发送到群聊讨论
+                    <button onClick={() => void handleOpenRoomPicker()} className="flex items-center gap-2 px-3 py-2 text-sm text-text-primary hover:bg-surface-secondary transition-colors whitespace-nowrap">
+                      <Users className="w-4 h-4" /> 发送到群聊讨论
                     </button>
                   ) : (
                     <div className="min-w-[180px]">
-                      <div className="px-3 py-2 text-xs text-text-tertiary border-b border-border bg-surface-secondary">
-                        选择群聊
-                      </div>
+                      <div className="px-3 py-2 text-xs text-text-tertiary border-b border-border bg-surface-secondary">选择群聊</div>
                       <div className="max-h-48 overflow-y-auto">
                         {isRoomPickerLoading ? (
-                          <div className="px-3 py-2 text-sm text-text-tertiary flex items-center gap-2">
-                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                            加载群聊中...
-                          </div>
+                          <div className="px-3 py-2 text-sm text-text-tertiary flex items-center gap-2"><Loader2 className="w-3.5 h-3.5 animate-spin" />加载中...</div>
                         ) : chatRooms.length === 0 ? (
-                          <div className="px-3 py-2 text-sm text-text-tertiary">
-                            暂无群聊
-                          </div>
+                          <div className="px-3 py-2 text-sm text-text-tertiary">暂无群聊</div>
                         ) : (
                           chatRooms.map((room) => (
-                            <button
-                              key={room.id}
-                              onClick={() => handleSendToRoom(room.id)}
-                              className="w-full flex items-center gap-2 px-3 py-2 text-sm text-text-primary hover:bg-surface-secondary transition-colors text-left"
-                            >
-                              <MessageSquare className="w-4 h-4 text-text-tertiary" />
-                              <span className="truncate">{room.name}</span>
+                            <button key={room.id} onClick={() => handleSendToRoom(room.id)} className="w-full flex items-center gap-2 px-3 py-2 text-sm text-text-primary hover:bg-surface-secondary transition-colors text-left">
+                              <MessageSquare className="w-4 h-4 text-text-tertiary" /> <span className="truncate">{room.name}</span>
                             </button>
                           ))
                         )}
@@ -1675,50 +1622,32 @@ export function Chat({
                     </div>
                   )}
                 </div>
-                {/* 小三角箭头 */}
                 <div className="absolute left-1/2 -translate-x-1/2 -bottom-1.5 w-3 h-3 bg-surface-primary border-r border-b border-border transform rotate-45" />
               </div>
             )}
 
             {/* Messages */}
-            <div
-              ref={messagesContainerRef}
-              onScroll={handleMessagesScroll}
-              className={clsx('flex-1 min-w-0 overflow-y-auto py-5 md:py-6', contentOuterPaddingClass)}
-            >
+            <div ref={messagesContainerRef} onScroll={handleMessagesScroll} className={clsx('flex-1 min-w-0 overflow-y-auto py-5 md:py-6', contentOuterPaddingClass)}>
               <div className={clsx('mx-auto min-w-0 space-y-5 md:space-y-6', contentMaxWidthClass, contentWidthClass)}>
                 {messages.map((msg) => (
                   <ErrorBoundary key={msg.id} name={`MessageItem-${msg.id}`}>
-                      <MessageItem
-                        msg={msg}
-                        copiedMessageId={copiedMessageId}
-                        onCopyMessage={handleCopyMessage}
-                        workflowPlacement="bottom"
-                        workflowVariant="compact"
-                      />
+                    <MessageItem msg={msg} copiedMessageId={copiedMessageId} onCopyMessage={handleCopyMessage} workflowPlacement="bottom" workflowVariant="compact" />
                   </ErrorBoundary>
                 ))}
                 <div ref={messagesEndRef} />
               </div>
             </div>
 
-            {/* Input Area - 底部固定 */}
+            {/* Input Area - Bottom Fixed */}
             <div className={clsx('border-t border-border bg-surface-primary pb-5 pt-2 md:pb-6', contentOuterPaddingClass)}>
-              <div className={clsx('mx-auto', contentMaxWidthClass, contentWidthClass)}>
+              <div className={clsx('mx-auto space-y-4', contentMaxWidthClass, contentWidthClass)}>
                 {errorNotice && (
-                  <div className="mb-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
-                    {errorNotice}
-                  </div>
+                  <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">{errorNotice}</div>
                 )}
                 {showComposerShortcuts && shortcuts.length > 0 && (
-                  <div className="mb-2 flex gap-2 overflow-x-auto py-1 no-scrollbar">
+                  <div className="flex gap-2 overflow-x-auto py-1 no-scrollbar">
                     {shortcuts.map((shortcut) => (
-                      <button
-                        key={shortcut.label}
-                        onClick={() => sendMessage(shortcut.text)}
-                        disabled={isProcessing}
-                        className="flex-shrink-0 rounded-full border border-border bg-surface-primary px-3 py-1.5 text-xs text-text-secondary transition-colors hover:border-accent-primary/30 hover:text-accent-primary disabled:opacity-50"
-                      >
+                      <button key={shortcut.label} onClick={() => sendMessage(shortcut.text)} disabled={isProcessing} className="flex-shrink-0 rounded-full border border-border bg-surface-primary px-3 py-1.5 text-xs text-text-secondary transition-colors hover:border-accent-primary/30 hover:text-accent-primary disabled:opacity-50">
                         {shortcut.label}
                       </button>
                     ))}
@@ -1726,24 +1655,13 @@ export function Chat({
                 )}
 
                 <form onSubmit={handleSubmit} className="relative w-full">
-                  <ToolConfirmDialog
-                    request={confirmRequest}
-                    onConfirm={handleConfirmTool}
-                    onCancel={handleCancelTool}
-                  />
+                  <ToolConfirmDialog request={confirmRequest} onConfirm={handleConfirmTool} onCancel={handleCancelTool} />
                   {allowFileUpload && pendingAttachment && (
                     <div className="mb-3 rounded-lg border border-border bg-surface-secondary/60 px-3 py-2 text-xs text-text-secondary flex items-center justify-between">
                       <span className="truncate">附件: {pendingAttachment.name}</span>
-                      <button
-                        type="button"
-                        onClick={() => setPendingAttachment(null)}
-                        className="ml-2 text-text-tertiary hover:text-text-primary"
-                      >
-                        <FileX className="w-3.5 h-3.5" />
-                      </button>
+                      <button type="button" onClick={() => setPendingAttachment(null)} className="ml-2 text-text-tertiary hover:text-text-primary"><FileX className="w-3.5 h-3.5" /></button>
                     </div>
                   )}
-
                   <div className="group relative flex flex-col w-full bg-[#fdfcf9] border border-[#edebe4] rounded-[28px] p-2 transition-all duration-200 focus-within:shadow-lg focus-within:border-accent-primary/20">
                     <textarea
                       ref={inputRef}
@@ -1759,9 +1677,7 @@ export function Chat({
                         if (e.key === 'Enter' && !e.shiftKey) {
                           e.preventDefault();
                           handleSubmit(e as any);
-                          if (inputRef.current) {
-                            inputRef.current.style.height = 'auto';
-                          }
+                          if (inputRef.current) inputRef.current.style.height = 'auto';
                         }
                       }}
                       placeholder="发送消息..."
@@ -1769,19 +1685,11 @@ export function Chat({
                       disabled={isProcessing}
                       rows={1}
                     />
-                    
-                    {/* Bottom Toolbar */}
                     <div className="flex items-center justify-between px-2 pb-1">
                       <div className="flex items-center gap-1">
-                        <button
-                          type="button"
-                          onClick={() => void pickAttachment()}
-                          className="p-2 text-text-tertiary hover:text-text-secondary transition-colors"
-                          title="添加文件"
-                        >
+                        <button type="button" onClick={() => void pickAttachment()} className="p-2 text-text-tertiary hover:text-text-secondary transition-colors" title="添加文件">
                           <Plus className="w-[18px] h-[18px]" />
                         </button>
-                        
                         <div className="flex items-center gap-4 px-2">
                           <button type="button" className="flex items-center gap-1.5 text-text-tertiary hover:text-text-secondary transition-colors text-[13px] font-medium">
                             <span>GPT-5.4</span>
@@ -1793,34 +1701,13 @@ export function Chat({
                           </button>
                         </div>
                       </div>
-
                       <div className="flex items-center gap-2">
                         {isProcessing ? (
-                          <button
-                            type="button"
-                            onClick={handleCancel}
-                            className="p-2 text-red-500 hover:bg-red-50 rounded-lg transition-colors"
-                            title="停止生成"
-                          >
-                            <StopCircle className="w-5 h-5" />
-                          </button>
+                          <button type="button" onClick={handleCancel} className="p-2 text-red-500 hover:bg-red-50 rounded-lg transition-colors" title="停止生成"><StopCircle className="w-5 h-5" /></button>
                         ) : (
-                          <button
-                            type="button"
-                            className="p-2 text-text-tertiary hover:text-text-secondary transition-colors"
-                            title="语音输入"
-                          >
-                            <Mic className="w-[18px] h-[18px]" />
-                          </button>
+                          <button type="button" className="p-2 text-text-tertiary hover:text-text-secondary transition-colors" title="语音输入"><Mic className="w-[18px] h-[18px]" /></button>
                         )}
-                        <button
-                          type="submit"
-                          disabled={(!input.trim() && !pendingAttachment) || isProcessing}
-                          className={clsx(
-                            "w-9 h-9 flex items-center justify-center rounded-full transition-all duration-200",
-                            input.trim() || pendingAttachment ? "bg-[#b4b2a8] text-white hover:bg-accent-primary" : "bg-[#edebe4] text-white opacity-60"
-                          )}
-                        >
+                        <button type="submit" disabled={(!input.trim() && !pendingAttachment) || isProcessing} className={clsx("w-9 h-9 flex items-center justify-center rounded-full transition-all duration-200", input.trim() || pendingAttachment ? "bg-[#b4b2a8] text-white hover:bg-accent-primary" : "bg-[#edebe4] text-white opacity-60")}>
                           {isProcessing ? <Loader2 className="w-4 h-4 animate-spin text-[#b4b2a8]" /> : <ArrowUp className="w-5 h-5" />}
                         </button>
                       </div>

@@ -54,7 +54,7 @@ export class AgentExecutor {
         private readonly onEvent: (event: AgentEvent) => void,
     ) {
         this.toolRegistry = new ToolRegistry();
-        this.toolRegistry.registerTools(createBuiltinTools({ pack: 'full' }));
+        this.toolRegistry.registerTools(createBuiltinTools({ pack: 'redclaw' }));
         this.toolExecutor = new ToolExecutor(
             this.toolRegistry,
             this.handleConfirmRequest.bind(this),
@@ -94,8 +94,8 @@ export class AgentExecutor {
                 maxTurns: this.config.maxTurns,
                 maxTimeMinutes: this.config.maxTimeMinutes,
                 temperature: this.config.temperature,
-                toolPack: 'full',
-                runtimeMode: 'chatroom',
+                toolPack: 'redclaw',
+                runtimeMode: 'redclaw',
                 interactive: true,
                 requiresHumanApproval: false,
             },

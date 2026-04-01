@@ -56,6 +56,11 @@ export interface AdvisorChatConfig {
     temperature?: number;
 }
 
+export interface AdvisorSendOptions {
+    ragQuery?: string;
+    discussionTask?: string;
+}
+
 /**
  * 思维链事件类型
  */
@@ -122,7 +127,8 @@ export class AdvisorChatService extends EventEmitter {
      */
     async sendMessage(
         message: string,
-        history: ChatHistoryMessage[] = []
+        history: ChatHistoryMessage[] = [],
+        options: AdvisorSendOptions = {},
     ): Promise<string> {
         this.abortController = new AbortController();
         const signal = this.abortController.signal;
@@ -142,8 +148,8 @@ export class AdvisorChatService extends EventEmitter {
             });
 
             const effectiveHistory = history.length > 0 ? history : this.getStoredHistory();
-            const ragContext = await this.performRAG(message, signal, effectiveHistory);
-            const systemPrompt = this.buildSystemPrompt(ragContext);
+            const ragContext = await this.performRAG(options.ragQuery || message, signal, effectiveHistory);
+            const systemPrompt = this.buildSystemPrompt(ragContext, options);
 
             this.emitEvent({
                 type: 'thinking_chunk',
@@ -235,7 +241,7 @@ export class AdvisorChatService extends EventEmitter {
             return {
                 context,
                 sources,
-                reasoning: `基于语义相似度检索了 Top ${searchResults.length} 条相关记录。`
+                reasoning: `基于当前问题与分工检索了 Top ${searchResults.length} 条相关记录。`
             };
         } catch (error) {
             console.error('[AdvisorChatService] RAG failed:', error);
@@ -246,10 +252,25 @@ export class AdvisorChatService extends EventEmitter {
     /**
      * 构建系统提示词
      */
-    private buildSystemPrompt(ragContext: { context: string; sources: string[]; reasoning?: string }): string {
+    private buildSystemPrompt(
+        ragContext: { context: string; sources: string[]; reasoning?: string },
+        options: AdvisorSendOptions = {},
+    ): string {
         const parts: string[] = [];
 
         parts.push(this.config.systemPrompt || `你是 ${this.config.advisorName}，一个专业的智囊团成员。`);
+
+        if (options.discussionTask) {
+            parts.push(`
+## 你的本轮分工
+
+${options.discussionTask}
+
+要求：
+- 优先完成这项分工，不要替其他成员作答。
+- 先调用你自己的经验和知识库，再输出观点。
+- 最终发言必须直接回应这项分工。`);
+        }
 
         parts.push(`
 ## 思考方式 (Thinking Process)

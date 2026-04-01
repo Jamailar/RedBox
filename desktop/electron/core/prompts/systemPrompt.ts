@@ -18,8 +18,12 @@ export interface SystemPromptOptions {
     interactive?: boolean;
     /** 自定义附加规则 */
     customRules?: string;
+    /** 项目上下文内容（如 AGENTS.md / CLAUDE.md / MEMORY.md） */
+    projectContextContent?: string;
     /** 上下文文件内容 (GEMINI.md) */
     contextFileContent?: string;
+    /** Git 状态快照 */
+    gitStatusContent?: string;
     /** 工作空间路径 */
     workspacePaths?: {
         base: string;
@@ -42,7 +46,9 @@ export function getCoreSystemPrompt(options: SystemPromptOptions): string {
         activatedSkillContent,
         interactive = true,
         customRules,
+        projectContextContent,
         contextFileContent,
+        gitStatusContent,
         workspacePaths,
         isPlanMode = false,
     } = options;
@@ -73,25 +79,35 @@ export function getCoreSystemPrompt(options: SystemPromptOptions): string {
         sections.push(getSkillsSection(skills));
     }
 
-    // 6. Context Files - 上下文文件
+    // 6. Project Context - 项目上下文
+    if (projectContextContent) {
+        sections.push(`# Project Context\n\n${projectContextContent}`);
+    }
+
+    // 7. Context Files - 上下文文件
     if (contextFileContent) {
         sections.push(`# Context Files\n\nThe user has provided the following context files (e.g. GEMINI.md) to guide your behavior:\n\n${contextFileContent}`);
     }
 
-    // 7. Activated Skill Content - 已激活技能内容
+    // 8. Git Snapshot - Git 快照
+    if (gitStatusContent) {
+        sections.push(`# Git Snapshot\n\n${gitStatusContent}`);
+    }
+
+    // 9. Activated Skill Content - 已激活技能内容
     if (activatedSkillContent) {
         sections.push(activatedSkillContent);
     }
 
-    // 8. Operational Guidelines - 操作指南
+    // 10. Operational Guidelines - 操作指南
     sections.push(getOperationalGuidelines(interactive));
 
-    // 9. Custom Rules - 自定义规则
+    // 11. Custom Rules - 自定义规则
     if (customRules) {
         sections.push(`\n# Custom Rules\n\n${customRules}`);
     }
 
-    // 10. Final Reminder - 最终提醒
+    // 12. Final Reminder - 最终提醒
     sections.push(getFinalReminder());
 
     return sections.join('\n\n');

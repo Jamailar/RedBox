@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
-import { Send, Terminal, Loader2, StopCircle, Trash2, Plus, MessageSquare, X, PanelLeftClose, PanelLeft, Sparkles, Edit, Users, Paperclip, FileX } from 'lucide-react';
+import { Send, Terminal, Loader2, StopCircle, Trash2, Plus, ChevronDown, Mic, ArrowUp, MessageSquare, X, PanelLeftClose, PanelLeft, Sparkles, Edit, Users, Paperclip, FileX } from 'lucide-react';
 import { clsx } from 'clsx';
 import { ToolConfirmDialog } from '../components/ToolConfirmDialog';
 import { MessageItem, Message, ToolEvent, SkillEvent } from '../components/MessageItem';
@@ -242,7 +242,7 @@ export function Chat({
   const [pendingAttachment, setPendingAttachment] = useState<UploadedFileAttachment | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
   
   // Throttle buffer for streaming updates
   const pendingUpdateRef = useRef<{ content: string } | null>(null);
@@ -1531,53 +1531,93 @@ export function Chat({
                 </div>
               )}
 
-              {/* 居中的输入框 */}
-              <form onSubmit={handleSubmit} className="relative w-full mt-8">
+              {/* 居中的输入框 (Codex Style) */}
+              <form onSubmit={handleSubmit} className="relative w-full mt-10">
                 <ToolConfirmDialog
                   request={confirmRequest}
                   onConfirm={handleConfirmTool}
                   onCancel={handleCancelTool}
                 />
-                <div className="relative">
-                  <input
+                <div className="group relative flex flex-col w-full bg-[#fdfcf9] border border-[#edebe4] rounded-[28px] p-2 transition-all duration-200 focus-within:shadow-lg focus-within:border-accent-primary/20">
+                  <textarea
                     ref={inputRef}
-                    type="text"
                     value={input}
-                    onChange={(e) => setInput(e.target.value)}
-                    placeholder="输入您的问题，或描述您想完成的任务..."
-                    className="w-full bg-surface-secondary border border-border rounded-xl pl-4 pr-24 py-4 text-sm focus:outline-none focus:ring-2 focus:ring-accent-primary/50 focus:border-accent-primary transition-all shadow-sm"
+                    onChange={(e) => {
+                      setInput(e.target.value);
+                      if (inputRef.current) {
+                        inputRef.current.style.height = 'auto';
+                        inputRef.current.style.height = `${Math.min(inputRef.current.scrollHeight, 300)}px`;
+                      }
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && !e.shiftKey) {
+                        e.preventDefault();
+                        handleSubmit(e as any);
+                        if (inputRef.current) {
+                          inputRef.current.style.height = 'auto';
+                        }
+                      }
+                    }}
+                    placeholder="问我任何问题，使用 @ 引用文件，/ 执行指令..."
+                    className="w-full bg-transparent px-4 py-3 text-[16px] text-text-primary placeholder:text-[#b4b2a8] focus:outline-none resize-none min-h-[100px] overflow-y-auto"
                     disabled={isProcessing}
                     autoFocus
+                    rows={1}
                   />
-                  <div className="absolute right-3 top-3 flex items-center gap-2">
-                    {allowFileUpload && (
+                  
+                  {/* Bottom Toolbar */}
+                  <div className="flex items-center justify-between px-2 pb-1">
+                    <div className="flex items-center gap-1">
                       <button
                         type="button"
                         onClick={() => void pickAttachment()}
-                        disabled={isProcessing}
-                        className="p-2 rounded-lg text-text-secondary hover:bg-surface-tertiary disabled:opacity-40"
-                        title="上传文件"
+                        className="p-2 text-text-tertiary hover:text-text-secondary transition-colors"
+                        title="添加文件"
                       >
-                        <Paperclip className="w-4 h-4" />
+                        <Plus className="w-[18px] h-[18px]" />
                       </button>
-                    )}
-                    <button
-                      type="submit"
-                      disabled={(!input.trim() && !pendingAttachment) || isProcessing}
-                      className="p-2 bg-accent-primary text-white rounded-lg hover:bg-accent-primary/90 disabled:opacity-30 disabled:hover:bg-accent-primary transition-colors"
-                    >
-                      {isProcessing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
-                    </button>
+                      
+                      <div className="flex items-center gap-4 px-2">
+                        <button type="button" className="flex items-center gap-1.5 text-text-tertiary hover:text-text-secondary transition-colors text-[13px] font-medium">
+                          <span>GPT-5.4</span>
+                          <ChevronDown className="w-3.5 h-3.5" />
+                        </button>
+                        <button type="button" className="flex items-center gap-1.5 text-text-tertiary hover:text-text-secondary transition-colors text-[13px] font-medium">
+                          <span>高</span>
+                          <ChevronDown className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        className="p-2 text-text-tertiary hover:text-text-secondary transition-colors"
+                        title="语音输入"
+                      >
+                        <Mic className="w-[18px] h-[18px]" />
+                      </button>
+                      <button
+                        type="submit"
+                        disabled={(!input.trim() && !pendingAttachment) || isProcessing}
+                        className={clsx(
+                          "w-9 h-9 flex items-center justify-center rounded-full transition-all duration-200",
+                          input.trim() || pendingAttachment ? "bg-[#b4b2a8] text-white hover:bg-accent-primary" : "bg-[#edebe4] text-white opacity-60"
+                        )}
+                      >
+                        {isProcessing ? <Loader2 className="w-4 h-4 animate-spin text-[#b4b2a8]" /> : <ArrowUp className="w-5 h-5" />}
+                      </button>
+                    </div>
                   </div>
                 </div>
+
                 {allowFileUpload && pendingAttachment && (
-                  <div className="mt-2 rounded-lg border border-border bg-surface-secondary/60 px-3 py-2 text-xs text-text-secondary flex items-center justify-between">
+                  <div className="mt-3 mx-4 rounded-lg border border-border bg-surface-secondary/60 px-3 py-2 text-xs text-text-secondary flex items-center justify-between">
                     <span className="truncate">附件: {pendingAttachment.name}</span>
                     <button
                       type="button"
                       onClick={() => setPendingAttachment(null)}
                       className="ml-2 text-text-tertiary hover:text-text-primary"
-                      title="移除附件"
                     >
                       <FileX className="w-3.5 h-3.5" />
                     </button>
@@ -1692,57 +1732,99 @@ export function Chat({
                     onCancel={handleCancelTool}
                   />
                   {allowFileUpload && pendingAttachment && (
-                    <div className="mb-2 rounded-lg border border-border bg-surface-secondary/60 px-3 py-2 text-xs text-text-secondary flex items-center justify-between">
+                    <div className="mb-3 rounded-lg border border-border bg-surface-secondary/60 px-3 py-2 text-xs text-text-secondary flex items-center justify-between">
                       <span className="truncate">附件: {pendingAttachment.name}</span>
                       <button
                         type="button"
                         onClick={() => setPendingAttachment(null)}
                         className="ml-2 text-text-tertiary hover:text-text-primary"
-                        title="移除附件"
                       >
                         <FileX className="w-3.5 h-3.5" />
                       </button>
                     </div>
                   )}
-                  <div className="flex items-center gap-2 rounded-2xl border border-border bg-surface-secondary px-3 py-2 shadow-sm transition-colors focus-within:border-accent-primary/40 focus-within:shadow">
-                    <input
-                      type="text"
+
+                  <div className="group relative flex flex-col w-full bg-[#fdfcf9] border border-[#edebe4] rounded-[28px] p-2 transition-all duration-200 focus-within:shadow-lg focus-within:border-accent-primary/20">
+                    <textarea
+                      ref={inputRef}
                       value={input}
-                      onChange={(e) => setInput(e.target.value)}
-                      placeholder="输入消息..."
-                      className="h-10 flex-1 bg-transparent px-1 text-sm text-text-primary placeholder:text-text-tertiary focus:outline-none"
+                      onChange={(e) => {
+                        setInput(e.target.value);
+                        if (inputRef.current) {
+                          inputRef.current.style.height = 'auto';
+                          inputRef.current.style.height = `${Math.min(inputRef.current.scrollHeight, 300)}px`;
+                        }
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && !e.shiftKey) {
+                          e.preventDefault();
+                          handleSubmit(e as any);
+                          if (inputRef.current) {
+                            inputRef.current.style.height = 'auto';
+                          }
+                        }
+                      }}
+                      placeholder="发送消息..."
+                      className="w-full bg-transparent px-4 py-3 text-[15px] text-text-primary placeholder:text-[#b4b2a8] focus:outline-none resize-none min-h-[80px] max-h-[300px] overflow-y-auto"
                       disabled={isProcessing}
+                      rows={1}
                     />
-                    <div className="flex items-center gap-1">
-                    {allowFileUpload && (
-                      <button
-                        type="button"
-                        onClick={() => void pickAttachment()}
-                        disabled={isProcessing}
-                        className="inline-flex h-8 w-8 items-center justify-center rounded-full text-text-secondary transition-colors hover:bg-surface-tertiary hover:text-text-primary disabled:opacity-40"
-                        title="上传文件"
-                      >
-                        <Paperclip className="h-4 w-4" />
-                      </button>
-                    )}
-                    {isProcessing && (
-                      <button
-                        type="button"
-                        onClick={handleCancel}
-                        className="inline-flex h-8 w-8 items-center justify-center rounded-full text-red-500 transition-colors hover:bg-red-500/10 hover:text-red-600"
-                        title="Cancel"
-                      >
-                        <StopCircle className="h-4 w-4" />
-                      </button>
-                    )}
-                    <button
-                      type="submit"
-                      disabled={(!input.trim() && !pendingAttachment) || isProcessing}
-                      className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-accent-primary text-white shadow-sm transition-all hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-40"
-                    >
-                      {isProcessing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
-                    </button>
-                  </div>
+                    
+                    {/* Bottom Toolbar */}
+                    <div className="flex items-center justify-between px-2 pb-1">
+                      <div className="flex items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() => void pickAttachment()}
+                          className="p-2 text-text-tertiary hover:text-text-secondary transition-colors"
+                          title="添加文件"
+                        >
+                          <Plus className="w-[18px] h-[18px]" />
+                        </button>
+                        
+                        <div className="flex items-center gap-4 px-2">
+                          <button type="button" className="flex items-center gap-1.5 text-text-tertiary hover:text-text-secondary transition-colors text-[13px] font-medium">
+                            <span>GPT-5.4</span>
+                            <ChevronDown className="w-3.5 h-3.5" />
+                          </button>
+                          <button type="button" className="flex items-center gap-1.5 text-text-tertiary hover:text-text-secondary transition-colors text-[13px] font-medium">
+                            <span>高</span>
+                            <ChevronDown className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2">
+                        {isProcessing ? (
+                          <button
+                            type="button"
+                            onClick={handleCancel}
+                            className="p-2 text-red-500 hover:bg-red-50 rounded-lg transition-colors"
+                            title="停止生成"
+                          >
+                            <StopCircle className="w-5 h-5" />
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            className="p-2 text-text-tertiary hover:text-text-secondary transition-colors"
+                            title="语音输入"
+                          >
+                            <Mic className="w-[18px] h-[18px]" />
+                          </button>
+                        )}
+                        <button
+                          type="submit"
+                          disabled={(!input.trim() && !pendingAttachment) || isProcessing}
+                          className={clsx(
+                            "w-9 h-9 flex items-center justify-center rounded-full transition-all duration-200",
+                            input.trim() || pendingAttachment ? "bg-[#b4b2a8] text-white hover:bg-accent-primary" : "bg-[#edebe4] text-white opacity-60"
+                          )}
+                        >
+                          {isProcessing ? <Loader2 className="w-4 h-4 animate-spin text-[#b4b2a8]" /> : <ArrowUp className="w-5 h-5" />}
+                        </button>
+                      </div>
+                    </div>
                   </div>
                 </form>
               </div>

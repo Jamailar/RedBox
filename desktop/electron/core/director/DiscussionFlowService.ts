@@ -78,6 +78,13 @@ type DiscussionRuntimeState = {
     shouldUseCoordinator: boolean;
 };
 
+type AdvisorAssignment = {
+    advisorId: string;
+    advisorName: string;
+    task: string;
+    order: number;
+};
+
 // ========== DiscussionFlowService Class ==========
 
 export class DiscussionFlowService extends EventEmitter {
@@ -188,7 +195,12 @@ export class DiscussionFlowService extends EventEmitter {
 
         let plannerOutput: SubagentOutput | null = null;
         const shouldUseCoordinator = Boolean(routeAnalysis.shouldUseCoordinator || params.advisors.length > 1);
-        if (shouldUseCoordinator) {
+        const shouldRunPlanner = shouldUseCoordinator && (
+            params.advisors.length >= 4
+            || Boolean(params.fileContext)
+            || params.historyContext.length >= 6
+        );
+        if (shouldRunPlanner) {
             runtime.startNode(task.id, 'plan', 'chatroom planner running');
             await getBackgroundTaskRegistry().appendTurn(backgroundTask.id, {
                 source: 'thought',
@@ -227,6 +239,8 @@ export class DiscussionFlowService extends EventEmitter {
                 handoff: plannerOutput.handoff,
             }, 'plan');
             runtime.completeNode(task.id, 'plan', plannerOutput.summary);
+        } else if (runtime.getTask(task.id)?.graph.some((node) => node.type === 'plan')) {
+            runtime.skipNode(task.id, 'plan', 'chatroom fast-path: director starts immediately');
         }
 
         return {
@@ -237,6 +251,101 @@ export class DiscussionFlowService extends EventEmitter {
             plannerOutput,
             shouldUseCoordinator,
         };
+    }
+
+    private parseDirectorAssignments(directorIntro: string, advisors: AdvisorInfo[]): AdvisorAssignment[] {
+        const lines = String(directorIntro || '')
+            .split(/\r?\n/)
+            .map((line) => line.trim())
+            .filter(Boolean);
+        const assignments: AdvisorAssignment[] = [];
+        const seen = new Set<string>();
+
+        for (const [index, line] of lines.entries()) {
+            const normalizedLine = line
+                .replace(/^[-*•\d.\)\s]+/, '')
+                .replace(/\*\*/g, '')
+                .replace(/`/g, '')
+                .trim();
+            for (const advisor of advisors) {
+                if (seen.has(advisor.id)) continue;
+                const escapedName = advisor.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                const match = normalizedLine.match(new RegExp(`(?:^|\\s)@?${escapedName}\\s*[：:]\\s*(.+)$`, 'i'));
+                if (!match) continue;
+                const task = String(match[1] || '').trim();
+                if (!task) continue;
+                assignments.push({
+                    advisorId: advisor.id,
+                    advisorName: advisor.name,
+                    task,
+                    order: index,
+                });
+                seen.add(advisor.id);
+            }
+        }
+
+        return assignments.sort((left, right) => left.order - right.order);
+    }
+
+    private completeDirectorAssignments(
+        assignments: AdvisorAssignment[],
+        advisors: AdvisorInfo[],
+        userMessage: string,
+        discussionGoal: string,
+    ): AdvisorAssignment[] {
+        if (assignments.length >= advisors.length) {
+            return assignments;
+        }
+
+        const focus = discussionGoal || userMessage;
+        const fallbackTemplates = [
+            '先判断这个问题最关键的根因，并给出你最明确的结论；期望产出：结论 + 2条判断依据。',
+            '从你的专业视角给出最值得执行的策略；期望产出：行动方案或步骤清单。',
+            '把执行层细节说清楚；期望产出：可直接落地的操作建议、脚本方向或话术框架。',
+            '补充风险、边界和最容易翻车的地方；期望产出：风险清单 + 规避建议。',
+            '给出验证方式和复盘指标；期望产出：判断成效的方法 + 下一步。',
+        ];
+        const completed = [...assignments];
+        const seen = new Set(assignments.map((item) => item.advisorId));
+
+        advisors.forEach((advisor, index) => {
+            if (seen.has(advisor.id)) {
+                return;
+            }
+            const template = fallbackTemplates[index % fallbackTemplates.length];
+            completed.push({
+                advisorId: advisor.id,
+                advisorName: advisor.name,
+                task: `${template} 所有内容都必须围绕“${focus}”。如果你有自己的知识库，先检索再回答。`,
+                order: assignments.length + index,
+            });
+        });
+
+        return completed.sort((left, right) => left.order - right.order);
+    }
+
+    private orderAdvisorsByAssignments(advisors: AdvisorInfo[], assignments: AdvisorAssignment[]): AdvisorInfo[] {
+        if (!assignments.length) {
+            return this.shuffleArray([...advisors]);
+        }
+
+        const advisorMap = new Map(advisors.map((advisor) => [advisor.id, advisor]));
+        const ordered: AdvisorInfo[] = [];
+        const seen = new Set<string>();
+
+        for (const assignment of assignments) {
+            const advisor = advisorMap.get(assignment.advisorId);
+            if (!advisor || seen.has(advisor.id)) continue;
+            ordered.push(advisor);
+            seen.add(advisor.id);
+        }
+
+        for (const advisor of advisors) {
+            if (seen.has(advisor.id)) continue;
+            ordered.push(advisor);
+        }
+
+        return ordered;
     }
 
     private async finalizeDiscussionRuntime(params: {
@@ -335,6 +444,22 @@ export class DiscussionFlowService extends EventEmitter {
         this.currentRoomId = roomId;
         const newMessages: DiscussionMessage[] = [];
         const conversationHistory: ConversationMessage[] = [];
+
+        if (!isSixHatsMode) {
+            this.sendToFrontend('creative-chat:advisor-start', {
+                advisorId: DIRECTOR_ID,
+                advisorName: DIRECTOR_NAME,
+                advisorAvatar: DIRECTOR_AVATAR,
+                phase: 'introduction',
+            });
+            this.sendToFrontend('creative-chat:thinking', {
+                advisorId: DIRECTOR_ID,
+                advisorName: DIRECTOR_NAME,
+                advisorAvatar: DIRECTOR_AVATAR,
+                type: 'thinking_chunk',
+                content: '总监已收到问题，正在快速定调...',
+            });
+        }
 
         const historyContext = existingHistory.map(msg => {
             if (msg.role === 'user') {
@@ -446,6 +571,12 @@ export class DiscussionFlowService extends EventEmitter {
                 fileContext,
                 coordinationBrief,
             );
+            const parsedAssignments = this.completeDirectorAssignments(
+                this.parseDirectorAssignments(directorIntro, advisors),
+                advisors,
+                userMessage,
+                discussionGoal,
+            );
 
             const introMessage: DiscussionMessage = {
                 id: `msg_${Date.now()}_director_intro`,
@@ -481,18 +612,20 @@ export class DiscussionFlowService extends EventEmitter {
                 });
             }
 
-            const shuffledAdvisors = this.shuffleArray([...advisors]);
+            const orderedAdvisors = this.orderAdvisorsByAssignments(advisors, parsedAssignments);
             if (runtimeContext.taskId && getTaskGraphRuntime().getTask(runtimeContext.taskId)?.graph.some((node) => node.type === 'spawn_agents')) {
-                getTaskGraphRuntime().startNode(runtimeContext.taskId, 'spawn_agents', `room speakers=${shuffledAdvisors.map((item) => item.name).join('、')}`);
+                getTaskGraphRuntime().startNode(runtimeContext.taskId, 'spawn_agents', `room speakers=${orderedAdvisors.map((item) => item.name).join('、')}`);
             }
 
-            for (const advisor of shuffledAdvisors) {
+            for (const advisor of orderedAdvisors) {
                 if (this.abortController?.signal.aborted) break;
+                const assignment = parsedAssignments.find((item) => item.advisorId === advisor.id)?.task || '';
 
                 const fullHistory = [
                     ...historyContext,
                     { role: 'user' as const, content: userMessage },
                     { role: 'assistant' as const, content: `[总监分析]\n${directorIntro}` },
+                    ...(assignment ? [{ role: 'assistant' as const, content: `[总监给${advisor.name}的分工]\n${assignment}` }] : []),
                     ...conversationHistory
                         .filter(m => m.role === 'assistant')
                         .map(m => ({
@@ -504,11 +637,12 @@ export class DiscussionFlowService extends EventEmitter {
                 const response = await this.advisorSpeak(
                     advisor,
                     userMessage,
-                    fullHistory,
-                    discussionGoal,
-                    fileContext,
-                    coordinationBrief,
-                );
+                        fullHistory,
+                        discussionGoal,
+                        fileContext,
+                        coordinationBrief,
+                        assignment,
+                    );
 
                 const advisorMessage: DiscussionMessage = {
                     id: `msg_${Date.now()}_${advisor.id}`,
@@ -548,7 +682,7 @@ export class DiscussionFlowService extends EventEmitter {
             }
 
             if (runtimeContext.taskId && getTaskGraphRuntime().getTask(runtimeContext.taskId)?.graph.some((node) => node.type === 'spawn_agents')) {
-                getTaskGraphRuntime().completeNode(runtimeContext.taskId, 'spawn_agents', `room advisors=${shuffledAdvisors.map((item) => item.name).join('、')}`);
+                getTaskGraphRuntime().completeNode(runtimeContext.taskId, 'spawn_agents', `room advisors=${orderedAdvisors.map((item) => item.name).join('、')}`);
             }
 
             if (!this.abortController?.signal.aborted) {
@@ -626,13 +760,6 @@ export class DiscussionFlowService extends EventEmitter {
             this.forwardEventToFrontend('director', event);
         });
 
-        this.sendToFrontend('creative-chat:advisor-start', {
-            advisorId: DIRECTOR_ID,
-            advisorName: DIRECTOR_NAME,
-            advisorAvatar: DIRECTOR_AVATAR,
-            phase: 'introduction',
-        });
-
         return await director.introduceDiscussion(userMessage, advisorNames, discussionGoal, historyContext, fileContext, coordinationBrief);
     }
 
@@ -646,6 +773,7 @@ export class DiscussionFlowService extends EventEmitter {
         discussionGoal: string = '',
         fileContext?: { filePath: string; fileContent: string },
         coordinationBrief?: string,
+        assignment: string = '',
     ): Promise<string> {
         const advisorConfig: AdvisorChatConfig = {
             apiKey: this.config.apiKey,
@@ -654,7 +782,7 @@ export class DiscussionFlowService extends EventEmitter {
             advisorId: advisor.id,
             advisorName: advisor.name,
             advisorAvatar: advisor.avatar,
-            systemPrompt: this.enhanceSystemPrompt(advisor.systemPrompt, history, discussionGoal, fileContext, coordinationBrief),
+            systemPrompt: this.enhanceSystemPrompt(advisor.systemPrompt, history, discussionGoal, fileContext, coordinationBrief, assignment),
             knowledgeDir: advisor.knowledgeDir,
             maxTurns: 3,
             temperature: 0.7,
@@ -672,7 +800,20 @@ export class DiscussionFlowService extends EventEmitter {
             phase: 'discussion',
         });
 
-        return await advisorService.sendMessage(userMessage, history);
+        const ragQuery = [
+            `用户问题：${userMessage}`,
+            discussionGoal ? `群聊目标：${discussionGoal}` : '',
+            assignment ? `我的分工：${assignment}` : '',
+            fileContext?.filePath ? `当前文件：${fileContext.filePath}` : '',
+            `成员身份：${advisor.name}`,
+        ].filter(Boolean).join('\n');
+
+        return await advisorService.sendMessage(userMessage, history, {
+            ragQuery,
+            discussionTask: assignment
+                ? `总监给你的分工：${assignment}`
+                : `请围绕群聊目标“${discussionGoal || userMessage}”从你的专业视角补充关键判断。`,
+        });
     }
 
     /**
@@ -716,6 +857,7 @@ export class DiscussionFlowService extends EventEmitter {
         discussionGoal: string = '',
         fileContext?: { filePath: string; fileContent: string },
         coordinationBrief?: string,
+        assignment: string = '',
     ): string {
         let prompt = basePrompt;
 
@@ -724,6 +866,9 @@ export class DiscussionFlowService extends EventEmitter {
         }
         if (coordinationBrief) {
             prompt += `\n\n## 协调规划\n请在发言时参考这份讨论框架，但保留你的角色特色：\n${coordinationBrief}`;
+        }
+        if (assignment) {
+            prompt += `\n\n## 总监分工\n你本轮必须优先完成这项任务：\n${assignment}`;
         }
 
         const contextInfo = history.length > 1
@@ -756,6 +901,7 @@ export class DiscussionFlowService extends EventEmitter {
 2. **第一人称**：所有观点必须带入"我"的视角（"我看过很多类似的号..."，"我觉得..."）。
 3. **经验内化**：你即将收到的【参考资料/知识库】是你的**过往经验**。不要说"根据资料显示"，要说"根据我的经验"。
 4. **行动导向**：不要只分析问题，要给方案。
+5. **服从分工**：如果总监已经给你明确任务，你必须先把这项任务回答清楚，不要偏题。
 
 # 语言风格
 口语化，像在微信群里聊天。禁止使用"综上所述"、"总而言之"等翻译腔。`;

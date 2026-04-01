@@ -74,6 +74,7 @@ import {
   type MediaAsset,
 } from './core/mediaLibraryStore';
 import { generateImagesToMediaLibrary } from './core/imageGenerationService';
+import { buildRuntimeBaseSystemPrompt } from './core/prompts/defaultPromptBuilder';
 import {
   listCoverAssets,
   getAbsoluteCoverAssetPath,
@@ -1319,6 +1320,7 @@ ipcMain.handle('tasks:create', async (_event, payload?: {
   const sessionId = String(payload?.sessionId || `session_${Date.now()}`);
   const userInput = String(payload?.userInput || '').trim();
   const settings = (getSettings() || {}) as Record<string, unknown>;
+  const baseSystemPrompt = await buildRuntimeBaseSystemPrompt({ runtimeMode, interactive: true });
   const prepared = await getAgentRuntime().prepareExecution({
     runtimeContext: {
       sessionId,
@@ -1326,7 +1328,7 @@ ipcMain.handle('tasks:create', async (_event, payload?: {
       userInput: userInput || '开发者手动创建任务',
       metadata: payload?.metadata || {},
     },
-    baseSystemPrompt: '',
+    baseSystemPrompt,
     llm: {
       apiKey: String(settings.api_key || '').trim(),
       baseURL: normalizeApiBaseUrl(String(settings.api_endpoint || '').trim()),
@@ -2795,6 +2797,7 @@ ipcMain.on('chat:send-message', async (event, { sessionId, message, displayConte
     });
 
     if (routeAnalysis.shouldUseCoordinator && runtimeMode !== 'background-maintenance') {
+      const baseSystemPrompt = await buildRuntimeBaseSystemPrompt({ runtimeMode, interactive: true });
       console.log('[chat:send-message] routed-to-coordinator', {
         sessionId,
         runtimeMode,
@@ -2813,7 +2816,7 @@ ipcMain.on('chat:send-message', async (event, { sessionId, message, displayConte
             ...(taskHints && typeof taskHints === 'object' ? taskHints : {}),
           },
         },
-        baseSystemPrompt: '',
+        baseSystemPrompt,
         llm: {
           apiKey: String(settings.api_key || '').trim(),
           baseURL: normalizeApiBaseUrl(String(settings.api_endpoint || '').trim()),
@@ -2821,6 +2824,7 @@ ipcMain.on('chat:send-message', async (event, { sessionId, message, displayConte
         },
       });
       await getLongTaskCoordinator().maybeRun(prepared.task.id, {
+        baseSystemPrompt,
         emitChatEvent: (channel, data) => sender.send(channel, data),
       });
       console.log('[chat:send-message] coordinator-completed', { sessionId, taskId: prepared.task.id });

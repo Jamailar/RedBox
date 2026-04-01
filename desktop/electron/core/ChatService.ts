@@ -14,7 +14,7 @@ import {
     getChatSession,
     getChatSessionByContext,
 } from '../db';
-import { getCoreSystemPrompt } from './prompts/systemPrompt';
+import { buildDefaultSystemPrompt } from './prompts/defaultPromptBuilder';
 import { QueryRuntime } from './queryRuntime';
 import {
     ToolRegistry,
@@ -197,7 +197,7 @@ export class ChatService extends EventEmitter {
                     apiKey: this.config.apiKey,
                     baseURL: this.config.baseURL,
                     model: this.config.model,
-                    systemPrompt: getCoreSystemPrompt({
+                    systemPrompt: await buildDefaultSystemPrompt({
                         skills: this.skillManager.getSkills(),
                         tools: this.toolRegistry.getAllTools(),
                         interactive: true,

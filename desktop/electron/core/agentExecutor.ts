@@ -1,5 +1,5 @@
 import { Instance } from './instance';
-import { getCoreSystemPrompt } from './prompts/systemPrompt';
+import { buildDefaultSystemPrompt } from './prompts/defaultPromptBuilder';
 import { QueryRuntime } from './queryRuntime';
 import { SkillManager } from './skillManager';
 import {
@@ -84,7 +84,7 @@ export class AgentExecutor {
                 apiKey: this.config.apiKey,
                 baseURL: this.config.baseURL,
                 model: this.config.model,
-                systemPrompt: getCoreSystemPrompt({
+                systemPrompt: await buildDefaultSystemPrompt({
                     skills: this.skillManager.getSkills(),
                     tools: this.toolRegistry.getAllTools(),
                     interactive: true,

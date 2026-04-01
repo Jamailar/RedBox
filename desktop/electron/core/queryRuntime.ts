@@ -5,6 +5,7 @@ import { evaluateRuntimeToolPermission } from './runtimePermissions';
 import { getSessionRuntimeStore } from './sessionRuntimeStore';
 import { getToolResultStore } from './toolResultStore';
 import { applyToolResultBudget } from './toolResultBudget';
+import { summarizeToolBatch } from './toolBatchSummary';
 import { getTaskGraphRuntime } from './ai/taskGraphRuntime';
 import {
   createErrorResult,
@@ -331,6 +332,33 @@ export class QueryRuntime {
         });
         this.adapter.onEvent({ type: 'thinking', phase: 'tooling', content: `Turn ${turnCount}: executing ${llmResponse.toolCalls.length} tool call(s)` });
         const toolResponses = await this.executeToolCalls(llmResponse.toolCalls);
+        const batchSummary = summarizeToolBatch(
+          llmResponse.toolCalls.map((call, index) => ({
+            name: call.name,
+            args: call.args,
+            result: toolResponses[index]?.result,
+          })).filter((item): item is { name: string; args: Record<string, unknown>; result: ToolResult } => Boolean(item.result)),
+        );
+        if (batchSummary) {
+          this.adapter.onEvent({
+            type: 'tool_summary',
+            toolName: 'tool.batch',
+            content: batchSummary,
+          });
+          this.store.appendTranscript({
+            sessionId: this.config.sessionId,
+            recordType: 'tool.batch.summary',
+            role: 'system',
+            content: batchSummary,
+            payload: {
+              kind: 'tool.batch.summary',
+              data: {
+                toolCount: toolResponses.length,
+                toolNames: toolResponses.map((toolResponse) => toolResponse.name),
+              },
+            },
+          });
+        }
         const budgetedResults = applyToolResultBudget(
           this.registry,
           toolResponses.map((toolResponse) => ({
@@ -381,7 +409,7 @@ export class QueryRuntime {
         this.store.addCheckpoint({
           sessionId: this.config.sessionId,
           checkpointType: 'tool.batch',
-          summary: `Completed ${toolResponses.length} tool call(s)`,
+          summary: batchSummary || `Completed ${toolResponses.length} tool call(s)`,
           payload: {
             tools: toolResponses.map((toolResponse) => ({
               name: toolResponse.name,

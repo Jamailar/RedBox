@@ -6,6 +6,7 @@ import { evaluateRuntimeToolPermission } from './runtimePermissions';
 import { applyToolResultBudget } from './toolResultBudget';
 import { getSessionRuntimeStore } from './sessionRuntimeStore';
 import { getToolResultStore } from './toolResultStore';
+import { summarizeToolBatch } from './toolBatchSummary';
 import {
   createErrorResult,
   ToolErrorType,
@@ -1159,7 +1160,13 @@ export class HeadlessWorkerProcessManager {
     this.runtimeStore.addCheckpoint({
       sessionId: run.sessionId,
       checkpointType: 'tool.batch',
-      summary: `Completed ${responses.length} hosted tool call(s)`,
+      summary: summarizeToolBatch(
+        calls.map((call, index) => ({
+          name: call.name,
+          args: call.args,
+          result: responses[index]?.result,
+        })).filter((item): item is { name: string; args: Record<string, unknown>; result: ToolCallResponse['result'] } => Boolean(item.result)),
+      ) || `Completed ${responses.length} hosted tool call(s)`,
       payload: {
         workerLabel: slot.id,
         tools: responses.map((response) => ({

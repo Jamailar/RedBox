@@ -55,6 +55,19 @@ const DIRECTOR_SUMMARY_PROMPT_TEMPLATE = loadPrompt(
     '你是【{{goal}}】这个项目的内容总监，请给出决策汇报。'
 );
 
+const MAX_DIRECTOR_FILE_CONTEXT_CHARS = 6000;
+const MAX_DIRECTOR_HISTORY_CHARS = 240;
+
+function truncateDirectorContext(content: string, limit: number): string {
+    if (content.length <= limit) {
+        return content;
+    }
+
+    const head = content.slice(0, Math.floor(limit * 0.7));
+    const tail = content.slice(-(Math.floor(limit * 0.2)));
+    return `${head}\n\n...[内容过长，已截断]...\n\n${tail}`;
+}
+
 // ========== DirectorAgent Class ==========
 
 export class DirectorAgent extends EventEmitter {
@@ -93,19 +106,20 @@ export class DirectorAgent extends EventEmitter {
 
             // 构建文件上下文提示
             if (fileContext) {
-                goalContext += `\n\n## 📄 当前编辑的文件\n\n用户正在编辑文件：\`${fileContext.filePath}\`\n\n文件内容如下：\n\`\`\`\n${fileContext.fileContent}\n\`\`\`\n\n你的分析必须结合当前文件内容。如果用户的意图是修改文件，请在后续的子问题中引导成员关注如何修改。`;
+                const filePreview = truncateDirectorContext(fileContext.fileContent, MAX_DIRECTOR_FILE_CONTEXT_CHARS);
+                goalContext += `\n\n## 📄 当前编辑的文件\n\n用户正在编辑文件：\`${fileContext.filePath}\`\n\n文件重点片段如下：\n\`\`\`\n${filePreview}\n\`\`\`\n\n你的分析必须结合当前文件内容。如果用户的意图是修改文件，请在后续的子问题中引导成员关注如何修改。`;
             }
 
             // 构建历史上下文摘要
             const historySection = historyContext.length > 0
-                ? `\n\n## 📜 之前的对话历史\n\n以下是之前的讨论记录，请参考这些上下文来理解当前问题：\n\n${historyContext.slice(-10).map(m => `${m.role === 'user' ? '用户' : '回复'}：${m.content.substring(0, 500)}${m.content.length > 500 ? '...' : ''}`).join('\n\n')}\n\n---\n\n`
+                ? `\n\n## 📜 之前的对话历史\n\n以下是之前的讨论记录，请参考这些上下文来理解当前问题：\n\n${historyContext.slice(-6).map(m => `${m.role === 'user' ? '用户' : '回复'}：${truncateDirectorContext(m.content, MAX_DIRECTOR_HISTORY_CHARS)}`).join('\n\n')}\n\n---\n\n`
                 : '';
 
             const systemPrompt = renderPrompt(DIRECTOR_INTRODUCTION_PROMPT_TEMPLATE, {
                 goal: discussionGoal || '当前项目',
             });
 
-            const userContent = `${historySection}用户问题：${userMessage}\n\n参与讨论的成员：${advisorNames.join('、')}`;
+            const userContent = `${historySection}用户问题：${userMessage}\n\n可分派成员名单（只能使用这些名字，禁止改写、缩写或新增角色）：\n${advisorNames.map((name, index) => `${index + 1}. ${name}`).join('\n')}\n\n输出要求：任务分派部分必须逐行使用“@顾问名：问题；期望产出：...”`;
 
             const fullResponse = await this.streamChat(
                 [{ role: 'system', content: systemPrompt + goalContext }, { role: 'user', content: userContent }],

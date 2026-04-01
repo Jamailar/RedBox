@@ -1,4 +1,5 @@
 import { getBuiltinToolDescriptor } from './tools/catalog';
+import { analyzeAppCliCommand, analyzeBashCommand } from './runtimeCommandPolicy';
 import {
     MUTATOR_KINDS,
     ToolKind,
@@ -23,7 +24,6 @@ export interface RuntimePermissionDecision {
 }
 
 const TRUSTED_MUTATOR_TOOLS = new Set([
-    'app_cli',
     'save_memory',
     'redclaw_update_profile_doc',
     'redclaw_update_creator_profile',
@@ -65,6 +65,64 @@ export const evaluateRuntimeToolPermission = (params: {
     const descriptor = getBuiltinToolDescriptor(toolName);
     const interactive = context.interactive !== false;
     const runtimeMode = String(context.runtimeMode || '').trim();
+
+    if (toolName === 'app_cli') {
+        const analysis = analyzeAppCliCommand(String(args.command || ''), {
+            interactive,
+            runtimeMode,
+        });
+        if (analysis.className === 'deny') {
+            return {
+                outcome: 'deny',
+                reason: analysis.reason,
+                source: 'runtime-policy',
+            };
+        }
+        if (analysis.className === 'confirm') {
+            return {
+                outcome: interactive ? 'confirm' : 'deny',
+                reason: analysis.reason,
+                details: interactive ? buildGenericConfirmationDetails(tool, args, analysis.reason) : null,
+                source: 'runtime-policy',
+            };
+        }
+        if (analysis.className === 'read-only' || analysis.className === 'trusted-write') {
+            return {
+                outcome: 'allow',
+                reason: analysis.reason,
+                source: 'runtime-policy',
+            };
+        }
+    }
+
+    if (toolName === 'bash') {
+        const analysis = analyzeBashCommand(String(args.command || args.cmd || ''), {
+            interactive,
+            runtimeMode,
+        });
+        if (analysis.className === 'deny') {
+            return {
+                outcome: 'deny',
+                reason: analysis.reason,
+                source: 'runtime-policy',
+            };
+        }
+        if (analysis.className === 'confirm') {
+            return {
+                outcome: interactive ? 'confirm' : 'deny',
+                reason: analysis.reason,
+                details: interactive ? buildGenericConfirmationDetails(tool, args, analysis.reason) : null,
+                source: 'runtime-policy',
+            };
+        }
+        if (analysis.className === 'read-only') {
+            return {
+                outcome: 'allow',
+                reason: analysis.reason,
+                source: 'runtime-policy',
+            };
+        }
+    }
 
     if (descriptor) {
         if (descriptor.visibility === 'internal') {

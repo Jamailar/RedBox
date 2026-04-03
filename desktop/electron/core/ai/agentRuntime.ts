@@ -12,63 +12,6 @@ import type {
   ThinkingBudget,
 } from './types';
 
-const MULTI_AGENT_TRIGGER_PARTS = [
-  '多角色',
-  '多智能体',
-  '多 agent',
-  '多agent',
-  'multiagent',
-  'multi-agent',
-  'subagent',
-  '子agent',
-  '分角色',
-  '协作执行',
-  '多人协作',
-];
-
-const END_TO_END_TRIGGER_PARTS = [
-  '从选题到发布',
-  '从0到1',
-  '一条龙',
-  '全流程',
-  '完整流程',
-  '整套',
-  '全案',
-  '全套',
-  '全部做完',
-];
-
-const BUNDLED_DELIVERABLE_PARTS = [
-  '标题',
-  '正文',
-  '文案',
-  '封面',
-  '配图',
-  '图片',
-  '发布',
-  '复盘',
-  '选题',
-];
-
-const LONG_RUNNING_TRIGGER_PARTS = [
-  '长期',
-  '持续执行',
-  '持续推进',
-  '自动化',
-  '定时',
-  '周期',
-  '每天',
-  '每周',
-  '30天',
-  '7天',
-  '后台',
-  '跟进',
-  '轮询',
-  '值守',
-];
-
-const DANGEROUS_ACTION_PARTS = ['删除', '覆盖', '批量', '清空', '重置'];
-
 const DEFAULT_INTENT_BY_MODE: Record<RuntimeMode, IntentRoute['intent']> = {
   redclaw: 'manuscript_creation',
   knowledge: 'knowledge_retrieval',
@@ -92,11 +35,6 @@ const DEFAULT_CAPABILITIES_BY_MODE: Record<RuntimeMode, string[]> = {
   'advisor-discussion': ['advisor-response', 'knowledge-retrieval'],
   'background-maintenance': ['task-graph', 'background-runner', 'artifact-save'],
 };
-
-const containsAny = (text: string, parts: string[]): boolean => parts.some((part) => text.includes(part));
-const countMatches = (text: string, parts: string[]): number => parts.reduce((count, part) => (
-  text.includes(part) ? count + 1 : count
-), 0);
 
 const normalizeIntentHint = (value: unknown): IntentName | null => {
   const normalized = String(value || '').trim() as IntentName;
@@ -144,35 +82,32 @@ const extractHints = (context: RuntimeContext) => {
     preferredRole: normalizeRoleHint(metadata.preferredRole),
     forceMultiAgent: Boolean(metadata.forceMultiAgent),
     forceLongRunningTask: Boolean(metadata.forceLongRunningTask),
+    requiresHumanApproval: Boolean(metadata.requiresHumanApproval),
     subagentRoles,
   };
 };
 
-const inferIntent = (runtimeMode: RuntimeMode, normalizedInput: string, hints: ReturnType<typeof extractHints>): IntentName => {
+const inferIntent = (runtimeMode: RuntimeMode, hints: ReturnType<typeof extractHints>): IntentName => {
   if (hints.forcedIntent) return hints.forcedIntent;
   if (runtimeMode === 'background-maintenance') return 'automation';
   if (runtimeMode === 'knowledge') return 'knowledge_retrieval';
   if (runtimeMode === 'chatroom' || runtimeMode === 'advisor-discussion') return 'discussion';
   if (runtimeMode !== 'redclaw') return DEFAULT_INTENT_BY_MODE[runtimeMode];
 
-  if (containsAny(normalizedInput, ['角色生成', '角色文档', 'persona', '人设', '角色设定'])) {
-    return 'advisor_persona';
-  }
-  if (containsAny(normalizedInput, ['封面'])) {
-    return 'cover_generation';
-  }
-  if (containsAny(normalizedInput, ['配图', '生图', '图片', '海报', '视觉方案'])) {
-    return 'image_creation';
-  }
-  if (containsAny(normalizedInput, ['自动化', '定时', '后台运行', '周期'])) {
-    return 'automation';
-  }
-  if (containsAny(normalizedInput, LONG_RUNNING_TRIGGER_PARTS)) {
+  const metadata = hints.metadata;
+  if (metadata.longCycleTaskId || metadata.longCycleRound || metadata.longCycleStep) {
     return 'long_running_task';
   }
-  if (containsAny(normalizedInput, ['知识库', '读取素材', '阅读素材', '调研', '研究', '检索'])) {
-    return 'knowledge_retrieval';
+  if (metadata.scheduledTaskId || metadata.automationId || metadata.runnerReason) {
+    return 'automation';
   }
+  if (metadata.attachmentType === 'wander-references') {
+    return 'manuscript_creation';
+  }
+  if (metadata.channelProvider === 'weixin' && metadata.weixinSecretaryMode === true) {
+    return 'direct_answer';
+  }
+
   return 'manuscript_creation';
 };
 
@@ -203,56 +138,45 @@ const resolveRecommendedRole = (
   return inferRoleForIntent(runtimeMode, intent);
 };
 
-const isBundledRedclawRequest = (normalizedInput: string): boolean => {
-  const bundledDeliverables = countMatches(normalizedInput, BUNDLED_DELIVERABLE_PARTS);
-  if (containsAny(normalizedInput, END_TO_END_TRIGGER_PARTS) && bundledDeliverables >= 2) {
-    return true;
-  }
-  if (bundledDeliverables >= 3 && containsAny(normalizedInput, ['同时', '一起', '都要', '打包'])) {
-    return true;
-  }
-  return false;
-};
-
 const shouldTriggerMultiAgent = (params: {
   runtimeMode: RuntimeMode;
-  normalizedInput: string;
   hints: ReturnType<typeof extractHints>;
 }): boolean => {
   if (params.hints.forceMultiAgent) return true;
   if (params.runtimeMode === 'chatroom') return true;
-  if (containsAny(params.normalizedInput, MULTI_AGENT_TRIGGER_PARTS)) return true;
-  if (params.runtimeMode === 'redclaw' && isBundledRedclawRequest(params.normalizedInput)) return true;
+  if (params.hints.subagentRoles.length > 0) return true;
   return false;
 };
 
 const shouldTriggerLongRunning = (params: {
   runtimeMode: RuntimeMode;
   intent: IntentName;
-  normalizedInput: string;
   hints: ReturnType<typeof extractHints>;
 }): boolean => {
   if (params.hints.forceLongRunningTask) return true;
   if (params.runtimeMode === 'background-maintenance') return true;
   if (params.intent === 'long_running_task' || params.intent === 'automation') return true;
-  return containsAny(params.normalizedInput, LONG_RUNNING_TRIGGER_PARTS);
+  if (params.hints.metadata.longCycleTaskId || params.hints.metadata.longCycleRound || params.hints.metadata.longCycleStep) {
+    return true;
+  }
+  if (params.hints.metadata.scheduledTaskId || params.hints.metadata.automationId || params.hints.metadata.runnerReason) {
+    return true;
+  }
+  return false;
 };
 
 const buildDirectRoute = (context: RuntimeContext): IntentRoute => {
-  const normalizedInput = String(context.userInput || '').toLowerCase();
   const runtimeMode = context.runtimeMode;
   const hints = extractHints(context);
-  const intent = inferIntent(runtimeMode, normalizedInput, hints);
+  const intent = inferIntent(runtimeMode, hints);
   const recommendedRole = resolveRecommendedRole(runtimeMode, intent, hints);
   const requiresMultiAgent = shouldTriggerMultiAgent({
     runtimeMode,
-    normalizedInput,
     hints,
   });
   const requiresLongRunningTask = shouldTriggerLongRunning({
     runtimeMode,
     intent,
-    normalizedInput,
     hints,
   });
 
@@ -265,7 +189,7 @@ const buildDirectRoute = (context: RuntimeContext): IntentRoute => {
     recommendedRole,
     requiresLongRunningTask,
     requiresMultiAgent,
-    requiresHumanApproval: containsAny(normalizedInput, DANGEROUS_ACTION_PARTS),
+    requiresHumanApproval: hints.requiresHumanApproval,
     confidence: 1,
     reasoning: `runtime-mode-default:${runtimeMode}; intent=${intent}; role=${recommendedRole}`,
     source: 'rule',
@@ -275,7 +199,7 @@ const buildDirectRoute = (context: RuntimeContext): IntentRoute => {
 const resolveThinkingBudget = (runtimeMode: RuntimeMode, route: IntentRoute): ThinkingBudget => {
   if (route.requiresLongRunningTask) return 'high';
   if (route.requiresMultiAgent) return 'medium';
-  if (runtimeMode === 'redclaw') return 'medium';
+  if (runtimeMode === 'redclaw') return 'low';
   if (runtimeMode === 'knowledge') return 'medium';
   if (runtimeMode === 'advisor-discussion') return 'low';
   return 'low';

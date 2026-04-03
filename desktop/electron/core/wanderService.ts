@@ -319,6 +319,37 @@ function normalizeWanderConnections(raw: unknown): number[] {
     return unique.length ? unique : [1];
 }
 
+function parseWanderJsonPayload(payload: string): Record<string, unknown> | null {
+    const trimmed = String(payload || '').trim();
+    if (!trimmed) return null;
+    const stripCodeFence = (text: string) => text
+        .replace(/^```json\s*/i, '')
+        .replace(/^```\s*/i, '')
+        .replace(/```$/i, '')
+        .trim();
+    const tryParse = (text: string) => {
+        try {
+            const parsed = JSON.parse(text) as unknown;
+            return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+                ? parsed as Record<string, unknown>
+                : null;
+        } catch {
+            return null;
+        }
+    };
+    const direct = tryParse(trimmed);
+    if (direct) return direct;
+    const noFence = tryParse(stripCodeFence(trimmed));
+    if (noFence) return noFence;
+    const normalized = stripCodeFence(trimmed);
+    const firstBrace = normalized.indexOf('{');
+    const lastBrace = normalized.lastIndexOf('}');
+    if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+        return tryParse(normalized.slice(firstBrace, lastBrace + 1));
+    }
+    return null;
+}
+
 function normalizeWanderOption(raw: any): { content_direction: string; topic: { title: string; connections: number[] } } {
     const topic = raw?.topic && typeof raw.topic === 'object' ? raw.topic : {};
     const title = String(topic?.title || raw?.title || '').trim() || '未命名选题';
@@ -567,11 +598,10 @@ export async function runWanderBrainstorm(options: WanderRunOptions = {}): Promi
 
     reportProgress?.('正在解析结果并写入历史...');
     let result: WanderBrainstormInternalResult;
-    try {
-        result = normalizeWanderResult(JSON.parse(rawResult), multiChoice);
-    } catch {
-        result = normalizeWanderResult({ content_direction: rawResult }, multiChoice);
-    }
+    const parsedPayload = parseWanderJsonPayload(rawResult);
+    result = parsedPayload
+        ? normalizeWanderResult(parsedPayload, multiChoice)
+        : normalizeWanderResult({ content_direction: rawResult }, multiChoice);
 
     let historyId: string | undefined;
     if (options.persistHistory !== false) {

@@ -986,9 +986,9 @@ export function RedClaw({ pendingMessage, onPendingMessageConsumed }: RedClawPro
                             welcomeSubtitle="围绕“目标-文案-配图-复盘”完整推进小红书创作任务"
                             contentLayout={sidebarCollapsed ? 'wide' : 'default'}
                             allowFileUpload={true}
-                            messageWorkflowPlacement="top"
-                            messageWorkflowVariant="default"
-                            messageWorkflowEmphasis="thoughts-first"
+                            messageWorkflowPlacement="bottom"
+                            messageWorkflowVariant="compact"
+                            messageWorkflowEmphasis="default"
                         />
                         {sidebarCollapsed && (
                             <button

@@ -195,7 +195,7 @@ interface ToolGuardState {
 interface ChatErrorPayload {
   message: string;
   raw?: string;
-  category?: 'auth' | 'quota' | 'rate_limit' | 'network' | 'timeout' | 'request' | 'unknown';
+  category?: 'auth' | 'quota' | 'rate_limit' | 'network' | 'timeout' | 'request' | 'validation' | 'execution' | 'unknown';
   statusCode?: number;
   errorCode?: string;
   hint?: string;
@@ -270,6 +270,15 @@ export class PiChatService {
   }
 
   private buildChatErrorPayload(rawError: unknown): ChatErrorPayload {
+    const explicit = (rawError && typeof rawError === 'object')
+      ? rawError as {
+        chatErrorMessage?: unknown;
+        chatErrorHint?: unknown;
+        chatErrorCategory?: ChatErrorPayload['category'];
+        chatErrorStatusCode?: unknown;
+        chatErrorCode?: unknown;
+      }
+      : null;
     const rawMessage = rawError instanceof Error
       ? (rawError.message || String(rawError))
       : String(rawError || 'Unknown error');
@@ -282,10 +291,14 @@ export class PiChatService {
     const errorCodeMatch = compactRaw.match(/\b(invalid_api_key|incorrect_api_key|insufficient_quota|quota_exceeded|rate_limit_exceeded|invalid_request_error|context_length_exceeded|max_tokens|model_not_found|authentication_error)\b/i);
     const errorCode = errorCodeMatch ? errorCodeMatch[1] : undefined;
 
-    let category: ChatErrorPayload['category'] = 'unknown';
-    let hint = '请检查 AI 源配置后重试。';
+    let category: ChatErrorPayload['category'] = explicit?.chatErrorCategory || 'unknown';
+    let hint = String(explicit?.chatErrorHint || '').trim() || '请检查 AI 源配置后重试。';
 
-    if (
+    if (category === 'validation') {
+      hint = hint || '当前任务在校验阶段未通过，请先修复评审指出的问题后再重试。';
+    } else if (category === 'execution') {
+      hint = hint || '当前任务在执行阶段失败，请检查素材读取、工具调用、文件路径或权限。';
+    } else if (
       statusCode === 401 ||
       statusCode === 403 ||
       lower.includes('invalid api key') ||
@@ -345,17 +358,20 @@ export class PiChatService {
 
     const statusLabel = statusCode ? `HTTP ${statusCode}` : '';
     const codeLabel = errorCode ? `${errorCode}` : '';
+    const explicitMessage = String(explicit?.chatErrorMessage || '').trim();
     const title = [statusLabel, codeLabel].filter(Boolean).join(' · ');
-    const message = title
-      ? `AI 请求失败（${title}）`
-      : 'AI 请求失败';
+    const message = explicitMessage || (
+      title
+        ? `AI 请求失败（${title}）`
+        : 'AI 请求失败'
+    );
 
     return {
       message,
       raw: compactRaw,
       category,
-      statusCode,
-      errorCode,
+      statusCode: Number.isFinite(Number(explicit?.chatErrorStatusCode)) ? Number(explicit?.chatErrorStatusCode) : statusCode,
+      errorCode: String(explicit?.chatErrorCode || '').trim() || errorCode,
       hint,
     };
   }
@@ -3006,6 +3022,10 @@ export class PiChatService {
         '- RedClaw 的默认起手式不再是直接建项目；先查看或创建工作项：`app_cli(command="work ready")`、`app_cli(command="work create --title ... --type redclaw-note")`。',
         '- 只有满足以下任一条件时，才把工作项升级成 RedClaw 项目：需要持续多轮跟进、需要配图包/复盘闭环、需要后台自动化、用户明确要求建项目。升级时用 `app_cli(command="work promote-redclaw --id ...")`。',
         '- 工作推进过程中，要持续更新工作项状态与关联：例如 `work update --id ... --status active`、`work link --id ... --file-path ... --project-id ...`。',
+        '- 默认优先单代理完成任务，不要因为任务比较正式就自动进入 planner / researcher / reviewer 流水线。',
+        '- 只有在用户明确要求多人协作，或任务同时具备多阶段强依赖、严格验收、长期跟进、高风险保存/发布等特征时，才升级成多 subagent。',
+        '- 一般性的单篇文案、单次改稿、一次性素材读取、简单保存，优先由当前代理直接完成。',
+        '- reviewer 不是默认必经步骤；只有在明确需要独立复核、严格审校、发布前验收时，才应单独拉 reviewer。',
         '- 当用户要求定时执行、周期巡检、长期跟进、每天/每周推进时，不要只回答计划；要用 `work schedule-add` 或 `work cycle-add` 创建自动化工作项，并为复杂任务配置 `subagentRoles`。',
         '- 对复杂长周期任务，主代理负责调度和汇报，实际执行优先交给子角色链路，例如 `planner -> researcher -> copywriter -> reviewer` 或 `planner -> ops-coordinator -> reviewer`。',
         '- 若当前任务已经绑定了 RedClaw 项目，产出文案后必须调用 `app_cli(command="redclaw save-copy ...")` 保存标题候选、正文、标签、封面文案、发布计划。',

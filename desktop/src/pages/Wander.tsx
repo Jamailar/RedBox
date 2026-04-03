@@ -88,6 +88,69 @@ export function Wander({ onNavigateToManuscript, onNavigateToRedClaw }: WanderPr
     return hasMore && !joined.endsWith('…') ? `${joined}…` : joined;
   };
 
+  function parseJsonPayload<T>(payload?: string | null): T | null {
+    if (!payload) return null;
+    const trimmed = payload.trim();
+    const stripCodeFence = (text: string) => text
+      .replace(/^```json\s*/i, '')
+      .replace(/^```\s*/i, '')
+      .replace(/```$/i, '')
+      .trim();
+    const tryParse = (text: string) => {
+      try {
+        return JSON.parse(text) as T;
+      } catch {
+        return null;
+      }
+    };
+    const direct = tryParse(trimmed);
+    if (direct) return direct;
+    const noFence = tryParse(stripCodeFence(trimmed));
+    if (noFence) return noFence;
+    const normalized = stripCodeFence(trimmed);
+    const firstBrace = normalized.indexOf('{');
+    const lastBrace = normalized.lastIndexOf('}');
+    if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+      return tryParse(normalized.slice(firstBrace, lastBrace + 1));
+    }
+    return null;
+  }
+
+  function repairWanderResult(result: WanderResult): WanderResult {
+    const embedded = parseJsonPayload<Partial<WanderResult>>(result.content_direction);
+    if (!embedded || typeof embedded !== 'object' || !embedded.topic) {
+      return result;
+    }
+    return {
+      content_direction: String(embedded.content_direction || result.content_direction || '').trim(),
+      thinking_process: Array.isArray(result.thinking_process) && result.thinking_process.length > 0
+        ? result.thinking_process
+        : (Array.isArray(embedded.thinking_process) ? embedded.thinking_process.map((item) => String(item || '').trim()).filter(Boolean) : []),
+      topic: {
+        title: String(embedded.topic?.title || result.topic?.title || '未命名选题').trim() || '未命名选题',
+        connections: Array.isArray(embedded.topic?.connections)
+          ? embedded.topic.connections.map((item) => Number(item)).filter((item) => Number.isFinite(item))
+          : (result.topic?.connections || []),
+      },
+      options: Array.isArray(result.options) && result.options.length > 0
+        ? result.options
+        : (Array.isArray(embedded.options)
+          ? embedded.options.map((option) => ({
+              content_direction: String(option?.content_direction || '').trim(),
+              topic: {
+                title: String(option?.topic?.title || '未命名选题').trim() || '未命名选题',
+                connections: Array.isArray(option?.topic?.connections)
+                  ? option.topic.connections.map((item) => Number(item)).filter((item) => Number.isFinite(item))
+                  : [],
+              },
+            }))
+          : undefined),
+      selected_index: Number.isFinite(Number(result.selected_index))
+        ? Math.max(0, Number(result.selected_index))
+        : (Number.isFinite(Number(embedded.selected_index)) ? Math.max(0, Number(embedded.selected_index)) : 0),
+    };
+  }
+
   const buildKnowledgeFolderReference = (item: WanderItem) => {
     const meta = (item.meta || {}) as Record<string, unknown>;
     if (meta.sourceType === 'document') {
@@ -220,7 +283,6 @@ export function Wander({ onNavigateToManuscript, onNavigateToRedClaw }: WanderPr
       displayContent: `基于漫步灵感开始创作：${parsedResult.topic.title}`,
       taskHints: {
         intent: 'manuscript_creation',
-        forceMultiAgent: true,
       },
       attachment: {
         type: 'wander-references',
@@ -241,7 +303,7 @@ export function Wander({ onNavigateToManuscript, onNavigateToRedClaw }: WanderPr
   const loadHistory = (record: WanderHistoryRecord) => {
     try {
       const parsedItems = JSON.parse(record.items) as WanderItem[];
-      const parsedRes = JSON.parse(record.result) as WanderResult;
+      const parsedRes = repairWanderResult(JSON.parse(record.result) as WanderResult);
       setItems(parsedItems);
       setParsedResult(parsedRes);
       setSelectedOptionIndex(
@@ -362,33 +424,6 @@ export function Wander({ onNavigateToManuscript, onNavigateToRedClaw }: WanderPr
     }
   };
 
-  const parseJsonPayload = <T,>(payload?: string | null): T | null => {
-    if (!payload) return null;
-    const trimmed = payload.trim();
-    const stripCodeFence = (text: string) => text
-      .replace(/^```json\s*/i, '')
-      .replace(/^```\s*/i, '')
-      .replace(/```$/i, '')
-      .trim();
-    const tryParse = (text: string) => {
-      try {
-        return JSON.parse(text) as T;
-      } catch {
-        return null;
-      }
-    };
-    const direct = tryParse(trimmed);
-    if (direct) return direct;
-    const noFence = tryParse(stripCodeFence(trimmed));
-    if (noFence) return noFence;
-    const firstBrace = trimmed.indexOf('{');
-    const lastBrace = trimmed.lastIndexOf('}');
-    if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
-      return tryParse(trimmed.slice(firstBrace, lastBrace + 1));
-    }
-    return null;
-  };
-
   const startWander = async () => {
     const requestId = `wander-ui-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     activeRequestIdRef.current = requestId;
@@ -421,9 +456,10 @@ export function Wander({ onNavigateToManuscript, onNavigateToRedClaw }: WanderPr
       } else {
         const parsed = parseJsonPayload<WanderResult>(response.result);
         if (parsed && parsed.topic) {
-          setParsedResult(parsed);
+          const repaired = repairWanderResult(parsed);
+          setParsedResult(repaired);
           setSelectedOptionIndex(
-            Number.isFinite(Number(parsed.selected_index)) ? Math.max(0, Number(parsed.selected_index)) : 0
+            Number.isFinite(Number(repaired.selected_index)) ? Math.max(0, Number(repaired.selected_index)) : 0
           );
           setLiveStatus(toStableTwoLineText('漫步完成'));
           if (response.historyId) {

@@ -174,12 +174,19 @@ function deriveChatErrorPresentation(payload: ChatErrorEventPayload | string | n
         ? 'rate_limit'
         : String(data.category || '').trim();
 
+  const isValidationError = category === 'validation';
+  const isExecutionError = category === 'execution';
+
   const hint = detectedInsufficientBalance
     ? '账号余额/额度不足。请充值、升级套餐或切换到有余额的 AI 源。'
     : detectedInvalidKey
       ? '请检查 API Key 是否正确、是否过期，以及该模型是否有调用权限。'
       : detectedRateLimit
         ? '请求频率过高。请稍后重试，或降低并发与调用频率。'
+        : isValidationError
+          ? String(data.hint || '').trim() || '当前结果未通过执行校验，请先修复素材读取、证据链或保存回执问题。'
+          : isExecutionError
+            ? String(data.hint || '').trim() || '执行阶段发生错误，请检查素材读取、工具调用、文件路径或权限。'
         : String(data.hint || '').trim() || '请检查 AI 源配置后重试。';
   const metaParts = [
     data.statusCode ? `HTTP ${data.statusCode}` : '',
@@ -193,10 +200,18 @@ function deriveChatErrorPresentation(payload: ChatErrorEventPayload | string | n
       ? 'AI API Key 无效或无权限（供应商返回）'
       : detectedRateLimit
         ? 'AI 请求被限流（供应商返回）'
+        : isValidationError
+          ? '执行校验未通过'
+          : isExecutionError
+            ? '任务执行失败'
         : title;
 
   const lines: string[] = [`❌ ${userFacingTitle}`];
-  lines.push('说明：这是 AI 源接口返回的错误，不是 App 崩溃。');
+  lines.push(
+    isValidationError || isExecutionError
+      ? '说明：这是任务执行阶段返回的错误，不是 AI 源鉴权或 App 崩溃。'
+      : '说明：这是 AI 源接口返回的错误，不是 App 崩溃。'
+  );
   if (hint) lines.push(`处理建议：${hint}`);
   if (metaParts.length > 0) lines.push(`标识：${metaParts.join(' · ')}`);
   if (detail) {
@@ -213,6 +228,10 @@ function deriveChatErrorPresentation(payload: ChatErrorEventPayload | string | n
       ? 'AI 源鉴权失败，请检查 API Key。'
       : detectedRateLimit
         ? 'AI 请求被限流，请稍后重试。'
+        : isValidationError
+          ? '执行校验未通过，请先修复 reviewer 指出的问题。'
+          : isExecutionError
+            ? '任务执行失败，请检查素材读取、工具调用和文件权限。'
         : `AI 请求失败：${userFacingTitle}`;
 
   return {
@@ -365,8 +384,8 @@ export function Chat({
   const centeredContent = contentLayout === 'center-2-3';
   const wideContent = contentLayout === 'wide';
   const contentWidthClass = 'w-full';
-  const contentMaxWidthClass = wideContent ? 'max-w-[1180px]' : 'max-w-[900px]';
-  const contentOuterPaddingClass = wideContent ? 'px-6 md:px-10 lg:px-14 xl:px-20 2xl:px-24' : 'px-6 md:px-8 lg:px-10 xl:px-12';
+  const contentMaxWidthClass = wideContent ? 'max-w-[920px]' : 'max-w-[780px]';
+  const contentOuterPaddingClass = wideContent ? 'px-2 md:px-3 lg:px-4 xl:px-5' : 'px-2 md:px-3 lg:px-4 xl:px-5';
   const emptySessionWidthClass = centeredContent
     ? 'w-2/3 mx-auto'
     : wideContent
@@ -616,7 +635,7 @@ export function Chat({
         content: '',
         tools: [],
         timeline: (
-          pendingMessage.taskHints?.forceMultiAgent || pendingMessage.attachment?.type === 'wander-references'
+          pendingMessage.taskHints?.forceMultiAgent
         ) ? buildPendingAssistantTimeline('任务已提交') : [],
         isStreaming: true
       };
@@ -1985,8 +2004,8 @@ export function Chat({
             )}
 
             {/* Messages */}
-            <div ref={messagesContainerRef} onScroll={handleMessagesScroll} className={clsx('flex-1 min-w-0 overflow-y-auto py-5 md:py-6', contentOuterPaddingClass)}>
-              <div className={clsx('mx-auto min-w-0 space-y-5 md:space-y-6', contentMaxWidthClass, contentWidthClass)}>
+            <div ref={messagesContainerRef} onScroll={handleMessagesScroll} className={clsx('flex-1 min-w-0 overflow-y-auto py-4 md:py-5', contentOuterPaddingClass)}>
+              <div className={clsx('mx-auto min-w-0 space-y-4 md:space-y-5', contentMaxWidthClass, contentWidthClass)}>
                 {messages.map((msg) => (
                   <ErrorBoundary key={msg.id} name={`MessageItem-${msg.id}`}>
                     <MessageItem
@@ -2004,8 +2023,8 @@ export function Chat({
             </div>
 
             {/* Input Area - Bottom Fixed */}
-            <div className={clsx('border-t border-border bg-surface-primary pb-5 pt-2 md:pb-6', contentOuterPaddingClass)}>
-              <div className={clsx('mx-auto space-y-4', contentMaxWidthClass, contentWidthClass)}>
+            <div className={clsx('border-t border-border bg-surface-primary pb-4 pt-2 md:pb-5', contentOuterPaddingClass)}>
+              <div className={clsx('mx-auto space-y-3.5', contentMaxWidthClass, contentWidthClass)}>
                 {errorNotice && (
                   <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">{errorNotice}</div>
                 )}
@@ -2027,7 +2046,7 @@ export function Chat({
                       <button type="button" onClick={() => setPendingAttachment(null)} className="ml-2 text-text-tertiary hover:text-text-primary"><FileX className="w-3.5 h-3.5" /></button>
                     </div>
                   )}
-                  <div className="group relative flex flex-col w-full bg-[#fdfcf9] border border-[#edebe4] rounded-[28px] p-2 transition-all duration-200 focus-within:shadow-lg focus-within:border-accent-primary/20">
+                  <div className="group relative flex flex-col w-full bg-[#fdfcf9] border border-[#edebe4] rounded-[24px] p-1.5 transition-all duration-200 focus-within:shadow-lg focus-within:border-accent-primary/20">
                     <textarea
                       ref={inputRef}
                       value={input}
@@ -2043,11 +2062,11 @@ export function Chat({
                         }
                       }}
                       placeholder="发送消息..."
-                      className="w-full bg-transparent px-4 py-3 text-[15px] text-text-primary placeholder:text-[#b4b2a8] focus:outline-none resize-none min-h-[80px] max-h-[300px] overflow-y-auto"
+                      className="w-full bg-transparent px-3.5 py-2.5 text-[14px] text-text-primary placeholder:text-[#b4b2a8] focus:outline-none resize-none min-h-[72px] max-h-[280px] overflow-y-auto"
                       disabled={isProcessing}
                       rows={1}
                     />
-                    <div className="flex items-center justify-between px-2 pb-1">
+                    <div className="flex items-center justify-between px-1.5 pb-0.5">
                       <div className="flex items-center gap-1">
                         <button type="button" onClick={() => void pickAttachment()} className="p-2 text-text-tertiary hover:text-text-secondary transition-colors" title="添加文件">
                           <Plus className="w-[18px] h-[18px]" />

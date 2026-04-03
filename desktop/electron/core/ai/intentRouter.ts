@@ -36,45 +36,6 @@ const ROLE_IDS: RoleId[] = [
   'ops-coordinator',
 ];
 
-const containsAny = (text: string, parts: string[]): boolean => parts.some((part) => text.includes(part));
-
-const deriveIntent = (normalized: string, contextType: string): IntentName => {
-  if (containsAny(normalized, ['角色生成', 'persona', '人设', '智囊团角色', '角色文档'])) {
-    return 'advisor_persona';
-  }
-  if (containsAny(normalized, ['稿件', '文案', '写一篇', '写篇', '开始创作', '标题包', '正文'])) {
-    return 'manuscript_creation';
-  }
-  if (containsAny(normalized, ['生成封面', '做封面', '封面图', '封面设计', '封面模板', 'cover generation', 'generate cover'])) {
-    return 'cover_generation';
-  }
-  if (containsAny(normalized, ['生成配图', '做配图', '生成图片', '做图', '生图', '海报', '插图', 'image generation', 'generate image'])) {
-    return 'image_creation';
-  }
-  if (containsAny(normalized, ['自动化', '定时', '提醒', '后台', '心跳', '轮询', 'schedule', 'runner'])) {
-    return 'automation';
-  }
-  if (containsAny(normalized, ['记忆', 'memory', '总结偏好', '长期偏好'])) {
-    return 'memory_maintenance';
-  }
-  if (containsAny(normalized, ['知识库', '检索', '查资料', '找资料', '研究', '分析素材'])) {
-    return 'knowledge_retrieval';
-  }
-  if (containsAny(normalized, ['讨论', '辩论', '群聊', '六顶思考帽'])) {
-    return 'discussion';
-  }
-  if (containsAny(normalized, ['长时间', '持续', '一直做', '长期推进', '多轮执行'])) {
-    return 'long_running_task';
-  }
-  if (containsAny(normalized, ['保存', '写入文件', '修改文件', '编辑文件', '打开文件'])) {
-    return 'file_operation';
-  }
-  if (contextType === 'redclaw' && normalized.length > 0) {
-    return 'manuscript_creation';
-  }
-  return 'direct_answer';
-};
-
 const recommendedRoleForIntent = (intent: IntentName): RoleId => {
   switch (intent) {
     case 'knowledge_retrieval':
@@ -96,26 +57,6 @@ const recommendedRoleForIntent = (intent: IntentName): RoleId => {
     default:
       return 'planner';
   }
-};
-
-const shouldEnableMultiAgentRule = (intent: IntentName, normalized: string): boolean => {
-  if (intent === 'advisor_persona') {
-    return true;
-  }
-
-  return containsAny(normalized, [
-    '多角色',
-    '多智能体',
-    '多 agent',
-    '多agent',
-    'multiagent',
-    'multi-agent',
-    'subagent',
-    '子agent',
-    '分角色',
-    '协作执行',
-    '多人协作',
-  ]);
 };
 
 const requiredCapabilitiesForIntent = (intent: IntentName): string[] => {
@@ -190,17 +131,71 @@ const parseJsonObject = (raw: string): Record<string, unknown> | null => {
   return null;
 };
 
+const inferStructuredIntent = (context: RuntimeContext): IntentName => {
+  const metadata = (context.metadata && typeof context.metadata === 'object')
+    ? context.metadata as Record<string, unknown>
+    : {};
+  const forcedIntent = normalizeIntentName(metadata.intent);
+  if (forcedIntent) return forcedIntent;
+  switch (context.runtimeMode) {
+    case 'background-maintenance':
+      return 'automation';
+    case 'knowledge':
+      return 'knowledge_retrieval';
+    case 'chatroom':
+    case 'advisor-discussion':
+      return 'discussion';
+    case 'redclaw':
+    default:
+      break;
+  }
+  if (metadata.longCycleTaskId || metadata.longCycleRound || metadata.longCycleStep) {
+    return 'long_running_task';
+  }
+  if (metadata.scheduledTaskId || metadata.automationId || metadata.runnerReason) {
+    return 'automation';
+  }
+  if (metadata.attachmentType === 'wander-references') {
+    return 'manuscript_creation';
+  }
+  if (metadata.channelProvider === 'weixin' && metadata.weixinSecretaryMode === true) {
+    return 'direct_answer';
+  }
+  return context.runtimeMode === 'redclaw' ? 'manuscript_creation' : 'direct_answer';
+};
+
+const shouldRequireMultiAgent = (context: RuntimeContext, intent: IntentName): boolean => {
+  const metadata = (context.metadata && typeof context.metadata === 'object')
+    ? context.metadata as Record<string, unknown>
+    : {};
+  if (Boolean(metadata.forceMultiAgent)) return true;
+  if (context.runtimeMode === 'chatroom') return true;
+  if (intent === 'advisor_persona') return true;
+  return Array.isArray(metadata.subagentRoles) && metadata.subagentRoles.length > 0;
+};
+
+const shouldRequireLongRunningTask = (context: RuntimeContext, intent: IntentName): boolean => {
+  const metadata = (context.metadata && typeof context.metadata === 'object')
+    ? context.metadata as Record<string, unknown>
+    : {};
+  if (Boolean(metadata.forceLongRunningTask)) return true;
+  if (context.runtimeMode === 'background-maintenance') return true;
+  if (intent === 'long_running_task' || intent === 'automation') return true;
+  if (metadata.longCycleTaskId || metadata.longCycleRound || metadata.longCycleStep) return true;
+  return Boolean(metadata.scheduledTaskId || metadata.automationId || metadata.runnerReason);
+};
+
 const buildFallbackRoute = (context: RuntimeContext): IntentRoute => {
   const input = String(context.userInput || '').trim();
-  const normalized = input.toLowerCase();
-  const contextType = String((context.metadata?.contextType as string) || '').trim().toLowerCase();
-  const intent = deriveIntent(normalized, contextType);
+  const metadata = (context.metadata && typeof context.metadata === 'object')
+    ? context.metadata as Record<string, unknown>
+    : {};
+  const contextType = String((metadata.contextType as string) || '').trim().toLowerCase();
+  const intent = inferStructuredIntent(context);
   const recommendedRole = recommendedRoleForIntent(intent);
-  const requiresLongRunningTask = intent === 'long_running_task'
-    || intent === 'automation'
-    || (intent === 'manuscript_creation' && containsAny(normalized, ['完整', '从头到尾', '整套', '规划到发布']));
-  const requiresMultiAgent = shouldEnableMultiAgentRule(intent, normalized);
-  const requiresHumanApproval = containsAny(normalized, ['删除', '覆盖', '批量', '清空', '重置']);
+  const requiresLongRunningTask = shouldRequireLongRunningTask(context, intent);
+  const requiresMultiAgent = shouldRequireMultiAgent(context, intent);
+  const requiresHumanApproval = Boolean(metadata.requiresHumanApproval);
 
   return {
     intent,
@@ -240,8 +235,12 @@ const validateLlmRoute = (parsed: Record<string, unknown>, fallback: IntentRoute
       ? normalizeStringList(parsed.required_capabilities)
       : requiredCapabilitiesForIntent(intent),
     recommendedRole,
-    requiresLongRunningTask: Boolean(parsed.requires_long_running_task),
-    requiresMultiAgent: Boolean(parsed.requires_multi_agent),
+    requiresLongRunningTask: parsed.requires_long_running_task === undefined
+      ? fallback.requiresLongRunningTask
+      : Boolean(parsed.requires_long_running_task),
+    requiresMultiAgent: parsed.requires_multi_agent === undefined
+      ? fallback.requiresMultiAgent
+      : Boolean(parsed.requires_multi_agent),
     requiresHumanApproval: parsed.requires_human_approval === undefined
       ? fallback.requiresHumanApproval
       : Boolean(parsed.requires_human_approval),

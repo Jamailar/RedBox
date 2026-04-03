@@ -3348,32 +3348,46 @@ ipcMain.on('chat:send-message', async (event, { sessionId, message, displayConte
 
   } catch (err: unknown) {
     console.error('ChatV2 Error:', err);
+    const explicit = (err && typeof err === 'object')
+      ? err as {
+        chatErrorMessage?: unknown;
+        chatErrorHint?: unknown;
+        chatErrorCategory?: unknown;
+        chatErrorStatusCode?: unknown;
+        chatErrorCode?: unknown;
+      }
+      : null;
     const raw = err instanceof Error ? (err.message || String(err)) : String(err || 'Unknown error occurred');
     const lower = raw.toLowerCase();
     const statusMatch = raw.match(/\b([1-5]\d{2})\b/);
     const statusCode = statusMatch ? Number(statusMatch[1]) : undefined;
     const codeMatch = raw.match(/\b(invalid_api_key|incorrect_api_key|insufficient_quota|quota_exceeded|rate_limit_exceeded|authentication_error)\b/i);
     const errorCode = codeMatch ? codeMatch[1] : undefined;
+    const explicitCategory = String(explicit?.chatErrorCategory || '').trim();
     const isInsufficientBalance =
       lower.includes('insufficient balance') ||
       lower.includes('insufficient_balance') ||
       lower.includes('insufficient_quota') ||
       /\b1008\b/.test(lower);
-    const message = isInsufficientBalance
+    const message = String(explicit?.chatErrorMessage || '').trim() || (
+      isInsufficientBalance
       ? 'AI 请求失败（余额不足）'
       : statusCode || errorCode
       ? `AI 请求失败（${[statusCode ? `HTTP ${statusCode}` : '', errorCode || ''].filter(Boolean).join(' · ')}）`
-      : 'AI 请求失败';
-    const hint = isInsufficientBalance
+      : 'AI 请求失败'
+    );
+    const hint = String(explicit?.chatErrorHint || '').trim() || (
+      isInsufficientBalance
       ? '账号余额/额度不足。请充值或切换到有余额的 AI 源。'
-      : '请检查 API Key、模型和 AI 源地址配置。';
+      : '请检查 API Key、模型和 AI 源地址配置。'
+    );
     sender.send('chat:error', {
       message,
       raw: raw.slice(0, 6000),
-      statusCode,
-      errorCode,
+      statusCode: Number.isFinite(Number(explicit?.chatErrorStatusCode)) ? Number(explicit?.chatErrorStatusCode) : statusCode,
+      errorCode: String(explicit?.chatErrorCode || '').trim() || errorCode,
       hint,
-      category: isInsufficientBalance ? 'quota' : undefined,
+      category: explicitCategory || (isInsufficientBalance ? 'quota' : undefined),
     });
   }
 });
@@ -6591,6 +6605,37 @@ const normalizeWanderConnections = (raw: unknown): number[] => {
   return unique.length ? unique : [1];
 };
 
+const parseWanderJsonPayload = (payload: string): Record<string, unknown> | null => {
+  const trimmed = String(payload || '').trim();
+  if (!trimmed) return null;
+  const stripCodeFence = (text: string) => text
+    .replace(/^```json\s*/i, '')
+    .replace(/^```\s*/i, '')
+    .replace(/```$/i, '')
+    .trim();
+  const tryParse = (text: string) => {
+    try {
+      const parsed = JSON.parse(text) as unknown;
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+        ? parsed as Record<string, unknown>
+        : null;
+    } catch {
+      return null;
+    }
+  };
+  const direct = tryParse(trimmed);
+  if (direct) return direct;
+  const noFence = tryParse(stripCodeFence(trimmed));
+  if (noFence) return noFence;
+  const normalized = stripCodeFence(trimmed);
+  const firstBrace = normalized.indexOf('{');
+  const lastBrace = normalized.lastIndexOf('}');
+  if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+    return tryParse(normalized.slice(firstBrace, lastBrace + 1));
+  }
+  return null;
+};
+
 const normalizeWanderOption = (raw: any): { content_direction: string; topic: { title: string; connections: number[] } } => {
   const topic = raw?.topic && typeof raw.topic === 'object' ? raw.topic : {};
   const title = String(topic?.title || raw?.title || '').trim() || '未命名选题';
@@ -6875,12 +6920,10 @@ ipcMain.handle('wander:brainstorm', async (event, items: any[], options?: { mult
 
     reportProgress('正在解析结果并写入历史...');
     // 解析 JSON 结果
-    let result: any;
-    try {
-      result = normalizeWanderResult(JSON.parse(content), multiChoice);
-    } catch {
-      result = normalizeWanderResult({ content_direction: content }, multiChoice);
-    }
+    const parsedPayload = parseWanderJsonPayload(content);
+    const result = parsedPayload
+      ? normalizeWanderResult(parsedPayload, multiChoice)
+      : normalizeWanderResult({ content_direction: content }, multiChoice);
 
     // 保存到历史记录
     const { saveWanderHistory } = await import('./db');

@@ -4,7 +4,7 @@ import ReactMarkdown, { Components, UrlTransform } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Copy, Check } from 'lucide-react';
 import { ProcessTimeline, ProcessItem } from './ProcessTimeline';
-import { ThinkingBubble, SkillActivatedBadge, ToolResultCard } from './ThinkingBubble';
+import { ThinkingBubble, SkillActivatedBadge } from './ThinkingBubble';
 import { TodoList, PlanStep } from './TodoList';
 import { resolveAssetUrl, isLocalAssetUrl } from '../utils/pathManager';
 import './chat-message.css';
@@ -61,7 +61,7 @@ function InlineCopyButton({ text, label = '复制' }: { text: string; label?: st
     <button
       type="button"
       onClick={() => void handleCopy()}
-      className="inline-flex items-center gap-1 rounded-md border border-border/70 bg-surface-primary/85 px-2 py-1 text-[11px] text-text-tertiary transition-colors hover:border-border hover:bg-surface-primary hover:text-text-primary"
+      className="inline-flex items-center gap-1 rounded-md border border-border/60 bg-surface-primary/92 px-1.5 py-0.5 text-[11px] text-text-tertiary shadow-sm transition-colors hover:border-border hover:bg-surface-primary hover:text-text-primary"
       title={label}
     >
       {copied ? <Check className="h-3.5 w-3.5 text-green-500" /> : <Copy className="h-3.5 w-3.5" />}
@@ -80,11 +80,11 @@ function CopyableCodeBlock({
   const text = extractNodeText(children).replace(/\n$/, '');
 
   return (
-    <div className="group my-3 w-full max-w-full overflow-hidden rounded-xl border border-border/80 bg-surface-secondary/70">
-      <div className="flex items-center justify-end border-b border-border/60 px-2 py-1.5">
-        <InlineCopyButton text={text} label="复制代码" />
+    <div className="group relative my-3 w-full max-w-full overflow-hidden rounded-lg border border-border/70 bg-surface-secondary/45">
+      <div className="absolute right-2 top-2 z-10 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
+        <InlineCopyButton text={text} label="复制" />
       </div>
-      <pre className="w-full max-w-full overflow-x-auto p-4">
+      <pre className="w-full max-w-full overflow-x-auto px-3 py-2.5 pr-14">
         <code className="font-mono text-sm" {...codeProps}>
           {children}
         </code>
@@ -268,27 +268,7 @@ export const MessageItem = memo(({
     : Boolean(msg.content || (msg.isStreaming && !msg.thinking));
   const showTimeline = !isUser && msg.timeline && msg.timeline.length > 0;
   const showLegacyWorkflow = !isUser && (!msg.timeline || msg.timeline.length === 0) && (msg.thinking || msg.tools.length > 0 || msg.activatedSkill);
-  const latestTimelineThought = !isUser
-    ? [...(msg.timeline || [])]
-        .reverse()
-        .find((item) => item.type === 'thought' && String(item.content || '').trim())
-    : undefined;
-  const timelineThoughtItems = !isUser
-    ? (msg.timeline || []).filter((item) => item.type === 'thought' && String(item.content || '').trim())
-    : [];
-  const thoughtBubbleContent = !isUser
-    ? (latestTimelineThought?.content || msg.thinking || '')
-    : '';
-  const showThoughtBubble = !isUser && Boolean(thoughtBubbleContent);
   const showWorkflowOnTop = workflowPlacement === 'top';
-  const shouldRenderThoughtStream =
-    !isUser &&
-    workflowEmphasis === 'thoughts-first' &&
-    workflowVariant === 'default' &&
-    timelineThoughtItems.length > 0;
-  const visibleThoughtItems = shouldRenderThoughtStream
-    ? timelineThoughtItems.slice(-4)
-    : [];
 
   useEffect(() => {
     if (!imageMenu.visible) return;
@@ -484,28 +464,6 @@ export const MessageItem = memo(({
         <TodoList steps={msg.plan} />
       )}
 
-      {/* AI 工作流可视化 (新版 Timeline) */}
-      {showWorkflowOnTop && shouldRenderThoughtStream && (
-        <div className="mb-3 w-full max-w-3xl space-y-2.5">
-          {visibleThoughtItems.map((item, index) => (
-            <ThinkingBubble
-              key={item.id}
-              content={String(item.content || '')}
-              isActive={Boolean(msg.isStreaming && item.status === 'running' && index === visibleThoughtItems.length - 1)}
-            />
-          ))}
-        </div>
-      )}
-
-      {showWorkflowOnTop && !shouldRenderThoughtStream && showThoughtBubble && (
-        <div className="mb-3 w-full max-w-3xl">
-          <ThinkingBubble
-            content={thoughtBubbleContent}
-            isActive={Boolean(msg.isStreaming && latestTimelineThought?.status === 'running')}
-          />
-        </div>
-      )}
-
       {showWorkflowOnTop && showTimeline && (
         <ProcessTimeline items={msg.timeline} isStreaming={!!msg.isStreaming} variant={workflowVariant} />
       )}
@@ -528,14 +486,8 @@ export const MessageItem = memo(({
 
           {/* Tool Calls */}
           {msg.tools.length > 0 && (
-            <div className="bg-surface-secondary/50 rounded-lg border border-border overflow-hidden">
-              <div className="px-3 py-2 bg-surface-secondary border-b border-border/50 flex items-center justify-between">
-                <div className="flex items-center text-xs text-text-tertiary font-medium">
-                  {/* ToolResultCard would be here in legacy mode, but simplifying for now */}
-                  Tool Calls ({msg.tools.length})
-                </div>
-              </div>
-              {/* Legacy tool list rendering omitted for brevity as we are migrating */}
+            <div className="rounded-lg border border-border/70 bg-surface-primary/60 px-3 py-2 text-xs text-text-tertiary">
+              查看工具调用 ({msg.tools.length})
             </div>
           )}
         </div>
@@ -627,27 +579,6 @@ export const MessageItem = memo(({
         <ProcessTimeline items={msg.timeline} isStreaming={!!msg.isStreaming} variant={workflowVariant} />
       )}
 
-      {!showWorkflowOnTop && shouldRenderThoughtStream && (
-        <div className="mt-3 w-full max-w-3xl space-y-2.5">
-          {visibleThoughtItems.map((item, index) => (
-            <ThinkingBubble
-              key={item.id}
-              content={String(item.content || '')}
-              isActive={Boolean(msg.isStreaming && item.status === 'running' && index === visibleThoughtItems.length - 1)}
-            />
-          ))}
-        </div>
-      )}
-
-      {!showWorkflowOnTop && !shouldRenderThoughtStream && showThoughtBubble && (
-        <div className="mt-3 w-full max-w-3xl">
-          <ThinkingBubble
-            content={thoughtBubbleContent}
-            isActive={Boolean(msg.isStreaming && latestTimelineThought?.status === 'running')}
-          />
-        </div>
-      )}
-
       {!showWorkflowOnTop && showLegacyWorkflow && (
         <div className="mt-3 w-full max-w-3xl space-y-3">
           {msg.thinking && (
@@ -660,12 +591,8 @@ export const MessageItem = memo(({
             />
           )}
           {msg.tools.length > 0 && (
-            <div className="bg-surface-secondary/50 rounded-lg border border-border overflow-hidden">
-              <div className="px-3 py-2 bg-surface-secondary border-b border-border/50 flex items-center justify-between">
-                <div className="flex items-center text-xs text-text-tertiary font-medium">
-                  Tool Calls ({msg.tools.length})
-                </div>
-              </div>
+            <div className="rounded-lg border border-border/70 bg-surface-primary/60 px-3 py-2 text-xs text-text-tertiary">
+              查看工具调用 ({msg.tools.length})
             </div>
           )}
         </div>

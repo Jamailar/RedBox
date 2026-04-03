@@ -359,7 +359,7 @@ function parseFeishuTextContent(content: unknown): string {
 
 function buildRelayPrompt(message: AssistantDaemonIngressMessage): string {
   if (message.provider === 'weixin') {
-    return buildWeixinRelayPrompt(message, resolveWeixinExecutionStrategy(message.text));
+    return buildWeixinRelayPrompt(message, resolveWeixinExecutionStrategy(message));
   }
   const lines = [
     '你现在是 RedConvert 的长期在线后台助理，正在通过外部消息渠道接收用户指令。',
@@ -501,34 +501,32 @@ function finalizeRelayResponse(message: AssistantDaemonIngressMessage, response:
   return sanitized || '已收到你的消息，但当前没有生成可发送的纯文本回复。请稍后再试。';
 }
 
-function shouldUseWeixinSubagents(text: string): boolean {
-  const normalized = String(text || '').trim().toLowerCase();
-  if (!normalized) return false;
-  if (normalized.length >= 80) return true;
-  return [
-    '帮我',
-    '请你',
-    '方案',
-    '计划',
-    '写一篇',
-    '做一个',
-    '分析',
-    '调研',
-    '整理',
-    '自动',
-    '持续',
-    '后台',
-    '长期',
-    '执行',
-    '一步一步',
-    '完整',
-    '详细',
-  ].some((part) => normalized.includes(part));
+function normalizeWeixinIntentHint(value: unknown): WeixinExecutionStrategy['forcedIntent'] | null {
+  const normalized = String(value || '').trim() as WeixinExecutionStrategy['forcedIntent'];
+  if (
+    normalized === 'direct_answer'
+    || normalized === 'knowledge_retrieval'
+    || normalized === 'manuscript_creation'
+    || normalized === 'image_creation'
+    || normalized === 'long_running_task'
+  ) {
+    return normalized;
+  }
+  return null;
 }
 
-function resolveWeixinExecutionStrategy(text: string): WeixinExecutionStrategy {
-  const normalized = String(text || '').trim().toLowerCase();
-  if (!normalized) {
+function resolveWeixinExecutionStrategy(message: AssistantDaemonIngressMessage): WeixinExecutionStrategy {
+  const metadata = (message.metadata && typeof message.metadata === 'object' && !Array.isArray(message.metadata))
+    ? message.metadata as Record<string, unknown>
+    : {};
+  const subagentRoles: NonNullable<WeixinExecutionStrategy['subagentRoles']> = Array.isArray(metadata.subagentRoles)
+    ? metadata.subagentRoles
+      .map((item) => String(item || '').trim())
+      .filter(Boolean) as NonNullable<WeixinExecutionStrategy['subagentRoles']>
+    : [];
+  const forcedIntent = normalizeWeixinIntentHint(metadata.intent) || 'direct_answer';
+  const forceMultiAgent = Boolean(metadata.forceMultiAgent) || subagentRoles.length > 0;
+  if (!String(message.text || '').trim()) {
     return {
       mode: 'simple',
       forcedIntent: 'direct_answer',
@@ -536,80 +534,20 @@ function resolveWeixinExecutionStrategy(text: string): WeixinExecutionStrategy {
       summary: 'empty',
     };
   }
-
-  const contentParts = ['小红书', '公众号', '标题', '正文', '文案', '脚本', '选题', '封面', '发布', '复盘', '口播'];
-  const imageParts = ['封面图', '海报', '配图', '图片', '视觉'];
-  const researchParts = ['调研', '研究', '分析', '检索', '查一下', '找资料', '总结', '拆解', '对比'];
-  const complexParts = [
-    '帮我',
-    '请你',
-    '方案',
-    '计划',
-    '完整',
-    '详细',
-    '整理',
-    '写一篇',
-    '做一个',
-    '执行',
-    '跟进',
-    '持续',
-    '长期',
-    '自动',
-    '一步一步',
-    '全流程',
-    '从0到1',
-  ];
-  const hasContentIntent = contentParts.some((part) => normalized.includes(part));
-  const hasImageIntent = imageParts.some((part) => normalized.includes(part));
-  const hasResearchIntent = researchParts.some((part) => normalized.includes(part));
-  const isComplex = shouldUseWeixinSubagents(normalized)
-    || complexParts.some((part) => normalized.includes(part))
-    || normalized.includes('\n')
-    || (hasContentIntent && normalized.length >= 12)
-    || (hasResearchIntent && normalized.length >= 16);
-
-  if (!isComplex) {
+  if (!forceMultiAgent) {
     return {
       mode: 'simple',
-      forcedIntent: 'direct_answer',
+      forcedIntent,
       forceMultiAgent: false,
-      summary: hasResearchIntent ? 'simple-research' : 'simple-direct-answer',
-    };
-  }
-
-  if (hasImageIntent) {
-    return {
-      mode: 'delegated',
-      forcedIntent: 'image_creation',
-      forceMultiAgent: true,
-      subagentRoles: ['planner', 'researcher', 'image-director', 'reviewer'],
-      summary: 'delegated-image',
-    };
-  }
-  if (hasContentIntent) {
-    return {
-      mode: 'delegated',
-      forcedIntent: 'manuscript_creation',
-      forceMultiAgent: true,
-      subagentRoles: ['planner', 'researcher', 'copywriter', 'reviewer'],
-      summary: 'delegated-content',
-    };
-  }
-  if (hasResearchIntent) {
-    return {
-      mode: 'delegated',
-      forcedIntent: 'knowledge_retrieval',
-      forceMultiAgent: true,
-      subagentRoles: ['planner', 'researcher', 'reviewer'],
-      summary: 'delegated-research',
+      summary: 'metadata-simple',
     };
   }
   return {
     mode: 'delegated',
-    forcedIntent: 'long_running_task',
+    forcedIntent,
     forceMultiAgent: true,
-    subagentRoles: ['planner', 'ops-coordinator', 'reviewer'],
-    summary: 'delegated-generic',
+    subagentRoles,
+    summary: 'metadata-delegated',
   };
 }
 
@@ -1510,7 +1448,7 @@ export class AssistantDaemonService extends EventEmitter {
 
     const contextId = `external:${queueKey}`;
     const weixinStrategy = message.provider === 'weixin'
-      ? resolveWeixinExecutionStrategy(message.text)
+      ? resolveWeixinExecutionStrategy(message)
       : null;
     const contextContent = [
       `provider=${message.provider}`,

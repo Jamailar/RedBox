@@ -79,6 +79,13 @@ type SubagentBatchResult = {
   output: SubagentOutput;
 };
 
+type CoordinatorChatErrorPayload = {
+  message: string;
+  raw: string;
+  hint: string;
+  category: 'execution' | 'validation';
+};
+
 type CoordinatorSourceContext = {
   sourceContext: string;
   attachmentType: string | null;
@@ -134,6 +141,29 @@ const inferArtifactType = (roleId: RoleId): string => {
       return 'artifact';
   }
 };
+
+const buildCoordinatorChatErrorPayload = (params: {
+  message: string;
+  raw: string;
+  hint: string;
+  category: 'execution' | 'validation';
+}): CoordinatorChatErrorPayload => ({
+  message: params.message,
+  raw: params.raw,
+  hint: params.hint,
+  category: params.category,
+});
+
+const buildCoordinatorError = (params: {
+  message: string;
+  raw: string;
+  hint: string;
+  category: 'execution' | 'validation';
+}): Error => Object.assign(new Error(params.raw), {
+  chatErrorMessage: params.message,
+  chatErrorHint: params.hint,
+  chatErrorCategory: params.category,
+});
 
 const normalizeBuiltinPack = (value: string): BuiltinToolPack => {
   if (value === 'redclaw' || value === 'knowledge' || value === 'chatroom' || value === 'diagnostics' || value === 'full') {
@@ -358,7 +388,12 @@ const forwardRuntimeEventToChat = (event: RuntimeEvent, emit?: (channel: string,
       emit('chat:thought-delta', { content: `上下文整理中（${event.strategy}）...` });
       break;
     case 'error':
-      emit('chat:error', { message: 'AI 请求失败', raw: event.message, hint: event.message });
+      emit('chat:error', buildCoordinatorChatErrorPayload({
+        message: '任务执行失败',
+        raw: event.message,
+        hint: '执行阶段发生错误，请检查素材读取、工具调用、文件路径或权限。',
+        category: 'execution',
+      }));
       break;
     default:
       break;
@@ -769,8 +804,18 @@ export class LongTaskCoordinator {
     if (execution.error) {
       runtime.failTask(task.id, execution.error, 'execute_tools');
       await backgroundRegistry.failTask(backgroundTaskId, execution.error);
-      options.emitChatEvent?.('chat:error', { message: 'AI 请求失败', raw: execution.error, hint: execution.error });
-      throw new Error(execution.error);
+      options.emitChatEvent?.('chat:error', buildCoordinatorChatErrorPayload({
+        message: '任务执行失败',
+        raw: execution.error,
+        hint: '执行阶段发生错误，请检查素材读取、工具调用、文件路径或权限。',
+        category: 'execution',
+      }));
+      throw buildCoordinatorError({
+        message: '任务执行失败',
+        raw: execution.error,
+        hint: '执行阶段发生错误，请检查素材读取、工具调用、文件路径或权限。',
+        category: 'execution',
+      });
     }
     runtime.completeNode(task.id, 'execute_tools', `responseLength=${execution.response.length}`);
     addChatMessage({
@@ -895,7 +940,12 @@ You are in a repair-only pass. The manuscript must be saved for real before you 
       if (!isReviewerApproved(reviewOutput)) {
         runtime.failTask(task.id, reviewOutput.summary || 'reviewer rejected execution', 'review');
         await backgroundRegistry.failTask(backgroundTaskId, reviewOutput.summary || 'reviewer rejected execution');
-        throw new Error(reviewOutput.summary || 'reviewer rejected execution');
+        throw buildCoordinatorError({
+          message: '执行校验未通过',
+          raw: reviewOutput.summary || 'reviewer rejected execution',
+          hint: '当前结果未通过独立评审，请先修复素材读取、证据链或保存回执问题后再重试。',
+          category: 'validation',
+        });
       }
       runtime.completeNode(task.id, 'review', reviewOutput.summary);
     }
@@ -904,7 +954,12 @@ You are in a repair-only pass. The manuscript must be saved for real before you 
       const saveError = 'coordinator execution missing successful manuscripts write tool result';
       runtime.failTask(task.id, saveError, 'save_artifact');
       await backgroundRegistry.failTask(backgroundTaskId, saveError);
-      throw new Error(saveError);
+      throw buildCoordinatorError({
+        message: '执行校验未通过',
+        raw: saveError,
+        hint: '稿件内容虽然可能已生成，但没有检测到真实保存成功的工具回执。',
+        category: 'validation',
+      });
     }
 
     if (task.graph.some((node) => node.type === 'save_artifact')) {

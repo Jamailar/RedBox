@@ -252,6 +252,27 @@ export interface AiModelDescriptor {
   capabilities: ModelCapability[];
 }
 
+export const normalizeAiModelDescriptors = (
+  models: Array<
+    | string
+    | null
+    | undefined
+    | { id?: string; capabilities?: Array<ModelCapability | string | null | undefined> }
+  >,
+): AiModelDescriptor[] => {
+  const merged = new Map<string, AiModelDescriptor>();
+  for (const raw of models) {
+    const descriptor = toAiModelDescriptor(raw as string | { id?: string; capabilities?: Array<ModelCapability | string | null | undefined> });
+    if (!descriptor) continue;
+    const previous = merged.get(descriptor.id);
+    merged.set(descriptor.id, {
+      id: descriptor.id,
+      capabilities: normalizeModelCapabilities([...(previous?.capabilities || []), ...descriptor.capabilities]),
+    });
+  }
+  return Array.from(merged.values());
+};
+
 export type AiProtocol = 'openai' | 'anthropic' | 'gemini';
 
 export const IMAGE_PROVIDER_TEMPLATE_OPTIONS = [
@@ -957,6 +978,7 @@ export const createAiSourceFromPreset = (presetId: string = DEFAULT_AI_PRESET_ID
     baseURL: preset?.baseURL || '',
     apiKey: '',
     models: [],
+    modelsMeta: [],
     model: '',
     protocol: preset?.protocol || 'openai',
   };
@@ -985,6 +1007,11 @@ export const parseAiSources = (raw: string | undefined): AiSourceConfig[] => {
         const baseURL = String(item.baseURL || item.baseUrl || '');
         const presetId = String(item.presetId || inferPresetIdByEndpoint(baseURL) || 'custom');
         const model = String(item.model || item.modelName || '');
+        const modelsMeta = normalizeAiModelDescriptors(
+          Array.isArray(item.modelsMeta)
+            ? item.modelsMeta.map((value) => (value && typeof value === 'object' ? value as { id?: string; capabilities?: Array<ModelCapability | string | null | undefined> } : null))
+            : [],
+        );
         const models = Array.isArray(item.models)
           ? normalizeSourceModels(item.models.map((value) => String(value || '')))
           : normalizeSourceModels([model]);
@@ -995,6 +1022,7 @@ export const parseAiSources = (raw: string | undefined): AiSourceConfig[] => {
           baseURL,
           apiKey: String(item.apiKey || item.key || ''),
           models,
+          modelsMeta,
           model,
           protocol: (String(item.protocol || findAiPresetById(presetId)?.protocol || 'openai') as AiProtocol),
         } satisfies AiSourceConfig;

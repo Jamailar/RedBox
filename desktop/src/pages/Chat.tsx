@@ -6,6 +6,7 @@ import { MessageItem, Message, ToolEvent, SkillEvent } from '../components/Messa
 import type { ProcessItem, ProcessItemType } from '../components/ProcessTimeline';
 import type { PendingChatMessage } from '../App';
 import { ErrorBoundary } from '../components/ErrorBoundary';
+import { inferModelCapabilities, normalizeModelCapabilities, type ModelCapability } from '../../shared/modelCapabilities';
 
 interface Session {
   id: string;
@@ -105,6 +106,19 @@ interface ChatSettingsSnapshot {
   model_name?: string;
   ai_sources_json?: string;
   default_ai_source_id?: string;
+}
+
+function modelSupportsChat(model: string | { id?: unknown; capabilities?: unknown }): boolean {
+  if (typeof model === 'string') {
+    return inferModelCapabilities(model).includes('chat');
+  }
+  const id = String(model?.id || '').trim();
+  if (!id) return false;
+  const capabilities = Array.isArray((model as { capabilities?: unknown[] }).capabilities)
+    ? normalizeModelCapabilities((model as { capabilities?: Array<ModelCapability | string | null | undefined> }).capabilities || [])
+    : [];
+  const resolved = capabilities.length ? capabilities : inferModelCapabilities(id);
+  return resolved.includes('chat');
 }
 
 const AUTO_SCROLL_BOTTOM_THRESHOLD_PX = 80;
@@ -270,12 +284,23 @@ function buildChatModelOptions(settings?: ChatSettingsSnapshot | null): ChatMode
         const sourceName = String(item.name || sourceId || 'AI 源').trim();
         const baseURL = String(item.baseURL || item.baseUrl || '').trim();
         const apiKey = String(item.apiKey || item.key || '').trim();
-        const candidates = Array.from(new Set(
-          [
-            ...((Array.isArray(item.models) ? item.models : []).map((value) => String(value || '').trim())),
-            String(item.model || item.modelName || '').trim(),
-          ].filter(Boolean),
-        ));
+        const explicitModelsMeta = Array.isArray(item.modelsMeta)
+          ? item.modelsMeta.filter((value): value is { id?: unknown; capabilities?: unknown } => Boolean(value && typeof value === 'object'))
+          : [];
+        const chatModelIdsFromMeta = explicitModelsMeta
+          .filter((value) => modelSupportsChat(value))
+          .map((value) => String(value.id || '').trim())
+          .filter(Boolean);
+        const fallbackCandidates = [
+          ...((Array.isArray(item.models) ? item.models : []).map((value) => String(value || '').trim())),
+          String(item.model || item.modelName || '').trim(),
+        ]
+          .filter(Boolean)
+          .filter((value) => modelSupportsChat(value));
+        const candidates = Array.from(new Set([
+          ...chatModelIdsFromMeta,
+          ...fallbackCandidates,
+        ]));
         for (const modelName of candidates) {
           options.push({
             key: `${sourceId || baseURL || sourceName}::${modelName}`,
@@ -293,7 +318,7 @@ function buildChatModelOptions(settings?: ChatSettingsSnapshot | null): ChatMode
   }
 
   const fallbackModel = String(settings.model_name || '').trim();
-  if (fallbackModel) {
+  if (fallbackModel && modelSupportsChat(fallbackModel)) {
     options.push({
       key: `fallback::${fallbackModel}`,
       modelName: fallbackModel,
@@ -499,6 +524,21 @@ export function Chat({
 
   useEffect(() => {
     void loadChatModelOptions();
+  }, [loadChatModelOptions]);
+
+  useEffect(() => {
+    const handleSettingsUpdated = () => {
+      void loadChatModelOptions();
+    };
+    const handleWindowFocus = () => {
+      void loadChatModelOptions();
+    };
+    window.ipcRenderer.on('settings:updated', handleSettingsUpdated);
+    window.addEventListener('focus', handleWindowFocus);
+    return () => {
+      window.ipcRenderer.off('settings:updated', handleSettingsUpdated);
+      window.removeEventListener('focus', handleWindowFocus);
+    };
   }, [loadChatModelOptions]);
 
   useEffect(() => {

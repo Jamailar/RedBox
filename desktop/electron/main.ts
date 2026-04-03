@@ -630,6 +630,16 @@ function createWindow() {
   }
 }
 
+function broadcastSettingsUpdated() {
+  for (const win of BrowserWindow.getAllWindows()) {
+    try {
+      win.webContents.send('settings:updated');
+    } catch {
+      // ignore disposed windows
+    }
+  }
+}
+
 app.on('window-all-closed', async () => {
   if (process.platform !== 'darwin') {
     try {
@@ -1282,6 +1292,7 @@ ipcMain.handle('db:save-settings', async (_, settings) => {
   const result = saveSettings(normalized);
   setDebugLoggingEnabled(Boolean(normalized.debug_log_enabled));
   await applyGlobalNetworkProxy((getSettings() || {}) as Record<string, unknown>);
+  broadcastSettingsUpdated();
   return result;
 })
 

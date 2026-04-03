@@ -13,6 +13,10 @@ export interface AiSourceConfig {
   baseURL: string;
   apiKey: string;
   models?: string[];
+  modelsMeta?: Array<{
+    id: string;
+    capabilities?: string[];
+  }>;
   model: string;
   protocol?: 'openai' | 'anthropic' | 'gemini';
 }

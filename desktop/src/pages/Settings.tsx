@@ -46,6 +46,7 @@ import {
   isImageTemplateRemoteModelFetchEnabled,
   isLikelyLocalEndpoint,
   normalizeImageModelFetchBaseURL,
+  normalizeAiModelDescriptors,
   normalizeSourceModels,
   parseAiSources,
   parseEnvText,
@@ -308,6 +309,7 @@ export function Settings() {
   const [aiSourceExpandState, setAiSourceExpandState] = useState<Record<string, boolean>>({});
   const [aiSourceModelExpandState, setAiSourceModelExpandState] = useState<Record<string, boolean>>({});
   const [sourceModelDrafts, setSourceModelDrafts] = useState<Record<string, string>>({});
+  const [sourceModelCapabilityDrafts, setSourceModelCapabilityDrafts] = useState<Record<string, ModelCapability>>({});
   const [addModelModalSourceId, setAddModelModalSourceId] = useState('');
   const [isCreateAiSourceModalOpen, setIsCreateAiSourceModalOpen] = useState(false);
   const [createAiSourceDraft, setCreateAiSourceDraft] = useState<CreateAiSourceDraft>(() => createAiSourceDraftFromPreset(DEFAULT_AI_PRESET_ID));
@@ -402,10 +404,19 @@ export function Settings() {
 
   const getSourceModelList = useCallback((source: AiSourceConfig) => {
     const merged = new Map<string, AiModelDescriptor>();
-    for (const raw of [...(source.models || []), source.model]) {
+    for (const raw of (source.modelsMeta || [])) {
       const descriptor = toAiModelDescriptor(raw);
       if (!descriptor) continue;
       merged.set(descriptor.id, descriptor);
+    }
+    for (const raw of [...(source.models || []), source.model]) {
+      const descriptor = toAiModelDescriptor(raw);
+      if (!descriptor) continue;
+      const previous = merged.get(descriptor.id);
+      merged.set(descriptor.id, {
+        id: descriptor.id,
+        capabilities: Array.from(new Set([...(previous?.capabilities || []), ...descriptor.capabilities])),
+      });
     }
     for (const remoteModel of (modelsBySource[source.id] || [])) {
       const descriptor = toAiModelDescriptor(remoteModel);
@@ -418,6 +429,14 @@ export function Settings() {
     }
     return Array.from(merged.values());
   }, [modelsBySource]);
+
+  const getAddedSourceModelList = useCallback((source: AiSourceConfig) => {
+    return normalizeAiModelDescriptors([
+      ...(source.modelsMeta || []),
+      ...(source.models || []).map((id) => ({ id })),
+      source.model ? { id: source.model } : null,
+    ]);
+  }, []);
 
   const getAiSourceById = useCallback((sourceId: string): AiSourceConfig | null => {
     const normalizedSourceId = String(sourceId || '').trim();
@@ -619,6 +638,9 @@ export function Settings() {
     : '';
 
   const addModelModalDraftTrimmed = addModelModalDraft.trim();
+  const addModelModalCapability = addModelModalSource
+    ? (sourceModelCapabilityDrafts[addModelModalSource.id] || 'chat')
+    : 'chat';
 
   const groupedAiPresets = useMemo<AiPresetGroup[]>(() => {
     const codingPlan = AI_SOURCE_PRESETS.filter((preset) => preset.group === 'coding-plan');
@@ -975,6 +997,7 @@ export function Settings() {
       baseURL: String(createAiSourceDraft.baseURL || '').trim(),
       apiKey: String(createAiSourceDraft.apiKey || '').trim(),
       models: [],
+      modelsMeta: [],
       model: '',
       protocol: createAiSourceDraft.protocol || preset?.protocol || 'openai',
     };
@@ -1053,6 +1076,11 @@ export function Settings() {
       ...source,
       model: normalizedModel,
       models: normalizeSourceModels([...(source.models || []), normalizedModel]),
+      modelsMeta: normalizeAiModelDescriptors([
+        ...(source.modelsMeta || []),
+        ...((source.models || []).map((id) => ({ id }))),
+        { id: normalizedModel, capabilities: (getSourceModelList(source).find((item) => item.id === normalizedModel)?.capabilities || ['chat']) },
+      ]),
     }));
   };
 
@@ -1061,10 +1089,12 @@ export function Settings() {
     if (!normalizedModel) return;
     updateAiSource(sourceId, (source) => {
       const nextModels = normalizeSourceModels((source.models || []).filter((item) => item !== normalizedModel));
+      const nextModelsMeta = normalizeAiModelDescriptors((source.modelsMeta || []).filter((item) => String(item?.id || '').trim() !== normalizedModel));
       const fallbackModel = source.model === normalizedModel ? (nextModels[0] || '') : source.model;
       return {
         ...source,
         models: nextModels,
+        modelsMeta: nextModelsMeta,
         model: fallbackModel,
       };
     });
@@ -1073,15 +1103,22 @@ export function Settings() {
   const handleAddSourceModel = (sourceId: string) => {
     const draft = String(sourceModelDrafts[sourceId] || '').trim();
     if (!draft) return;
+    const selectedCapability = sourceModelCapabilityDrafts[sourceId] || 'chat';
     updateAiSource(sourceId, (source) => {
       const nextModels = normalizeSourceModels([...(source.models || []), draft]);
       return {
         ...source,
         models: nextModels,
+        modelsMeta: normalizeAiModelDescriptors([
+          ...(source.modelsMeta || []),
+          ...nextModels.map((id) => ({ id })),
+          { id: draft, capabilities: [selectedCapability] },
+        ]),
         model: source.model || draft,
       };
     });
     setSourceModelDrafts((prev) => ({ ...prev, [sourceId]: '' }));
+    setSourceModelCapabilityDrafts((prev) => ({ ...prev, [sourceId]: 'chat' }));
     setAddModelModalSourceId('');
   };
 
@@ -1092,6 +1129,10 @@ export function Settings() {
   const openAddModelModal = (source: AiSourceConfig) => {
     setAddModelModalSourceId(source.id);
     setActiveAiSourceId(source.id);
+    setSourceModelCapabilityDrafts((prev) => ({
+      ...prev,
+      [source.id]: prev[source.id] || 'chat',
+    }));
     if (!(modelsBySource[source.id] || []).length) {
       void fetchModelsForSource(source, { manual: true });
     }
@@ -1155,29 +1196,42 @@ export function Settings() {
           .map((item) => [item.id, item]),
       ).values());
       setModelsBySource((prev) => ({ ...prev, [source.id]: deduped }));
-      updateAiSource(source.id, (prev) => {
-        const fetchedIds = deduped.map((item) => item.id);
-        const mergedModels = normalizeSourceModels([
-          ...(prev.models || []),
-          ...fetchedIds,
-          prev.model,
-        ]);
-        const nextModel = String(prev.model || '').trim() || mergedModels[0] || '';
-        if (
-          nextModel === String(prev.model || '').trim()
-          && mergedModels.join('\n') === normalizeSourceModels(prev.models || []).join('\n')
-        ) {
-          return prev;
-        }
-        return {
-          ...prev,
-          models: mergedModels,
-          model: nextModel,
-        };
-      });
+      if (isOfficialManagedSource(source)) {
+        updateAiSource(source.id, (prev) => {
+          const fetchedIds = deduped.map((item) => item.id);
+          const mergedModels = normalizeSourceModels([
+            ...(prev.models || []),
+            ...fetchedIds,
+            prev.model,
+          ]);
+          const mergedMeta = normalizeAiModelDescriptors([
+            ...(prev.modelsMeta || []),
+            ...deduped,
+            ...mergedModels.map((id) => ({ id })),
+          ]);
+          const nextModel = String(prev.model || '').trim() || mergedModels[0] || '';
+          if (
+            nextModel === String(prev.model || '').trim()
+            && mergedModels.join('\n') === normalizeSourceModels(prev.models || []).join('\n')
+            && JSON.stringify(mergedMeta) === JSON.stringify(normalizeAiModelDescriptors(prev.modelsMeta || []))
+          ) {
+            return prev;
+          }
+          return {
+            ...prev,
+            models: mergedModels,
+            modelsMeta: mergedMeta,
+            model: nextModel,
+          };
+        });
+      }
 
       setTestStatus('success');
-      setTestMsg(`模型列表已更新（${deduped.length} 个）`);
+      setTestMsg(
+        isOfficialManagedSource(source)
+          ? `模型列表已更新（${deduped.length} 个）`
+          : `候选模型已更新（${deduped.length} 个），请在“添加模型”中手动加入需要的模型`
+      );
     } catch (e: unknown) {
       if (requestId !== fetchModelsRequestRef.current) return;
       setModelsBySource((prev) => ({ ...prev, [source.id]: [] }));
@@ -1189,7 +1243,7 @@ export function Settings() {
         setIsTesting(false);
       }
     }
-  }, [activeAiSourceId, isLocalAiSource, updateAiSource]);
+  }, [activeAiSourceId, isLocalAiSource, isOfficialManagedSource, updateAiSource]);
 
   useEffect(() => {
     if (!activeAiSource) return;
@@ -1924,6 +1978,7 @@ export function Settings() {
             baseURL: settings.api_endpoint || '',
             apiKey: settings.api_key || '',
             models: normalizeSourceModels([settings.model_name || '']),
+            modelsMeta: normalizeAiModelDescriptors([settings.model_name || '']),
             model: settings.model_name || '',
             protocol: findAiPresetById(inferredPresetId)?.protocol || 'openai',
           }];
@@ -2349,12 +2404,22 @@ export function Settings() {
         baseURL: source.baseURL.trim(),
         apiKey: source.apiKey.trim(),
         models: normalizeSourceModels([...(source.models || []), source.model]),
+        modelsMeta: normalizeAiModelDescriptors([
+          ...(source.modelsMeta || []),
+          ...(source.models || []).map((id) => ({ id })),
+          source.model ? { id: source.model } : null,
+        ]),
         model: String(source.model || '').trim(),
         protocol: source.protocol || findAiPresetById(source.presetId)?.protocol || 'openai',
       })).map((source) => ({
         ...source,
         model: source.model || source.models?.[0] || '',
         models: normalizeSourceModels([...(source.models || []), source.model]),
+        modelsMeta: normalizeAiModelDescriptors([
+          ...(source.modelsMeta || []),
+          ...(source.models || []).map((id) => ({ id })),
+          source.model ? { id: source.model } : null,
+        ]),
       }));
 
       const resolvedDefaultSourceId = defaultAiSourceId;
@@ -2709,7 +2774,7 @@ export function Settings() {
                         const isExpanded = aiSourceExpandState[source.id] ?? false;
                         const isOfficialSource = isOfficialManagedSource(source);
                         const isModelListExpanded = aiSourceModelExpandState[source.id] ?? false;
-                        const sourceModels = getSourceModelList(source);
+                        const sourceModels = getAddedSourceModelList(source);
                         const localGuide = getLocalGuideForSource(source);
                         const allowEmptyKey = isLocalAiSource(source);
 
@@ -2737,8 +2802,8 @@ export function Settings() {
                                 </div>
                                 <p className="text-[11px] text-text-tertiary mt-0.5 truncate">
                                   {isOfficialSource
-                                    ? `已托管登录态 · 默认模型：${source.model || '(未设置)'} · ${sourceModels.length} 个模型`
-                                    : `${preset?.label || 'Custom'} · 默认模型：${source.model || '(未设置)'} · ${sourceModels.length} 个模型`}
+                                    ? `已托管登录态 · 默认模型：${source.model || '(未设置)'} · 已添加 ${sourceModels.length} 个模型`
+                                    : `${preset?.label || 'Custom'} · 默认模型：${source.model || '(未设置)'} · 已添加 ${sourceModels.length} 个模型`}
                                 </p>
                               </div>
                               <button
@@ -2858,7 +2923,7 @@ export function Settings() {
                                       className="flex items-center gap-2 text-xs font-medium text-text-primary"
                                     >
                                       <ChevronDown className={clsx('w-3.5 h-3.5 transition-transform', !isModelListExpanded && '-rotate-90')} />
-                                      模型列表
+                                      已添加模型
                                     </button>
                                     <div className="flex items-center gap-2">
                                       <button
@@ -2927,7 +2992,7 @@ export function Settings() {
                                       </div>
                                     ) : (
                                       <div className="text-[11px] text-text-tertiary rounded border border-dashed border-border px-2.5 py-2">
-                                        暂无模型，请先拉取或手动添加。
+                                        暂无已添加模型，请先点击“添加模型”。
                                       </div>
                                     )
                                   )}
@@ -3517,7 +3582,7 @@ export function Settings() {
                   <div className="text-[12px] text-text-tertiary">
                     仅展示候选，不会自动加入常用列表；点击确认后才会加入当前模型源。
                   </div>
-                  <div className="flex items-center gap-2">
+                  <div className="grid grid-cols-1 md:grid-cols-[minmax(0,1fr),160px,auto] gap-2">
                     <input
                       type="text"
                       list={`ai-source-model-options-${addModelModalSource.id}`}
@@ -3532,6 +3597,21 @@ export function Settings() {
                         <option key={item.id} value={item.id} />
                       ))}
                     </datalist>
+                    <select
+                      value={addModelModalCapability}
+                      onChange={(e) => setSourceModelCapabilityDrafts((prev) => ({
+                        ...prev,
+                        [addModelModalSource.id]: e.target.value as ModelCapability,
+                      }))}
+                      className="bg-surface-secondary/30 rounded border border-border px-3 py-2 text-sm focus:outline-none focus:border-accent-primary transition-colors"
+                    >
+                      <option value="chat">语言模型</option>
+                      <option value="transcription">转录模型</option>
+                      <option value="audio">音频生成</option>
+                      <option value="image">图片生成</option>
+                      <option value="video">视频生成</option>
+                      <option value="embedding">向量模型</option>
+                    </select>
                     <button
                       type="button"
                       onClick={() => {
@@ -3551,7 +3631,13 @@ export function Settings() {
                           <button
                             key={item.id}
                             type="button"
-                            onClick={() => setSourceModelDrafts((prev) => ({ ...prev, [addModelModalSource.id]: item.id }))}
+                            onClick={() => {
+                              setSourceModelDrafts((prev) => ({ ...prev, [addModelModalSource.id]: item.id }));
+                              setSourceModelCapabilityDrafts((prev) => ({
+                                ...prev,
+                                [addModelModalSource.id]: item.capabilities[0] || 'chat',
+                              }));
+                            }}
                             className="px-2 py-1 text-[11px] rounded border border-border hover:bg-surface-secondary transition-colors flex items-center gap-1.5"
                           >
                             <span>{item.id}</span>

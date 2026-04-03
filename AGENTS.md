@@ -29,3 +29,12 @@
 ## Security & Configuration Tips
 - API keys and model settings are user-configured in the app settings; do not hardcode secrets.
 - For new IPC or file system features, validate inputs and keep main-process changes in `desktop/electron/`.
+
+## AI System Design Rule
+- This is an AI system. During AI interaction and orchestration flows, avoid hardcoded text/keyword heuristics for user-intent judgment whenever possible.
+- Prefer this order of responsibility:
+  - skills and system prompts define capability boundaries and decision principles
+  - structured metadata / explicit mode flags carry routing intent
+  - tool/runtime layers only enforce input validation and safety constraints
+- If a behavior must be constrained, prefer structured rules, typed state, and tool contracts over brittle string matching against user messages.
+- Hardcoded message-text checks are a last resort only, and any exception should be narrow, explicit, and easy to remove later.

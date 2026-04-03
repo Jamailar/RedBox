@@ -44,7 +44,9 @@ interface ChatProps {
   fixedSessionContextIndicatorMode?: 'top' | 'corner-ring' | 'none';
   welcomeTitle?: string;
   welcomeSubtitle?: string;
+  welcomeIconSrc?: string;
   contentLayout?: 'default' | 'center-2-3' | 'wide';
+  contentWidthPreset?: 'default' | 'narrow';
   allowFileUpload?: boolean;
   messageWorkflowPlacement?: 'top' | 'bottom';
   messageWorkflowVariant?: 'default' | 'compact';
@@ -360,7 +362,9 @@ export function Chat({
   fixedSessionContextIndicatorMode = 'top',
   welcomeTitle = '有什么可以帮您？',
   welcomeSubtitle = '我可以帮您阅读和编辑稿件、分析内容、提供创作建议',
+  welcomeIconSrc,
   contentLayout = 'default',
+  contentWidthPreset = 'default',
   allowFileUpload = true,
   messageWorkflowPlacement = 'bottom',
   messageWorkflowVariant = 'compact',
@@ -413,8 +417,15 @@ export function Chat({
   const shouldAutoScrollRef = useRef(true);
   const centeredContent = contentLayout === 'center-2-3';
   const wideContent = contentLayout === 'wide';
+  const narrowContent = contentWidthPreset === 'narrow';
   const contentWidthClass = 'w-full';
-  const contentMaxWidthClass = wideContent ? 'max-w-[920px]' : 'max-w-[780px]';
+  const contentMaxWidthClass = narrowContent
+    ? wideContent
+      ? 'max-w-[760px]'
+      : 'max-w-[700px]'
+    : wideContent
+      ? 'max-w-[920px]'
+      : 'max-w-[780px]';
   const contentOuterPaddingClass = wideContent ? 'px-2 md:px-3 lg:px-4 xl:px-5' : 'px-2 md:px-3 lg:px-4 xl:px-5';
   const emptySessionWidthClass = centeredContent
     ? 'w-2/3 mx-auto'
@@ -1731,7 +1742,7 @@ export function Chat({
   const isCompactWorkflowMode = Boolean(fixedSessionId && fixedSessionContextIndicatorMode === 'corner-ring');
 
   return (
-    <div className={clsx('flex h-full min-w-0', wideContent && 'chat-layout-wide')}>
+    <div className={clsx('flex h-full min-w-0', wideContent && 'chat-layout-wide', narrowContent && 'chat-layout-narrow')}>
       {/* Sidebar - Session List (可折叠) - Only show if not fixed session */}
       {!fixedSessionId && (
         <div className={clsx(
@@ -1887,15 +1898,25 @@ export function Chat({
             <div className={clsx('text-center space-y-6 w-full max-w-2xl mx-auto', emptySessionWidthClass)}>
               {/* Logo/Icon */}
               <div className="flex justify-center">
-                <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-accent-primary to-purple-600 flex items-center justify-center shadow-lg">
-                  <Sparkles className="w-8 h-8 text-white" />
-                </div>
+                {welcomeIconSrc ? (
+                  <img
+                    src={welcomeIconSrc}
+                    alt={welcomeTitle}
+                    className="w-24 h-24 object-contain"
+                  />
+                ) : (
+                  <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-accent-primary to-purple-600 flex items-center justify-center shadow-lg">
+                    <Sparkles className="w-8 h-8 text-white" />
+                  </div>
+                )}
               </div>
 
               {/* 欢迎文字 */}
               <div className="space-y-2">
                 <h1 className="text-2xl font-semibold text-text-primary">{welcomeTitle}</h1>
-                <p className="text-sm text-text-tertiary">{welcomeSubtitle}</p>
+                {welcomeSubtitle ? (
+                  <p className="text-sm text-text-tertiary">{welcomeSubtitle}</p>
+                ) : null}
               </div>
 
               {showWelcomeShortcuts && welcomeShortcuts.length > 0 && (
@@ -2068,7 +2089,7 @@ export function Chat({
             </div>
 
             {/* Input Area - Bottom Fixed */}
-            <div className={clsx('border-t border-border bg-surface-primary pb-4 pt-2 md:pb-5', contentOuterPaddingClass)}>
+            <div className={clsx('bg-surface-primary pb-4 pt-2 md:pb-5', contentOuterPaddingClass)}>
               <div className={clsx('mx-auto space-y-3.5', contentMaxWidthClass, contentWidthClass)}>
                 {errorNotice && (
                   <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">{errorNotice}</div>

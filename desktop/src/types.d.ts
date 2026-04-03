@@ -272,11 +272,15 @@ declare global {
     tags: string[];
     attributes: SubjectAttribute[];
     imagePaths: string[];
+    voicePath?: string;
+    voiceScript?: string;
     createdAt: string;
     updatedAt: string;
     absoluteImagePaths?: string[];
     previewUrls?: string[];
     primaryPreviewUrl?: string;
+    absoluteVoicePath?: string;
+    voicePreviewUrl?: string;
   }
 
   interface Window {

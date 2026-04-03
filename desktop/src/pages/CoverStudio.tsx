@@ -842,18 +842,14 @@ export function CoverStudio({ isActive = false }: CoverStudioProps) {
                                                         [item.key]: !prev[item.key],
                                                     }));
                                                 }}
-                                                className={clsx(
-                                                    'relative inline-flex h-6 w-11 items-center rounded-full border transition-colors duration-200 ease-out',
-                                                    promptSwitches[item.key]
-                                                        ? 'bg-[#34C759] border-[#34C759]'
-                                                        : 'bg-[#D1D1D6] border-[#D1D1D6]'
-                                                )}
+                                                className="ui-switch-track h-6 w-11"
+                                                data-state={promptSwitches[item.key] ? 'on' : 'off'}
                                                 aria-label={item.label}
                                                 aria-pressed={Boolean(promptSwitches[item.key])}
                                             >
                                                 <span
                                                     className={clsx(
-                                                        'absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-white shadow-[0_1px_3px_rgba(0,0,0,0.28)] transition-transform duration-200 ease-out',
+                                                        'ui-switch-thumb left-0.5 top-0.5 h-5 w-5',
                                                         promptSwitches[item.key] ? 'translate-x-5' : 'translate-x-0'
                                                     )}
                                                 />

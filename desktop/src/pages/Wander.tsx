@@ -536,15 +536,13 @@ export function Wander({ onNavigateToManuscript, onNavigateToRedClaw }: WanderPr
               type="button"
               onClick={() => void handleToggleMultiChoice()}
               disabled={isSavingMode || loading}
-              className={clsx(
-                'relative w-11 h-6 rounded-full transition-colors shrink-0 disabled:opacity-50',
-                multiChoiceEnabled ? 'bg-accent-primary' : 'bg-border'
-              )}
+              className="ui-switch-track w-11 h-6 shrink-0 disabled:opacity-50"
+              data-state={multiChoiceEnabled ? 'on' : 'off'}
               title={multiChoiceEnabled ? '已开启：一次生成 3 个方向' : '已关闭：一次生成 1 个方向'}
             >
               <div
                 className={clsx(
-                  'absolute top-1 w-4 h-4 bg-white rounded-full shadow transition-transform',
+                  'ui-switch-thumb top-1 w-4 h-4',
                   multiChoiceEnabled ? 'translate-x-6' : 'translate-x-1'
                 )}
               />

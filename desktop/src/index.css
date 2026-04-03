@@ -8,18 +8,18 @@
   font-weight: 400;
 
   /* Light theme semantic color tokens (space-separated rgb). */
-  --color-background: 247 248 250;
+  --color-background: 251 250 247;
   --color-surface-primary: 255 255 255;
-  --color-surface-secondary: 242 243 245;
+  --color-surface-secondary: 247 243 236;
   --color-surface-elevated: 255 255 255;
-  --color-border: 229 230 235;
-  --color-divider: 238 240 243;
-  --color-text-primary: 29 33 41;
-  --color-text-secondary: 78 89 105;
-  --color-text-tertiary: 134 144 156;
-  --color-accent-primary: 22 93 255;
-  --color-accent-hover: 64 128 255;
-  --color-accent-muted: 230 237 255;
+  --color-border: 231 224 212;
+  --color-divider: 239 232 222;
+  --color-text-primary: 25 25 25;
+  --color-text-secondary: 93 86 75;
+  --color-text-tertiary: 141 134 123;
+  --color-accent-primary: 162 120 75;
+  --color-accent-hover: 137 101 63;
+  --color-accent-muted: 246 237 224;
   --color-status-success: 0 180 42;
   --color-status-warning: 255 125 0;
   --color-status-error: 245 63 63;
@@ -28,8 +28,8 @@
   --ui-radius-sm: 8px;
   --ui-radius-md: 12px;
   --ui-radius-lg: 16px;
-  --ui-shadow-1: 0 8px 24px rgba(15, 23, 42, 0.06);
-  --ui-shadow-2: 0 20px 48px rgba(15, 23, 42, 0.12);
+  --ui-shadow-1: 0 8px 24px rgba(30, 24, 16, 0.05);
+  --ui-shadow-2: 0 20px 48px rgba(30, 24, 16, 0.1);
 
   /* Disable elastic scrolling on macOS */
   overscroll-behavior: none;
@@ -100,7 +100,7 @@ select {
 
 .app-sidebar-shell {
   background:
-    linear-gradient(180deg, rgb(var(--color-surface-primary) / 0.92) 0%, rgb(var(--color-surface-secondary) / 0.92) 100%);
+    linear-gradient(180deg, rgb(var(--color-surface-primary) / 0.94) 0%, rgb(var(--color-surface-secondary) / 0.96) 100%);
   backdrop-filter: saturate(1.05) blur(8px);
 }
 
@@ -111,8 +111,8 @@ select {
 
 .app-main-shell {
   background:
-    radial-gradient(1200px 500px at 90% -20%, rgb(var(--color-accent-primary) / 0.05), transparent 60%),
-    linear-gradient(180deg, rgb(var(--color-background) / 1) 0%, rgb(var(--color-surface-secondary) / 0.72) 100%);
+    radial-gradient(1200px 500px at 90% -20%, rgb(var(--color-accent-primary) / 0.06), transparent 60%),
+    linear-gradient(180deg, rgb(var(--color-background) / 1) 0%, rgb(var(--color-surface-secondary) / 0.78) 100%);
 }
 
 [data-theme='dark'] .app-main-shell {
@@ -245,6 +245,23 @@ select {
 
 .animate-slide-in-right {
   animation: slide-in-right 0.2s ease-out;
+}
+
+.ui-switch-track {
+  @apply relative inline-flex items-center rounded-full border transition-colors duration-200 ease-out;
+  background-color: rgb(var(--color-border) / 0.95);
+  border-color: rgb(var(--color-border) / 1);
+}
+
+.ui-switch-track[data-state='on'] {
+  background-color: rgb(var(--color-accent-primary) / 1);
+  border-color: rgb(var(--color-accent-primary) / 1);
+}
+
+.ui-switch-thumb {
+  @apply absolute rounded-full transition-transform duration-200 ease-out;
+  background-color: rgb(var(--color-surface-primary) / 1);
+  box-shadow: 0 1px 3px rgba(36, 30, 22, 0.18);
 }
 
 .tippy-box[data-theme~='redbox-tour'] {

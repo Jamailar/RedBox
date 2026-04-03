@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import clsx from 'clsx';
 import {
     FolderPlus,
     ImagePlus,
+    Mic,
     Package,
     Pencil,
     Plus,
@@ -35,11 +36,15 @@ interface SubjectRecord {
     tags: string[];
     attributes: SubjectAttribute[];
     imagePaths: string[];
+    voicePath?: string;
+    voiceScript?: string;
     createdAt: string;
     updatedAt: string;
     absoluteImagePaths?: string[];
     previewUrls?: string[];
     primaryPreviewUrl?: string;
+    absoluteVoicePath?: string;
+    voicePreviewUrl?: string;
 }
 
 interface SubjectImageDraft {
@@ -57,15 +62,39 @@ interface SubjectDraft {
     tagsText: string;
     attributes: SubjectAttribute[];
     images: SubjectImageDraft[];
+    voice?: {
+        name: string;
+        previewUrl: string;
+        relativePath?: string;
+        dataUrl?: string;
+        scriptText: string;
+    };
 }
 
 const UNCATEGORIZED_FILTER = '__uncategorized__';
+const SUBJECT_VOICE_SAMPLE_TEXT = '君不见黄河之水天上来，奔流到海不复回。';
+const SUBJECT_VOICE_RECORDING_SECONDS = 6;
 
 const readFileAsDataUrl = (file: File): Promise<string> => new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve(String(reader.result || ''));
     reader.onerror = () => reject(reader.error || new Error('读取文件失败'));
     reader.readAsDataURL(file);
+});
+
+const readBlobAsDataUrl = (blob: Blob): Promise<string> => new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ''));
+    reader.onerror = () => reject(reader.error || new Error('读取文件失败'));
+    reader.readAsDataURL(blob);
+});
+
+const getAudioDurationSeconds = (src: string): Promise<number> => new Promise((resolve, reject) => {
+    const audio = new Audio();
+    audio.preload = 'metadata';
+    audio.onloadedmetadata = () => resolve(Number(audio.duration) || 0);
+    audio.onerror = () => reject(new Error('无法读取音频时长'));
+    audio.src = src;
 });
 
 function createEmptyDraft(): SubjectDraft {
@@ -76,6 +105,7 @@ function createEmptyDraft(): SubjectDraft {
         tagsText: '',
         attributes: [],
         images: [],
+        voice: undefined,
     };
 }
 
@@ -95,6 +125,12 @@ function toDraft(subject?: SubjectRecord | null): SubjectDraft {
             previewUrl,
             relativePath: subject.imagePaths[index],
         })),
+        voice: subject.voicePreviewUrl ? {
+            name: subject.voicePath?.split('/').pop() || 'voice-reference',
+            previewUrl: subject.voicePreviewUrl,
+            relativePath: subject.voicePath,
+            scriptText: subject.voiceScript || '',
+        } : undefined,
     };
 }
 
@@ -114,6 +150,15 @@ export function Subjects() {
     const [categoryFilter, setCategoryFilter] = useState<string>('all');
     const [isModalOpen, setIsModalOpen] = useState(false);
     const [draft, setDraft] = useState<SubjectDraft>(createEmptyDraft);
+    const [initialVoicePresent, setInitialVoicePresent] = useState(false);
+    const [recording, setRecording] = useState(false);
+    const [recordingError, setRecordingError] = useState('');
+    const [recordingHint, setRecordingHint] = useState('');
+    const [recordingCountdown, setRecordingCountdown] = useState(0);
+    const recordingIntervalRef = useRef<number | null>(null);
+    const recordingTimeoutRef = useRef<number | null>(null);
+    const recordingStreamRef = useRef<MediaStream | null>(null);
+    const recorderRef = useRef<MediaRecorder | null>(null);
 
     const loadData = useCallback(async () => {
         setLoading(true);
@@ -176,22 +221,57 @@ export function Subjects() {
 
     const openCreateModal = useCallback(() => {
         setDraft(createEmptyDraft());
+        setInitialVoicePresent(false);
         setError('');
         setIsModalOpen(true);
     }, []);
 
     const openEditModal = useCallback((subject: SubjectRecord) => {
         setDraft(toDraft(subject));
+        setInitialVoicePresent(Boolean(subject.voicePreviewUrl));
         setError('');
         setIsModalOpen(true);
     }, []);
 
+    const clearRecordingTimers = useCallback(() => {
+        if (recordingIntervalRef.current) {
+            window.clearInterval(recordingIntervalRef.current);
+            recordingIntervalRef.current = null;
+        }
+        if (recordingTimeoutRef.current) {
+            window.clearTimeout(recordingTimeoutRef.current);
+            recordingTimeoutRef.current = null;
+        }
+    }, []);
+
+    const stopRecordingSession = useCallback(() => {
+        clearRecordingTimers();
+        if (recorderRef.current && recorderRef.current.state === 'recording') {
+            recorderRef.current.stop();
+        }
+        if (recordingStreamRef.current) {
+            recordingStreamRef.current.getTracks().forEach((track) => track.stop());
+            recordingStreamRef.current = null;
+        }
+        recorderRef.current = null;
+        setRecording(false);
+        setRecordingCountdown(0);
+    }, [clearRecordingTimers]);
+
     const closeModal = useCallback(() => {
         if (working) return;
+        stopRecordingSession();
         setIsModalOpen(false);
         setDraft(createEmptyDraft());
+        setInitialVoicePresent(false);
         setError('');
-    }, [working]);
+        setRecordingError('');
+        setRecordingHint('');
+    }, [stopRecordingSession, working]);
+
+    useEffect(() => () => {
+        stopRecordingSession();
+    }, [stopRecordingSession]);
 
     const updateDraft = useCallback((patch: Partial<SubjectDraft>) => {
         setDraft((current) => ({ ...current, ...patch }));
@@ -242,6 +322,123 @@ export function Subjects() {
             images: current.images.filter((_, itemIndex) => itemIndex !== index),
         }));
     }, []);
+
+    const handleRemoveVoice = useCallback(() => {
+        setDraft((current) => ({
+            ...current,
+            voice: undefined,
+        }));
+        setRecordingError('');
+        setRecordingHint('');
+    }, []);
+
+    const saveVoiceDataUrl = useCallback(async (dataUrl: string, fileName: string) => {
+        const duration = await getAudioDurationSeconds(dataUrl);
+        if (duration < 5 || duration > 10) {
+            throw new Error('声音参考时长必须在 5 到 10 秒之间');
+        }
+        setDraft((current) => ({
+            ...current,
+            voice: {
+                name: fileName,
+                previewUrl: dataUrl,
+                dataUrl,
+                scriptText: SUBJECT_VOICE_SAMPLE_TEXT,
+            },
+        }));
+        setRecordingHint(`已录入声音参考，时长约 ${duration.toFixed(1)} 秒`);
+        setRecordingError('');
+    }, []);
+
+    const handleVoiceFileInput = useCallback(async (files: FileList | null) => {
+        const file = files?.[0];
+        if (!file) return;
+        if (file.size > 10 * 1024 * 1024) {
+            setRecordingError('声音参考文件不能超过 10MB');
+            return;
+        }
+        try {
+            const dataUrl = await readFileAsDataUrl(file);
+            await saveVoiceDataUrl(dataUrl, file.name);
+        } catch (e) {
+            setRecordingError(e instanceof Error ? e.message : '导入声音参考失败');
+            setRecordingHint('');
+        }
+    }, [saveVoiceDataUrl]);
+
+    const handleRecordVoice = useCallback(async () => {
+        if (recording) return;
+        if (typeof window === 'undefined' || !window.MediaRecorder || !navigator.mediaDevices?.getUserMedia) {
+            setRecordingError('当前环境不支持录音');
+            return;
+        }
+        setRecording(true);
+        setRecordingCountdown(SUBJECT_VOICE_RECORDING_SECONDS);
+        setRecordingError('');
+        setRecordingHint('点击录音后，请按正常语速清晰朗读示例句。系统会自动截取这次采样。');
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            const chunks: BlobPart[] = [];
+            const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' : 'audio/webm';
+            const recorder = new MediaRecorder(stream, { mimeType });
+            recordingStreamRef.current = stream;
+            recorderRef.current = recorder;
+
+            recorder.ondataavailable = (event) => {
+                if (event.data.size > 0) {
+                    chunks.push(event.data);
+                }
+            };
+
+            recorder.onstop = async () => {
+                clearRecordingTimers();
+                if (recordingStreamRef.current) {
+                    recordingStreamRef.current.getTracks().forEach((track) => track.stop());
+                    recordingStreamRef.current = null;
+                }
+                recorderRef.current = null;
+                setRecording(false);
+                setRecordingCountdown(0);
+                try {
+                    const blob = new Blob(chunks, { type: mimeType });
+                    if (blob.size > 10 * 1024 * 1024) {
+                        throw new Error('声音参考文件不能超过 10MB');
+                    }
+                    const dataUrl = await readBlobAsDataUrl(blob);
+                    await saveVoiceDataUrl(dataUrl, `voice-reference-${Date.now()}.webm`);
+                } catch (e) {
+                    setRecordingError(e instanceof Error ? e.message : '录音保存失败');
+                    setRecordingHint('');
+                }
+            };
+
+            recorder.onerror = () => {
+                clearRecordingTimers();
+                stream.getTracks().forEach((track) => track.stop());
+                recordingStreamRef.current = null;
+                recorderRef.current = null;
+                setRecording(false);
+                setRecordingCountdown(0);
+                setRecordingError('录音失败，请重试');
+                setRecordingHint('');
+            };
+
+            recorder.start();
+            recordingIntervalRef.current = window.setInterval(() => {
+                setRecordingCountdown((current) => Math.max(0, current - 1));
+            }, 1000);
+            recordingTimeoutRef.current = window.setTimeout(() => {
+                if (recorder.state === 'recording') {
+                    recorder.stop();
+                }
+            }, SUBJECT_VOICE_RECORDING_SECONDS * 1000);
+        } catch (e) {
+            stopRecordingSession();
+            setRecording(false);
+            setRecordingError(e instanceof Error ? e.message : '无法启动录音');
+            setRecordingHint('');
+        }
+    }, [clearRecordingTimers, recording, saveVoiceDataUrl, stopRecordingSession]);
 
     const handleCreateCategory = useCallback(async () => {
         const name = window.prompt('输入分类名称');
@@ -303,6 +500,19 @@ export function Subjects() {
                 images: draft.images.map((image) => image.relativePath
                     ? { relativePath: image.relativePath, name: image.name }
                     : { dataUrl: image.dataUrl, name: image.name }),
+                voice: draft.voice
+                    ? (draft.voice.relativePath
+                        ? {
+                            relativePath: draft.voice.relativePath,
+                            name: draft.voice.name,
+                            scriptText: draft.voice.scriptText.trim() || undefined,
+                        }
+                        : {
+                            dataUrl: draft.voice.dataUrl,
+                            name: draft.voice.name,
+                            scriptText: draft.voice.scriptText.trim() || undefined,
+                        })
+                    : (initialVoicePresent ? {} : undefined),
             };
             const result = draft.id
                 ? await window.ipcRenderer.subjects.update(payload)
@@ -318,7 +528,7 @@ export function Subjects() {
         } finally {
             setWorking(false);
         }
-    }, [closeModal, draft, loadData]);
+    }, [closeModal, draft, initialVoicePresent, loadData]);
 
     const handleDeleteSubject = useCallback(async () => {
         if (!draft.id) return;
@@ -499,6 +709,7 @@ export function Subjects() {
                                         <div className="flex items-center justify-between text-[10px] text-text-tertiary">
                                             <span>属性 {subject.attributes.length}</span>
                                             <span>图片 {(subject.previewUrls || []).length}</span>
+                                            <span>{subject.voicePreviewUrl ? '有声音参考' : '无声音参考'}</span>
                                         </div>
                                     </div>
                                 </button>
@@ -718,6 +929,78 @@ export function Subjects() {
                                             <div>保存后会自动注册进主体索引，供 AI 识别可读主体名称。</div>
                                         </div>
                                     )}
+
+                                    <div className="mt-4 rounded-xl border border-border bg-surface-secondary/30 p-4 space-y-3">
+                                        <div>
+                                            <div className="text-sm font-medium text-text-primary">声音参考</div>
+                                            <div className="text-xs text-text-tertiary mt-0.5">录制 5 到 10 秒，体积不超过 10MB。以后参考图视频可直接带这条声音参考。</div>
+                                        </div>
+
+                                        <div className="rounded-2xl border border-border bg-surface-primary px-4 py-4 space-y-3">
+                                            <div className="text-xs font-medium uppercase tracking-[0.18em] text-text-tertiary">
+                                                朗读采样句
+                                            </div>
+                                            <div className="text-xl leading-9 font-medium text-text-primary">
+                                                {SUBJECT_VOICE_SAMPLE_TEXT}
+                                            </div>
+                                            <div className="text-xs leading-5 text-text-tertiary">
+                                                请保持自然语速、音量稳定、吐字清晰。点击录音后会自动开始 6 秒采样，建议在安静环境下完成。
+                                            </div>
+                                        </div>
+
+                                        <div className="flex items-center gap-2">
+                                            <button
+                                                type="button"
+                                                onClick={() => void handleRecordVoice()}
+                                                disabled={recording}
+                                                className="px-3 py-2 text-sm rounded-md border border-border bg-surface-primary hover:bg-surface-secondary text-text-secondary disabled:opacity-60"
+                                            >
+                                                <span className="inline-flex items-center gap-1">
+                                                    <Mic className="w-4 h-4" />
+                                                    {recording ? `录音中 ${recordingCountdown}s` : '点击录音'}
+                                                </span>
+                                            </button>
+                                            <label className="px-3 py-2 text-sm rounded-md border border-border bg-surface-primary hover:bg-surface-secondary text-text-secondary cursor-pointer">
+                                                导入音频
+                                                <input
+                                                    type="file"
+                                                    accept="audio/*"
+                                                    className="hidden"
+                                                    onChange={(event) => {
+                                                        void handleVoiceFileInput(event.target.files);
+                                                        event.currentTarget.value = '';
+                                                    }}
+                                                />
+                                            </label>
+                                            {draft.voice?.previewUrl && (
+                                                <button
+                                                    type="button"
+                                                    onClick={handleRemoveVoice}
+                                                    className="px-3 py-2 text-sm rounded-md border border-red-200 bg-red-50 text-red-700 hover:bg-red-100"
+                                                >
+                                                    删除声音
+                                                </button>
+                                            )}
+                                        </div>
+
+                                        {recording && (
+                                            <div className="rounded-lg border border-accent-primary/25 bg-accent-primary/8 px-3 py-2 text-xs text-accent-primary">
+                                                采样倒计时：{recordingCountdown} 秒。请持续朗读示例句，录音会自动结束。
+                                            </div>
+                                        )}
+                                        {recordingHint && (
+                                            <div className="text-xs text-text-tertiary">{recordingHint}</div>
+                                        )}
+                                        {recordingError && (
+                                            <div className="text-xs text-red-600">{recordingError}</div>
+                                        )}
+                                        {draft.voice?.previewUrl && (
+                                            <div className="rounded-lg border border-border bg-surface-primary px-3 py-3 space-y-2">
+                                                <div className="text-xs text-text-secondary">{draft.voice.name}</div>
+                                                <audio controls src={resolveAssetUrl(draft.voice.previewUrl)} className="w-full" />
+                                            </div>
+                                        )}
+                                    </div>
                                 </div>
                             </div>
                         </div>

@@ -143,7 +143,6 @@ const shouldTriggerMultiAgent = (params: {
   hints: ReturnType<typeof extractHints>;
 }): boolean => {
   if (params.hints.forceMultiAgent) return true;
-  if (params.runtimeMode === 'chatroom') return true;
   if (params.hints.subagentRoles.length > 0) return true;
   return false;
 };

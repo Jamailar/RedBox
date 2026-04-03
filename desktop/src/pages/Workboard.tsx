@@ -1,16 +1,16 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { AlertCircle, Bot, Clock3, Link2, ListTodo, Loader2, Play, RefreshCw } from 'lucide-react';
+import { AlertCircle, Bot, Clock3, Link2, ListTodo, Loader2, Play, RefreshCw, X } from 'lucide-react';
 
 type WorkItem = Awaited<ReturnType<typeof window.ipcRenderer.work.list>>[number];
 
 type WorkColumnKey = 'ready' | 'blocked' | 'active' | 'waiting' | 'done';
 
 const COLUMN_ORDER: Array<{ key: WorkColumnKey; label: string; tone: string }> = [
-    { key: 'ready', label: 'Ready', tone: 'text-emerald-700 bg-emerald-50 border-emerald-200' },
-    { key: 'blocked', label: 'Blocked', tone: 'text-amber-700 bg-amber-50 border-amber-200' },
-    { key: 'active', label: 'Active', tone: 'text-sky-700 bg-sky-50 border-sky-200' },
-    { key: 'waiting', label: 'Waiting', tone: 'text-violet-700 bg-violet-50 border-violet-200' },
-    { key: 'done', label: 'Done', tone: 'text-slate-700 bg-slate-100 border-slate-200' },
+    { key: 'ready', label: '待启动', tone: 'bg-[#dff2ee] text-[#4b7f76]' },
+    { key: 'blocked', label: '阻塞中', tone: 'bg-[#f6edcf] text-[#8c7543]' },
+    { key: 'active', label: '进行中', tone: 'bg-[#d9e6fb] text-[#5f7499]' },
+    { key: 'waiting', label: '等待中', tone: 'bg-[#e8def6] text-[#7d6d9a]' },
+    { key: 'done', label: '已完成', tone: 'bg-[#edf0f4] text-[#6f7682]' },
 ];
 
 function labelForType(type: string): string {
@@ -70,6 +70,19 @@ async function triggerWorkItemNow(item: WorkItem): Promise<void> {
     throw new Error('当前工作项没有可立即执行的自动化绑定。');
 }
 
+function resolveColumnKey(item: WorkItem): WorkColumnKey {
+    const effective = String(item.effectiveStatus || '').trim() as WorkColumnKey;
+    if (COLUMN_ORDER.some((column) => column.key === effective)) {
+        return effective;
+    }
+    const fallback = String(item.status || '').trim();
+    if (fallback === 'pending') return 'blocked';
+    if (fallback === 'active') return 'active';
+    if (fallback === 'waiting') return 'waiting';
+    if (fallback === 'done') return 'done';
+    return 'blocked';
+}
+
 export function Workboard() {
     const [items, setItems] = useState<WorkItem[]>([]);
     const [loading, setLoading] = useState(true);
@@ -83,10 +96,10 @@ export function Workboard() {
         setLoading(true);
         setError('');
         try {
-            const next = await window.ipcRenderer.work.list({ limit: 200 });
+            const next = await window.ipcRenderer.work.list({ limit: 300 });
             setItems(next || []);
             setLastUpdatedAt(new Date().toISOString());
-            setSelectedId((prev) => prev && next.some((item) => item.id === prev) ? prev : (next[0]?.id || ''));
+            setSelectedId((prev) => prev && next.some((item) => item.id === prev) ? prev : '');
         } catch (loadError) {
             setError(loadError instanceof Error ? loadError.message : String(loadError));
         } finally {
@@ -104,10 +117,7 @@ export function Workboard() {
             map.set(column.key, []);
         }
         for (const item of items) {
-            const key = (COLUMN_ORDER.some((column) => column.key === item.effectiveStatus)
-                ? item.effectiveStatus
-                : (item.status === 'pending' ? 'blocked' : item.status)) as WorkColumnKey;
-            map.get(key)?.push(item);
+            map.get(resolveColumnKey(item))?.push(item);
         }
         return map;
     }, [items]);
@@ -117,15 +127,11 @@ export function Workboard() {
         [items, selectedId],
     );
 
-    const readyItems = useMemo(
-        () => items.filter((item) => item.effectiveStatus === 'ready').slice(0, 8),
-        [items],
-    );
-
-    const automationItems = useMemo(
-        () => items.filter((item) => item.type === 'automation').slice(0, 8),
-        [items],
-    );
+    const stats = useMemo(() => ({
+        total: items.length,
+        automation: items.filter((item) => item.type === 'automation').length,
+        ready: items.filter((item) => resolveColumnKey(item) === 'ready').length,
+    }), [items]);
 
     const updateStatus = useCallback(async (item: WorkItem, status: 'pending' | 'active' | 'waiting' | 'done' | 'cancelled') => {
         try {
@@ -140,251 +146,247 @@ export function Workboard() {
     }, [load]);
 
     return (
-        <div className="h-full min-h-0 bg-surface-primary text-text-primary">
-            <div className="h-full min-h-0 flex flex-col px-6 py-5 gap-5">
-                <div className="flex items-start justify-between gap-4">
-                    <div>
-                        <div className="inline-flex items-center gap-2 text-xs uppercase tracking-[0.18em] text-text-tertiary">
-                            <ListTodo className="w-4 h-4" />
-                            Workboard
-                        </div>
-                        <h1 className="mt-2 text-2xl font-semibold">统一任务调度台</h1>
-                        <p className="mt-2 max-w-3xl text-sm text-text-secondary">
-                            这里统一展示 ready、blocked、active、waiting、done。RedClaw 项目、一次性笔记、定时任务、长周期任务都挂在同一套 work item 上。
-                        </p>
+        <div className="h-full min-h-0 bg-[#fbfaf7] text-[#191919]">
+            <div className="h-full min-h-0 flex flex-col px-8 py-7 gap-5">
+                <div className="flex flex-wrap items-center justify-end gap-2">
+                    <div className="px-3 py-1.5 rounded-full border border-[#ece5da] bg-white text-xs text-[#7d766a]">
+                        全部 {stats.total}
                     </div>
-                    <div className="flex items-center gap-2 shrink-0">
-                        <button
-                            onClick={() => void load()}
-                            className="h-10 px-4 rounded-lg border border-border bg-surface-secondary text-sm inline-flex items-center gap-2 hover:bg-surface-hover"
-                        >
-                            <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
-                            刷新
-                        </button>
+                    <div className="px-3 py-1.5 rounded-full border border-[#ece5da] bg-white text-xs text-[#7d766a]">
+                        Ready {stats.ready}
                     </div>
+                    <div className="px-3 py-1.5 rounded-full border border-[#ece5da] bg-white text-xs text-[#7d766a]">
+                        自动化 {stats.automation}
+                    </div>
+                    <div className="px-3 py-1.5 rounded-full border border-[#ece5da] bg-white text-xs text-[#7d766a]">
+                        更新于 {formatDateTime(lastUpdatedAt)}
+                    </div>
+                    <button
+                        onClick={() => void load()}
+                        className="h-[34px] px-4 rounded-full border border-[#e7e0d4] bg-white text-xs inline-flex items-center gap-2 hover:bg-[#f5f1e9] shrink-0 shadow-[0_1px_2px_rgba(24,24,24,0.03)] text-[#7d766a]"
+                    >
+                        <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
+                        刷新
+                    </button>
                 </div>
 
-                <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1.5fr)_360px] gap-5 min-h-0 flex-1">
-                    <div className="min-h-0 flex flex-col gap-4">
-                        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-3">
-                            {COLUMN_ORDER.map((column) => {
-                                const list = grouped.get(column.key) || [];
-                                return (
-                                    <div key={column.key} className="rounded-2xl border border-border bg-surface-secondary/70 min-h-[260px] flex flex-col">
-                                        <div className="px-4 py-3 border-b border-border flex items-center justify-between">
-                                            <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${column.tone}`}>
-                                                {column.label}
-                                            </span>
-                                            <span className="text-xs text-text-tertiary">{list.length}</span>
-                                        </div>
-                                        <div className="p-3 space-y-3 overflow-auto">
-                                            {list.length === 0 ? (
-                                                <div className="rounded-xl border border-dashed border-border px-3 py-6 text-xs text-text-tertiary text-center">
-                                                    当前列没有任务
-                                                </div>
-                                            ) : (
-                                                list.map((item) => (
-                                                    <button
-                                                        key={item.id}
-                                                        onClick={() => setSelectedId(item.id)}
-                                                        className={`w-full text-left rounded-xl border px-3 py-3 transition ${
-                                                            selectedId === item.id
-                                                                ? 'border-emerald-300 bg-emerald-50/70'
-                                                                : 'border-border bg-surface-primary hover:bg-surface-hover'
-                                                        }`}
-                                                    >
-                                                        <div className="flex items-start justify-between gap-3">
-                                                            <div className="min-w-0">
-                                                                <div className="text-sm font-medium truncate">{item.title}</div>
-                                                                <div className="mt-1 text-[11px] text-text-tertiary">
-                                                                    {labelForType(item.type)} · P{item.priority}
-                                                                </div>
-                                                            </div>
-                                                            {item.type === 'automation' && (
-                                                                <Clock3 className="w-4 h-4 text-text-tertiary shrink-0 mt-0.5" />
-                                                            )}
-                                                        </div>
-                                                        {item.summary && (
-                                                            <div className="mt-2 text-xs text-text-secondary line-clamp-3">
-                                                                {item.summary}
-                                                            </div>
-                                                        )}
-                                                        {item.blockedBy.length > 0 && (
-                                                            <div className="mt-2 text-[11px] text-amber-700">
-                                                                阻塞于 {item.blockedBy.length} 个前置任务
-                                                            </div>
-                                                        )}
-                                                        {item.schedule?.mode && item.schedule.mode !== 'none' && (
-                                                            <div className="mt-2 text-[11px] text-text-tertiary">
-                                                                {scheduleSummary(item)}
-                                                            </div>
-                                                        )}
-                                                    </button>
-                                                ))
-                                            )}
-                                        </div>
-                                    </div>
-                                );
-                            })}
-                        </div>
+                {error && (
+                    <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-3 text-sm text-red-700 inline-flex items-center gap-2">
+                        <AlertCircle className="w-4 h-4" />
+                        {error}
                     </div>
+                )}
 
-                    <div className="min-h-0 flex flex-col gap-4">
-                        <div className="rounded-2xl border border-border bg-surface-secondary/70 p-4">
-                            <div className="text-xs uppercase tracking-[0.16em] text-text-tertiary">Ready Queue</div>
-                            <div className="mt-3 space-y-2">
-                                {readyItems.length === 0 ? (
-                                    <div className="text-sm text-text-tertiary">当前没有 ready 任务。</div>
-                                ) : (
-                                    readyItems.map((item) => (
-                                        <div key={item.id} className="rounded-xl border border-border bg-surface-primary px-3 py-2">
-                                            <div className="text-sm font-medium">{item.title}</div>
-                                            <div className="mt-1 text-[11px] text-text-tertiary">{labelForType(item.type)} · {item.id}</div>
-                                        </div>
-                                    ))
-                                )}
-                            </div>
-                        </div>
-
-                        <div className="rounded-2xl border border-border bg-surface-secondary/70 p-4">
-                            <div className="text-xs uppercase tracking-[0.16em] text-text-tertiary">Automation</div>
-                            <div className="mt-3 space-y-2">
-                                {automationItems.length === 0 ? (
-                                    <div className="text-sm text-text-tertiary">当前没有自动化任务。</div>
-                                ) : (
-                                    automationItems.map((item) => (
-                                        <div key={item.id} className="rounded-xl border border-border bg-surface-primary px-3 py-3">
-                                            <div className="flex items-start justify-between gap-3">
-                                                <div className="min-w-0">
-                                                    <div className="text-sm font-medium truncate">{item.title}</div>
-                                                    <div className="mt-1 text-[11px] text-text-tertiary">{scheduleSummary(item)}</div>
-                                                </div>
-                                                <button
-                                                    onClick={async () => {
-                                                        try {
-                                                            setRunningNowId(item.id);
-                                                            await triggerWorkItemNow(item);
-                                                            await load();
-                                                        } catch (runError) {
-                                                            alert(runError instanceof Error ? runError.message : String(runError));
-                                                        } finally {
-                                                            setRunningNowId('');
-                                                        }
-                                                    }}
-                                                    className="h-8 px-3 rounded-md border border-border text-xs inline-flex items-center gap-1.5 hover:bg-surface-hover"
-                                                >
-                                                    {runningNowId === item.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Play className="w-3.5 h-3.5" />}
-                                                    立即执行
-                                                </button>
-                                            </div>
-                                        </div>
-                                    ))
-                                )}
-                            </div>
-                        </div>
-
-                        <div className="rounded-2xl border border-border bg-surface-secondary/70 p-4 min-h-0 flex-1 overflow-auto">
-                            <div className="flex items-center justify-between gap-3">
-                                <div className="text-xs uppercase tracking-[0.16em] text-text-tertiary">Inspector</div>
-                                <div className="text-[11px] text-text-tertiary">更新于 {formatDateTime(lastUpdatedAt)}</div>
-                            </div>
-                            {!selectedItem ? (
-                                <div className="mt-4 text-sm text-text-tertiary">选择左侧任务查看详情。</div>
-                            ) : (
-                                <div className="mt-4 space-y-4">
-                                    <div>
-                                        <div className="text-lg font-semibold">{selectedItem.title}</div>
-                                        <div className="mt-1 text-xs text-text-tertiary">
-                                            {selectedItem.id} · {labelForType(selectedItem.type)} · {selectedItem.effectiveStatus}
+                <div className="min-h-0 flex-1 overflow-x-auto overflow-y-hidden pb-2">
+                    <div className="h-full min-w-max grid auto-cols-[272px] grid-flow-col gap-5">
+                        {COLUMN_ORDER.map((column) => {
+                            const list = grouped.get(column.key) || [];
+                            return (
+                                <section key={column.key} className="h-full min-h-0 flex flex-col overflow-hidden">
+                                    <div className="px-1 py-1 flex items-center">
+                                        <div className="flex items-center gap-3">
+                                            <h2 className="text-[18px] font-semibold tracking-[-0.02em]">{column.label}</h2>
+                                            <span className="text-[14px] text-[#9a958b]">{list.length}</span>
                                         </div>
                                     </div>
-
-                                    {selectedItem.description && (
-                                        <div className="rounded-xl border border-border bg-surface-primary px-3 py-3 text-sm text-text-secondary whitespace-pre-wrap">
-                                            {selectedItem.description}
-                                        </div>
-                                    )}
-
-                                    {selectedItem.summary && (
-                                        <div>
-                                            <div className="text-xs uppercase tracking-[0.16em] text-text-tertiary">Summary</div>
-                                            <div className="mt-2 text-sm text-text-secondary whitespace-pre-wrap">{selectedItem.summary}</div>
-                                        </div>
-                                    )}
-
-                                    {selectedItem.schedule?.mode && selectedItem.schedule.mode !== 'none' && (
-                                        <div>
-                                            <div className="text-xs uppercase tracking-[0.16em] text-text-tertiary">Schedule</div>
-                                            <div className="mt-2 rounded-xl border border-border bg-surface-primary px-3 py-3 text-sm text-text-secondary">
-                                                {scheduleSummary(selectedItem)}
+                                    <div className="pt-4 space-y-4 overflow-y-auto pr-2">
+                                        {list.length === 0 ? (
+                                            <div className="rounded-[24px] border border-dashed border-[#e2d9ca] bg-white px-4 py-8 text-sm text-[#9a958b] text-center">
+                                                当前列没有任务
                                             </div>
-                                        </div>
-                                    )}
-
-                                    <div>
-                                        <div className="text-xs uppercase tracking-[0.16em] text-text-tertiary">Actions</div>
-                                        <div className="mt-2 flex flex-wrap gap-2">
-                                            {[
-                                                { key: 'pending', label: '回到待启动' },
-                                                { key: 'active', label: '开始执行' },
-                                                { key: 'waiting', label: '标记等待' },
-                                                { key: 'done', label: '标记完成' },
-                                                { key: 'cancelled', label: '取消' },
-                                            ].map((action) => (
+                                        ) : (
+                                            list.map((item) => (
                                                 <button
-                                                    key={action.key}
-                                                    onClick={() => void updateStatus(selectedItem, action.key as 'pending' | 'active' | 'waiting' | 'done' | 'cancelled')}
-                                                    disabled={updatingStatusId === selectedItem.id}
-                                                    className="h-9 px-3 rounded-lg border border-border bg-surface-primary text-xs inline-flex items-center gap-2 hover:bg-surface-hover disabled:opacity-60"
+                                                    key={item.id}
+                                                    onClick={() => setSelectedId(item.id)}
+                                                    className="w-full text-left rounded-[22px] border border-[#ddd7cd] bg-white px-5 py-5 hover:shadow-[0_10px_24px_rgba(28,28,28,0.05)] transition shadow-[0_2px_8px_rgba(30,30,30,0.03)]"
                                                 >
-                                                    {updatingStatusId === selectedItem.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : null}
-                                                    {action.label}
+                                                    <div className="flex items-start gap-2.5">
+                                                        <div className="mt-0.5 h-6 w-6 rounded-[8px] border-2 border-[#f7a31a] shrink-0" />
+                                                        <div className="min-w-0 flex-1">
+                                                            <div className="text-[15px] font-semibold leading-[1.32] tracking-[-0.02em] line-clamp-2">
+                                                                {item.title}
+                                                            </div>
+                                                            <div className="mt-2 text-[13px] leading-6 text-[#a29b91] line-clamp-2">
+                                                                {item.summary || item.description || '暂无任务摘要'}
+                                                            </div>
+
+                                                            <div className="mt-3 flex flex-wrap gap-1.5">
+                                                                <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-[12px] font-medium ${column.tone}`}>
+                                                                    {column.label}
+                                                                </span>
+                                                                <span className="inline-flex items-center rounded-full px-2.5 py-1 text-[12px] font-medium bg-[#f5e7df] text-[#7a7066]">
+                                                                    {labelForType(item.type)}
+                                                                </span>
+                                                                <span className="inline-flex items-center rounded-full px-2.5 py-1 text-[12px] font-medium bg-[#8ea0f4] text-white/90">
+                                                                    P{item.priority}
+                                                                </span>
+                                                                {item.blockedBy.length > 0 && (
+                                                                    <span className="inline-flex items-center rounded-full px-2.5 py-1 text-[12px] font-medium bg-[#f8efcf] text-[#8f7440]">
+                                                                        阻塞 {item.blockedBy.length}
+                                                                    </span>
+                                                                )}
+                                                            </div>
+
+                                                            {item.schedule?.mode && item.schedule.mode !== 'none' && (
+                                                                <div className="mt-2.5 text-[12px] text-[#9a958b] line-clamp-2">
+                                                                    {scheduleSummary(item)}
+                                                                </div>
+                                                            )}
+
+                                                            <div className="mt-3 flex items-center gap-2 text-[#9a958b]">
+                                                                <ListTodo className="w-[14px] h-[14px]" />
+                                                            </div>
+                                                        </div>
+                                                    </div>
                                                 </button>
-                                            ))}
-                                        </div>
-                                    </div>
-
-                                    <div className="grid grid-cols-1 gap-3">
-                                        <div>
-                                            <div className="text-xs uppercase tracking-[0.16em] text-text-tertiary">Refs</div>
-                                            <div className="mt-2 space-y-2 text-sm text-text-secondary">
-                                                <div className="flex items-center gap-2"><Link2 className="w-4 h-4" /> 项目 {selectedItem.refs.projectIds.join(', ') || '-'}</div>
-                                                <div className="flex items-center gap-2"><Bot className="w-4 h-4" /> 会话 {selectedItem.refs.sessionIds.join(', ') || '-'}</div>
-                                                <div className="flex items-center gap-2"><ListTodo className="w-4 h-4" /> 任务 {selectedItem.refs.taskIds.join(', ') || '-'}</div>
-                                            </div>
-                                        </div>
-
-                                        {Array.isArray((selectedItem.metadata as Record<string, unknown> | undefined)?.subagentRoles) && (
-                                            <div>
-                                                <div className="text-xs uppercase tracking-[0.16em] text-text-tertiary">Subagents</div>
-                                                <div className="mt-2 text-sm text-text-secondary">
-                                                    {((selectedItem.metadata as Record<string, unknown>).subagentRoles as unknown[]).map((item) => String(item)).join(' -> ') || '-'}
-                                                </div>
-                                            </div>
-                                        )}
-
-                                        {selectedItem.blockedBy.length > 0 && (
-                                            <div>
-                                                <div className="text-xs uppercase tracking-[0.16em] text-text-tertiary">Blocked By</div>
-                                                <div className="mt-2 text-sm text-amber-700">
-                                                    {selectedItem.blockedBy.join(', ')}
-                                                </div>
-                                            </div>
+                                            ))
                                         )}
                                     </div>
-                                </div>
-                            )}
-                        </div>
-
-                        {error && (
-                            <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-3 text-sm text-red-700 inline-flex items-center gap-2">
-                                <AlertCircle className="w-4 h-4" />
-                                {error}
-                            </div>
-                        )}
+                                </section>
+                            );
+                        })}
                     </div>
                 </div>
             </div>
+
+            {selectedItem && (
+                <div className="fixed inset-0 z-[70] bg-black/35 backdrop-blur-[2px] flex items-center justify-center px-4">
+                    <div className="w-full max-w-[780px] max-h-[85vh] overflow-hidden rounded-[28px] border border-[#ddd7cd] bg-white shadow-[0_28px_80px_rgba(20,20,20,0.15)]">
+                        <div className="px-6 py-5 border-b border-[#ebe4d9] flex items-start justify-between gap-4">
+                            <div className="min-w-0">
+                                <div className="text-[24px] font-semibold leading-8 tracking-[-0.02em]">{selectedItem.title}</div>
+                                <div className="mt-1 flex flex-wrap gap-1.5">
+                                    <span className="inline-flex items-center rounded-full border border-[#e7dfd4] px-2.5 py-0.5 text-[10px] text-[#8c8579]">
+                                        {selectedItem.id}
+                                    </span>
+                                    <span className="inline-flex items-center rounded-full border border-[#e7dfd4] px-2.5 py-0.5 text-[10px] text-[#8c8579]">
+                                        {labelForType(selectedItem.type)}
+                                    </span>
+                                    <span className="inline-flex items-center rounded-full border border-[#e7dfd4] px-2.5 py-0.5 text-[10px] text-[#8c8579]">
+                                        {selectedItem.effectiveStatus}
+                                    </span>
+                                </div>
+                            </div>
+                            <button
+                                onClick={() => setSelectedId('')}
+                                className="h-10 w-10 rounded-full border border-[#e7dfd4] inline-flex items-center justify-center text-[#8c8579] hover:bg-[#f5f1e9] hover:text-[#191919]"
+                            >
+                                <X className="w-4 h-4" />
+                            </button>
+                        </div>
+
+                        <div className="px-6 py-6 overflow-y-auto max-h-[calc(85vh-84px)] space-y-6">
+                            {selectedItem.description && (
+                                <section>
+                                    <div className="text-xs uppercase tracking-[0.16em] text-[#9a958b]">Description</div>
+                                    <div className="mt-2 rounded-2xl border border-[#ebe4d9] bg-[#faf8f4] px-4 py-4 text-sm text-[#5d564b] whitespace-pre-wrap">
+                                        {selectedItem.description}
+                                    </div>
+                                </section>
+                            )}
+
+                            {selectedItem.summary && (
+                                <section>
+                                    <div className="text-xs uppercase tracking-[0.16em] text-[#9a958b]">Summary</div>
+                                    <div className="mt-2 text-sm text-[#5d564b] whitespace-pre-wrap">
+                                        {selectedItem.summary}
+                                    </div>
+                                </section>
+                            )}
+
+                            {selectedItem.schedule?.mode && selectedItem.schedule.mode !== 'none' && (
+                                <section>
+                                    <div className="text-xs uppercase tracking-[0.16em] text-[#9a958b]">Schedule</div>
+                                    <div className="mt-2 rounded-2xl border border-[#ebe4d9] bg-[#faf8f4] px-4 py-4 text-sm text-[#5d564b]">
+                                        {scheduleSummary(selectedItem)}
+                                    </div>
+                                </section>
+                            )}
+
+                            <section>
+                                <div className="text-xs uppercase tracking-[0.16em] text-[#9a958b]">Actions</div>
+                                <div className="mt-2 flex flex-wrap gap-2">
+                                    {selectedItem.type === 'automation' && (
+                                        <button
+                                            onClick={async () => {
+                                                try {
+                                                    setRunningNowId(selectedItem.id);
+                                                    await triggerWorkItemNow(selectedItem);
+                                                    await load();
+                                                } catch (runError) {
+                                                    alert(runError instanceof Error ? runError.message : String(runError));
+                                                } finally {
+                                                    setRunningNowId('');
+                                                }
+                                            }}
+                                            className="h-9 px-3 rounded-full border border-[#e4ddd1] bg-white text-xs inline-flex items-center gap-2 hover:bg-[#f5f1e9]"
+                                        >
+                                            {runningNowId === selectedItem.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Play className="w-3.5 h-3.5" />}
+                                            立即执行
+                                        </button>
+                                    )}
+                                    {[
+                                        { key: 'pending', label: '回到待启动' },
+                                        { key: 'active', label: '开始执行' },
+                                        { key: 'waiting', label: '标记等待' },
+                                        { key: 'done', label: '标记完成' },
+                                        { key: 'cancelled', label: '取消' },
+                                    ].map((action) => (
+                                        <button
+                                            key={action.key}
+                                            onClick={() => void updateStatus(selectedItem, action.key as 'pending' | 'active' | 'waiting' | 'done' | 'cancelled')}
+                                            disabled={updatingStatusId === selectedItem.id}
+                                            className="h-9 px-3 rounded-full border border-[#e4ddd1] bg-white text-xs inline-flex items-center gap-2 hover:bg-[#f5f1e9] disabled:opacity-60"
+                                        >
+                                            {updatingStatusId === selectedItem.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : null}
+                                            {action.label}
+                                        </button>
+                                    ))}
+                                </div>
+                            </section>
+
+                            <section className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                <div>
+                                    <div className="text-xs uppercase tracking-[0.16em] text-[#9a958b]">Refs</div>
+                                    <div className="mt-2 space-y-2 text-sm text-[#5d564b]">
+                                        <div className="flex items-center gap-2"><Link2 className="w-4 h-4" /> 项目 {selectedItem.refs.projectIds.join(', ') || '-'}</div>
+                                        <div className="flex items-center gap-2"><Bot className="w-4 h-4" /> 会话 {selectedItem.refs.sessionIds.join(', ') || '-'}</div>
+                                        <div className="flex items-center gap-2"><ListTodo className="w-4 h-4" /> 任务 {selectedItem.refs.taskIds.join(', ') || '-'}</div>
+                                    </div>
+                                </div>
+
+                                <div>
+                                    <div className="text-xs uppercase tracking-[0.16em] text-[#9a958b]">Meta</div>
+                                    <div className="mt-2 space-y-2 text-sm text-[#5d564b]">
+                                        <div>创建时间 {formatDateTime(selectedItem.createdAt)}</div>
+                                        <div>更新时间 {formatDateTime(selectedItem.updatedAt)}</div>
+                                        <div>完成时间 {formatDateTime(selectedItem.completedAt)}</div>
+                                    </div>
+                                </div>
+                            </section>
+
+                            {Array.isArray((selectedItem.metadata as Record<string, unknown> | undefined)?.subagentRoles) && (
+                                <section>
+                                    <div className="text-xs uppercase tracking-[0.16em] text-[#9a958b]">Subagents</div>
+                                    <div className="mt-2 text-sm text-[#5d564b]">
+                                        {((selectedItem.metadata as Record<string, unknown>).subagentRoles as unknown[]).map((item) => String(item)).join(' -> ') || '-'}
+                                    </div>
+                                </section>
+                            )}
+
+                            {selectedItem.blockedBy.length > 0 && (
+                                <section>
+                                    <div className="text-xs uppercase tracking-[0.16em] text-text-tertiary">Blocked By</div>
+                                    <div className="mt-2 text-sm text-amber-700">
+                                        {selectedItem.blockedBy.join(', ')}
+                                    </div>
+                                </section>
+                            )}
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>
     );
 }

@@ -22,6 +22,13 @@ export interface SubjectImageInput {
   relativePath?: string;
 }
 
+export interface SubjectVoiceInput {
+  name?: string;
+  dataUrl?: string;
+  relativePath?: string;
+  scriptText?: string;
+}
+
 export interface SubjectRecord {
   id: string;
   name: string;
@@ -30,6 +37,8 @@ export interface SubjectRecord {
   tags: string[];
   attributes: SubjectAttribute[];
   imagePaths: string[];
+  voicePath?: string;
+  voiceScript?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -38,6 +47,8 @@ export interface SubjectEntry extends SubjectRecord {
   absoluteImagePaths: string[];
   previewUrls: string[];
   primaryPreviewUrl?: string;
+  absoluteVoicePath?: string;
+  voicePreviewUrl?: string;
 }
 
 interface SubjectCatalog {
@@ -154,6 +165,10 @@ function getSubjectImagesDir(subjectId: string): string {
   return path.join(getSubjectDir(subjectId), 'images');
 }
 
+function getSubjectVoiceDir(subjectId: string): string {
+  return path.join(getSubjectDir(subjectId), 'voice');
+}
+
 async function ensureSubjectsRoot(): Promise<void> {
   await fs.mkdir(getSubjectsRootDir(), { recursive: true });
 }
@@ -259,6 +274,8 @@ function normalizeSubjectRecord(input: SubjectRecord): SubjectRecord {
     imagePaths: Array.isArray(input.imagePaths)
       ? input.imagePaths.map((item) => normalizeRelativeStorePath(String(item || ''))).filter(Boolean)
       : [],
+    voicePath: normalizeText(input.voicePath) ? normalizeRelativeStorePath(String(input.voicePath || '')) : undefined,
+    voiceScript: normalizeText(input.voiceScript) || undefined,
     createdAt: normalizeText(input.createdAt) || nowIso(),
     updatedAt: normalizeText(input.updatedAt) || nowIso(),
   };
@@ -272,6 +289,12 @@ async function writeSubjectFile(subject: SubjectRecord): Promise<void> {
 
 function extFromMime(mimeType: string): string {
   const lower = mimeType.toLowerCase();
+  if (lower.includes('mpeg')) return 'mp3';
+  if (lower.includes('wav')) return 'wav';
+  if (lower.includes('aac')) return 'aac';
+  if (lower.includes('ogg')) return 'ogg';
+  if (lower.includes('webm')) return 'webm';
+  if (lower.includes('mp4')) return 'm4a';
   if (lower.includes('jpeg') || lower.includes('jpg')) return 'jpg';
   if (lower.includes('webp')) return 'webp';
   if (lower.includes('gif')) return 'gif';
@@ -281,7 +304,7 @@ function extFromMime(mimeType: string): string {
 function decodeDataUrl(dataUrl: string): { buffer: Buffer; ext: string } {
   const matched = String(dataUrl || '').match(/^data:(.+?);base64,(.+)$/);
   if (!matched) {
-    throw new Error('Invalid image data URL');
+    throw new Error('Invalid data URL');
   }
   return {
     buffer: Buffer.from(matched[2], 'base64'),
@@ -333,6 +356,53 @@ async function materializeSubjectImages(subjectId: string, inputs: SubjectImageI
   return nextPaths;
 }
 
+async function materializeSubjectVoice(subjectId: string, input: SubjectVoiceInput | undefined, existingPath?: string): Promise<{ voicePath?: string; voiceScript?: string }> {
+  const subjectDir = getSubjectDir(subjectId);
+  const voiceDir = getSubjectVoiceDir(subjectId);
+  await fs.mkdir(voiceDir, { recursive: true });
+
+  const normalizedInput = input && typeof input === 'object' ? input : undefined;
+  if (!normalizedInput) {
+    if (existingPath) {
+      const oldAbsolute = path.join(subjectDir, existingPath);
+      await fs.rm(oldAbsolute, { force: true });
+    }
+    return {};
+  }
+
+  const existingRelative = normalizeText(normalizedInput.relativePath);
+  const scriptText = normalizeText(normalizedInput.scriptText) || undefined;
+  if (existingRelative) {
+    const normalizedRelative = normalizeRelativeStorePath(existingRelative);
+    const absolute = path.join(subjectDir, normalizedRelative);
+    await fs.access(absolute);
+    if (existingPath && existingPath !== normalizedRelative) {
+      await fs.rm(path.join(subjectDir, existingPath), { force: true });
+    }
+    return { voicePath: normalizedRelative, voiceScript: scriptText };
+  }
+
+  const dataUrl = normalizeText(normalizedInput.dataUrl);
+  if (!dataUrl) {
+    if (existingPath) {
+      const oldAbsolute = path.join(subjectDir, existingPath);
+      await fs.rm(oldAbsolute, { force: true });
+    }
+    return { voiceScript: scriptText };
+  }
+
+  const { buffer, ext } = decodeDataUrl(dataUrl);
+  const baseName = sanitizeFileName(normalizedInput.name || 'voice-reference');
+  const fileName = `${Date.now()}-${baseName}.${ext}`;
+  const relative = normalizeRelativeStorePath(path.join('voice', fileName));
+  const absolute = path.join(subjectDir, relative);
+  await fs.writeFile(absolute, buffer);
+  if (existingPath && existingPath !== relative) {
+    await fs.rm(path.join(subjectDir, existingPath), { force: true });
+  }
+  return { voicePath: relative, voiceScript: scriptText };
+}
+
 async function enrichSubject(subject: SubjectRecord): Promise<SubjectEntry> {
   const subjectDir = getSubjectDir(subject.id);
   const absoluteImagePaths = subject.imagePaths.map((relative) => path.join(subjectDir, relative));
@@ -347,11 +417,25 @@ async function enrichSubject(subject: SubjectRecord): Promise<SubjectEntry> {
       // ignore missing image
     }
   }
+  let absoluteVoicePath: string | undefined;
+  let voicePreviewUrl: string | undefined;
+  if (subject.voicePath) {
+    const voiceAbsolute = path.join(subjectDir, subject.voicePath);
+    try {
+      await fs.access(voiceAbsolute);
+      absoluteVoicePath = voiceAbsolute;
+      voicePreviewUrl = toAppAssetUrl(voiceAbsolute);
+    } catch {
+      // ignore missing voice
+    }
+  }
   return {
     ...subject,
     absoluteImagePaths: existingAbsoluteImagePaths,
     previewUrls,
     primaryPreviewUrl: previewUrls[0],
+    absoluteVoicePath,
+    voicePreviewUrl,
   };
 }
 
@@ -452,6 +536,7 @@ export async function createSubject(input: {
   tags?: string[] | string;
   attributes?: SubjectAttribute[];
   images?: SubjectImageInput[];
+  voice?: SubjectVoiceInput;
 }): Promise<SubjectEntry> {
   const name = normalizeText(input.name);
   if (!name) {
@@ -470,6 +555,9 @@ export async function createSubject(input: {
     updatedAt: nowIso(),
   };
   subject.imagePaths = await materializeSubjectImages(id, input.images, []);
+  const voiceResult = await materializeSubjectVoice(id, input.voice, undefined);
+  subject.voicePath = voiceResult.voicePath;
+  subject.voiceScript = voiceResult.voiceScript;
   await writeSubjectFile(subject);
   const catalog = await readCatalog();
   catalog.subjects.push(subject);
@@ -485,6 +573,7 @@ export async function updateSubject(input: {
   tags?: string[] | string;
   attributes?: SubjectAttribute[];
   images?: SubjectImageInput[];
+  voice?: SubjectVoiceInput;
 }): Promise<SubjectEntry> {
   const existing = await getSubject(input.id);
   const next: SubjectRecord = {
@@ -495,6 +584,8 @@ export async function updateSubject(input: {
     tags: input.tags !== undefined ? normalizeList(input.tags) : existing.tags,
     attributes: input.attributes !== undefined ? normalizeAttributes(input.attributes) : existing.attributes,
     imagePaths: existing.imagePaths,
+    voicePath: existing.voicePath,
+    voiceScript: existing.voiceScript,
     updatedAt: nowIso(),
   };
   if (!next.name) {
@@ -502,6 +593,11 @@ export async function updateSubject(input: {
   }
   if (input.images !== undefined) {
     next.imagePaths = await materializeSubjectImages(existing.id, input.images, existing.imagePaths);
+  }
+  if (input.voice !== undefined) {
+    const voiceResult = await materializeSubjectVoice(existing.id, input.voice, existing.voicePath);
+    next.voicePath = voiceResult.voicePath;
+    next.voiceScript = voiceResult.voiceScript;
   }
   await writeSubjectFile(next);
   const catalog = await readCatalog();

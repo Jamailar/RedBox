@@ -42,6 +42,14 @@
   max-width: 100%;
 }
 
+.chat-layout-narrow .chat-ai-shell {
+  max-width: 660px;
+}
+
+.chat-layout-narrow .chat-user-bubble {
+  max-width: min(100%, 660px);
+}
+
 .chat-ai-actions {
   margin-top: 6px;
   width: 100%;

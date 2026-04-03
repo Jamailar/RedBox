@@ -126,8 +126,15 @@ interface GeneratedImageCliResult {
 interface GeneratedVideoCliResult {
     provider: string;
     model: string;
-    generationMode?: 'text-to-video' | 'reference-guided' | 'first-last-frame';
+    generationMode?: 'text-to-video' | 'reference-guided' | 'first-last-frame' | 'continuation';
     referenceImageCount?: number;
+    subjects?: Array<{
+        id: string;
+        name: string;
+        imageCount: number;
+        voiceReference?: boolean;
+    }>;
+    voiceReferenceUsed?: boolean;
     aspectRatio?: string;
     resolution: '720p' | '1080p';
     durationSeconds: number;
@@ -332,16 +339,13 @@ function buildReferenceAwarePrompt(
 }
 
 function inferVideoGenerationMode(
-    explicitMode: 'text-to-video' | 'reference-guided' | 'first-last-frame' | undefined,
+    explicitMode: 'text-to-video' | 'reference-guided' | 'first-last-frame' | 'continuation' | undefined,
     referenceImages: string[],
-): 'text-to-video' | 'reference-guided' | 'first-last-frame' {
+): 'text-to-video' | 'reference-guided' | 'first-last-frame' | 'continuation' {
     if (explicitMode) {
         return explicitMode;
     }
-    if (referenceImages.length >= 2) {
-        return 'first-last-frame';
-    }
-    if (referenceImages.length === 1) {
+    if (referenceImages.length >= 1) {
         return 'reference-guided';
     }
     return 'text-to-video';
@@ -403,8 +407,9 @@ const APP_CLI_NAMESPACE_HELP: Record<string, { summary: string; actions: string[
         actions: ['generate'],
         examples: [
             'video generate --prompt "海边日落镜头" --mode text-to-video --duration 8',
-            'video generate --prompt "让参考图里的女孩向前走近镜头" --mode reference-guided --reference-images "/abs/reference.png"',
+            'video generate --prompt "让这些参考图里的主体元素进入同一支短视频镜头" --mode reference-guided --reference-images "/abs/ref1.png,/abs/ref2.png,/abs/ref3.png"',
             'video generate --prompt "从清晨空房间过渡到夜晚亮灯房间" --mode first-last-frame --reference-images "/abs/first.png,/abs/last.png"',
+            'video generate --prompt "让这段镜头继续向前推进" --mode continuation --first-clip "/abs/clip.mp4"',
         ],
     },
     mcp: {
@@ -456,9 +461,10 @@ function helpText(topic?: string): string {
                 ? [
                     'Mode rules:',
                     '- text-to-video: 不传参考图；只根据文字生成视频。',
-                    '- reference-guided: 传 1 张参考图；在保留主体/风格的前提下生成动态视频。',
-                    '- first-last-frame: 传 2 张参考图，并按“首帧,尾帧”顺序传入；用于起止状态明确的过渡视频。',
-                    '- 若未显式传 mode，app_cli 会按参考图数量自动推断：0 张=文生视频，1 张=参考图视频，2 张=首尾帧视频。',
+                    '- reference-guided: 传 1 到 5 张参考图；主要复用这些图中的主体、元素、风格和构图线索，不是首尾帧过渡。',
+                    '- first-last-frame: 传 2 张参考图，并按“首帧,尾帧”顺序传入；在 RedBox 官方路由中会映射成 first_last_frame + media[]。',
+                    '- continuation: 传 1 段起始视频 `--first-clip`；在 RedBox 官方路由中会映射成 continuation + media[]。',
+                    '- 若未显式传 mode，app_cli 只会做安全兜底：0 个参考输入=文生视频，>=1 张参考图=参考图视频。首尾帧模式必须显式指定。',
                     '',
                 ]
                 : []),
@@ -1862,26 +1868,56 @@ export class AppCliTool extends DeclarativeTool<typeof AppCliParamsSchema> {
         const generationModeRaw = readFlag(parsed.flags, 'mode', 'generation-mode') || payload.generationMode;
         const generationMode = (() => {
             const normalized = String(generationModeRaw || '').trim().toLowerCase();
-            if (normalized === 'reference-guided' || normalized === 'first-last-frame' || normalized === 'text-to-video') {
-                return normalized as 'reference-guided' | 'first-last-frame' | 'text-to-video';
+            if (normalized === 'reference-guided' || normalized === 'first-last-frame' || normalized === 'text-to-video' || normalized === 'continuation') {
+                return normalized as 'reference-guided' | 'first-last-frame' | 'text-to-video' | 'continuation';
             }
             return undefined;
         })();
         const referenceImagesRaw = readFlag(parsed.flags, 'reference-images', 'refs') || payload.referenceImages;
         const directReferenceImages = Array.isArray(referenceImagesRaw)
-            ? referenceImagesRaw.map((item) => String(item || '').trim()).filter(Boolean).slice(0, 2)
+            ? referenceImagesRaw.map((item) => String(item || '').trim()).filter(Boolean).slice(0, 5)
             : String(referenceImagesRaw || '')
                 .split(',')
                 .map((item) => item.trim())
                 .filter(Boolean)
-                .slice(0, 2);
-        const effectiveGenerationMode = inferVideoGenerationMode(generationMode, directReferenceImages);
+                .slice(0, 5);
+        const subjectIds = parseList(readFlag(parsed.flags, 'subject-ids', 'subjects') || payload.subjectIds);
+        const subjectQuery = readFlag(parsed.flags, 'subject-query', 'query-subjects') || (payload.subjectQuery as string | undefined);
+        const matchedSubjects = subjectIds.length > 0
+            ? await Promise.all(subjectIds.slice(0, 5).map(async (id) => getSubject(id)))
+            : (subjectQuery ? await searchSubjects(subjectQuery, { limit: 5 }) : []);
+        const subjectReferenceImages: string[] = [];
+        if (matchedSubjects.length > 0) {
+            if (matchedSubjects.length === 1) {
+                const subject = matchedSubjects[0];
+                for (const imagePath of (subject.absoluteImagePaths || []).slice(0, 5)) {
+                    subjectReferenceImages.push(imagePath);
+                }
+            } else {
+                for (const subject of matchedSubjects) {
+                    const firstImage = (subject.absoluteImagePaths || [])[0];
+                    if (!firstImage) continue;
+                    subjectReferenceImages.push(firstImage);
+                    if (subjectReferenceImages.length >= 5) break;
+                }
+            }
+        }
+        const referenceImages = dedupeList([...directReferenceImages, ...subjectReferenceImages], 5);
+        const explicitDrivingAudio = String(readFlag(parsed.flags, 'driving-audio', 'audio-url') || payload.drivingAudio || '').trim();
+        const firstClip = String(readFlag(parsed.flags, 'first-clip', 'video-url') || payload.firstClip || '').trim();
+        const effectiveGenerationMode = inferVideoGenerationMode(generationMode, referenceImages);
+        const subjectDrivingAudio = !explicitDrivingAudio && effectiveGenerationMode === 'reference-guided'
+            ? String(matchedSubjects.find((subject) => subject.absoluteVoicePath)?.absoluteVoicePath || '').trim()
+            : '';
+        const drivingAudio = explicitDrivingAudio || subjectDrivingAudio;
         const result = await generateVideosToMediaLibrary({
             prompt,
             projectId: readFlag(parsed.flags, 'project-id') || (payload.projectId as string | undefined),
             title: readFlag(parsed.flags, 'title') || (payload.title as string | undefined),
             generationMode: effectiveGenerationMode,
-            referenceImages: directReferenceImages,
+            referenceImages,
+            drivingAudio,
+            firstClip,
             count: parseNumber(readFlag(parsed.flags, 'count') || payload.count),
             model: readFlag(parsed.flags, 'model') || (payload.model as string | undefined),
             aspectRatio: readFlag(parsed.flags, 'ratio', 'aspect-ratio') || (payload.aspectRatio as string | undefined),
@@ -1893,7 +1929,14 @@ export class AppCliTool extends DeclarativeTool<typeof AppCliParamsSchema> {
             provider: result.provider,
             model: result.model,
             generationMode: effectiveGenerationMode,
-            referenceImageCount: directReferenceImages.length,
+            referenceImageCount: referenceImages.length,
+            subjects: matchedSubjects.map((subject) => ({
+                id: subject.id,
+                name: subject.name,
+                imageCount: Array.isArray(subject.absoluteImagePaths) ? subject.absoluteImagePaths.length : 0,
+                voiceReference: Boolean(subject.absoluteVoicePath),
+            })),
+            voiceReferenceUsed: Boolean(subjectDrivingAudio),
             aspectRatio: result.aspectRatio,
             resolution: result.resolution,
             durationSeconds: result.durationSeconds,

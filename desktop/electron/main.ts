@@ -2681,6 +2681,7 @@ ipcMain.handle('subjects:create', async (_, payload: {
   tags?: string[] | string;
   attributes?: Array<{ key: string; value: string }>;
   images?: Array<{ name?: string; dataUrl?: string; relativePath?: string }>;
+  voice?: { name?: string; dataUrl?: string; relativePath?: string; scriptText?: string };
 }) => {
   try {
     const subject = await createSubject(payload || { name: '' });
@@ -2699,6 +2700,7 @@ ipcMain.handle('subjects:update', async (_, payload: {
   tags?: string[] | string;
   attributes?: Array<{ key: string; value: string }>;
   images?: Array<{ name?: string; dataUrl?: string; relativePath?: string }>;
+  voice?: { name?: string; dataUrl?: string; relativePath?: string; scriptText?: string };
 }) => {
   try {
     if (!payload?.id) {
@@ -2974,24 +2976,28 @@ ipcMain.handle('video-gen:generate', async (_, {
   durationSeconds,
   resolution,
   generateAudio,
+  drivingAudio,
+  firstClip,
 }: {
   prompt: string;
   projectId?: string;
   title?: string;
   model?: string;
-  generationMode?: 'text-to-video' | 'reference-guided' | 'first-last-frame' | string;
+  generationMode?: 'text-to-video' | 'reference-guided' | 'first-last-frame' | 'continuation' | string;
   referenceImages?: string[];
   aspectRatio?: string;
   count?: number;
   durationSeconds?: number;
   resolution?: '720p' | '1080p';
   generateAudio?: boolean;
+  drivingAudio?: string;
+  firstClip?: string;
 }) => {
   try {
     const normalizedGenerationMode = (() => {
       const value = String(generationMode || '').trim().toLowerCase();
-      if (value === 'text-to-video' || value === 'reference-guided' || value === 'first-last-frame') {
-        return value as 'text-to-video' | 'reference-guided' | 'first-last-frame';
+      if (value === 'text-to-video' || value === 'reference-guided' || value === 'first-last-frame' || value === 'continuation') {
+        return value as 'text-to-video' | 'reference-guided' | 'first-last-frame' | 'continuation';
       }
       return undefined;
     })();
@@ -3007,6 +3013,8 @@ ipcMain.handle('video-gen:generate', async (_, {
       durationSeconds,
       resolution,
       generateAudio,
+      drivingAudio,
+      firstClip,
     });
     const assets = await Promise.all(result.assets.map((asset) => enrichMediaAsset(asset)));
     return { success: true, assets };

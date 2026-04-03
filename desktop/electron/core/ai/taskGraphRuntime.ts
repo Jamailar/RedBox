@@ -36,6 +36,13 @@ const buildGraphForIntent = (params: { intent: string; multiAgent: boolean; long
     : [];
 
   switch (params.intent) {
+    case 'discussion':
+      return [
+        createNode('route', '初始化讨论上下文'),
+        createNode('spawn_agents', '推进成员讨论'),
+        createNode('save_artifact', '保存讨论记录'),
+        createNode('complete', '完成任务'),
+      ];
     case 'manuscript_creation':
       return [
         ...basePrefix,

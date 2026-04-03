@@ -1,6 +1,12 @@
+import fs from 'node:fs/promises';
+import path from 'node:path';
 import { getSettings } from '../db';
 import { createGeneratedMediaAsset, type MediaAsset } from './mediaLibraryStore';
 import { normalizeApiBaseUrl } from './urlUtils';
+import {
+    REDBOX_OFFICIAL_VIDEO_BASE_URL,
+    getRedBoxOfficialVideoModel,
+} from '../../shared/redboxVideo';
 
 export interface GenerateVideosInput {
     prompt: string;
@@ -14,8 +20,10 @@ export interface GenerateVideosInput {
     durationSeconds?: number;
     resolution?: '720p' | '1080p';
     generateAudio?: boolean;
-    generationMode?: 'text-to-video' | 'reference-guided' | 'first-last-frame';
+    generationMode?: 'text-to-video' | 'reference-guided' | 'first-last-frame' | 'continuation';
     referenceImages?: string[];
+    drivingAudio?: string;
+    firstClip?: string;
 }
 
 export interface GenerateVideosResult {
@@ -29,47 +37,19 @@ export interface GenerateVideosResult {
     assets: MediaAsset[];
 }
 
-const GEMINI_DEFAULT_VIDEO_MODEL = 'veo-2.0-generate-001';
-const OPENAI_DEFAULT_VIDEO_MODEL = 'sora-2';
-const DEFAULT_VIDEO_ENDPOINT = 'https://generativelanguage.googleapis.com/v1beta';
-const VIDEO_POLL_INTERVAL_MS = 5000;
-const VIDEO_POLL_MAX_ROUNDS = 120;
-
-function delay(ms: number): Promise<void> {
-    return new Promise((resolve) => setTimeout(resolve, ms));
+function maskKeySuffix(value: unknown): string {
+    const text = String(value || '').trim();
+    if (!text) return '';
+    return text.slice(-6);
 }
 
-function isOfficialGeminiEndpoint(endpoint: string): boolean {
+type VideoGenerationMode = 'text-to-video' | 'reference-guided' | 'first-last-frame' | 'continuation';
+const VIDEO_TASK_POLL_INTERVAL_MS = 3000;
+const VIDEO_TASK_POLL_TIMEOUT_MS = 6 * 60 * 1000;
+
+function isRedBoxCompatibleEndpoint(endpoint: string): boolean {
     const normalized = normalizeApiBaseUrl(endpoint).toLowerCase();
-    return normalized.includes('generativelanguage.googleapis.com')
-        || normalized.includes('.googleapis.com');
-}
-
-function detectGeminiApiVersionFromEndpoint(endpoint: string): 'v1' | 'v1beta' {
-    const normalized = normalizeApiBaseUrl(endpoint).toLowerCase();
-    return normalized.includes('/v1') && !normalized.includes('/v1beta') ? 'v1' : 'v1beta';
-}
-
-function isOfficialOpenAiEndpoint(endpoint: string): boolean {
-    const normalized = normalizeApiBaseUrl(endpoint);
-    if (!normalized) return false;
-    try {
-        const parsed = new URL(normalized);
-        return String(parsed.hostname || '').trim().toLowerCase() === 'api.openai.com';
-    } catch {
-        return false;
-    }
-}
-
-function createOpenAiSdkClient(endpoint: string, apiKey: string): any {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const OpenAI = require('openai').default;
-    return new OpenAI({
-        apiKey: String(apiKey || '').trim(),
-        baseURL: normalizeApiBaseUrl(endpoint),
-        timeout: 600000,
-        maxRetries: 0,
-    });
+    return normalized.includes('api.ziz.hk') && normalized.includes('/v1');
 }
 
 function normalizeVideoAspectRatio(value: string): '16:9' | '9:16' {
@@ -99,6 +79,59 @@ function mapOpenAiVideoSeconds(durationSeconds: number): '4' | '8' | '12' {
     if (durationSeconds <= 6) return '4';
     if (durationSeconds <= 10) return '8';
     return '12';
+}
+
+function inferMimeTypeFromPath(filePath: string): string {
+    const ext = path.extname(String(filePath || '').trim()).toLowerCase();
+    switch (ext) {
+        case '.png':
+            return 'image/png';
+        case '.jpg':
+        case '.jpeg':
+            return 'image/jpeg';
+        case '.webp':
+            return 'image/webp';
+        case '.gif':
+            return 'image/gif';
+        case '.mp3':
+            return 'audio/mpeg';
+        case '.wav':
+            return 'audio/wav';
+        case '.m4a':
+            return 'audio/mp4';
+        case '.aac':
+            return 'audio/aac';
+        case '.ogg':
+            return 'audio/ogg';
+        case '.mp4':
+            return 'video/mp4';
+        case '.mov':
+            return 'video/quicktime';
+        case '.webm':
+            return 'video/webm';
+        default:
+            return 'application/octet-stream';
+    }
+}
+
+async function normalizeMediaValueForRemote(value: string): Promise<string> {
+    const raw = String(value || '').trim();
+    if (!raw) {
+        return '';
+    }
+    if (/^(https?:)?\/\//i.test(raw) || raw.startsWith('data:')) {
+        return raw;
+    }
+    if (/^[A-Za-z0-9+/=]+$/.test(raw) && raw.length > 128) {
+        return raw;
+    }
+    try {
+        const buffer = await fs.readFile(raw);
+        const mimeType = inferMimeTypeFromPath(raw);
+        return `data:${mimeType};base64,${buffer.toString('base64')}`;
+    } catch {
+        return raw;
+    }
 }
 
 async function fetchGeneratedVideoBuffer(videoUrl: string, apiKey: string): Promise<{ buffer: Buffer; mimeType: string }> {
@@ -131,47 +164,82 @@ async function fetchGeneratedVideoBuffer(videoUrl: string, apiKey: string): Prom
     throw new Error(lastError);
 }
 
-async function downloadOpenAiVideoBuffer(client: any, videoId: string): Promise<{ buffer: Buffer; mimeType: string }> {
-    const response = await client.videos.downloadContent(videoId, { variant: 'video' });
-    if (!response?.ok) {
-        throw new Error(`下载生成视频失败 (${response?.status || 500} ${response?.statusText || 'Unknown Error'})`);
-    }
-    const mimeType = String(response.headers.get('content-type') || 'video/mp4').trim().toLowerCase() || 'video/mp4';
-    const buffer = Buffer.from(await response.arrayBuffer());
-    if (!buffer.length) {
-        throw new Error('下载到的生视频内容为空。');
-    }
-    return { buffer, mimeType };
-}
-
-async function waitForOpenAiVideo(client: any, videoId: string): Promise<any> {
-    for (let round = 0; round < VIDEO_POLL_MAX_ROUNDS; round += 1) {
-        const video = await client.videos.retrieve(videoId);
-        if (video?.status === 'completed') {
-            return video;
-        }
-        if (video?.status === 'failed') {
-            const reason = String(video?.error?.message || video?.error?.code || 'Unknown error');
-            throw new Error(`生视频任务失败：${reason}`);
-        }
-        await delay(VIDEO_POLL_INTERVAL_MS);
-    }
-    throw new Error('生视频任务超时，请稍后重试。');
-}
-
-function buildCompatibleVideoGenerationUrl(endpoint: string): string {
+function buildCompatibleVideoRouteUrl(endpoint: string, suffix: string): string {
     const normalized = normalizeApiBaseUrl(endpoint);
     try {
         const parsed = new URL(normalized);
         const pathname = parsed.pathname.replace(/\/+$/, '');
-        if (pathname.toLowerCase().endsWith('/videos/generations')) {
+        if (pathname.toLowerCase().endsWith(suffix.toLowerCase())) {
             return parsed.toString();
         }
-        parsed.pathname = `${pathname}/videos/generations`.replace(/\/{2,}/g, '/');
+        parsed.pathname = `${pathname}${suffix}`.replace(/\/{2,}/g, '/');
         return parsed.toString();
     } catch {
-        return `${normalized.replace(/\/+$/, '')}/videos/generations`;
+        return `${normalized.replace(/\/+$/, '')}${suffix}`;
     }
+}
+
+function buildCompatibleVideoRouteUrls(endpoint: string, suffix: string): string[] {
+    const primary = buildCompatibleVideoRouteUrl(endpoint, suffix);
+    const urls = [primary];
+    if (isRedBoxCompatibleEndpoint(endpoint)) {
+        try {
+            const parsed = new URL(normalizeApiBaseUrl(endpoint));
+            const apiRoute = `${parsed.origin}/api/v1${suffix}`;
+            const v1Route = `${parsed.origin}/v1${suffix}`;
+            return [primary, apiRoute, v1Route].filter((item, index, arr) => arr.indexOf(item) === index);
+        } catch {
+            return urls;
+        }
+    }
+    return urls;
+}
+
+function sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function extractTaskId(payload: any): string {
+    const direct = String(payload?.task_id || payload?.taskId || '').trim();
+    if (direct) return direct;
+    const data = payload?.data;
+    if (data && typeof data === 'object' && !Array.isArray(data)) {
+        return String((data as Record<string, unknown>).task_id || (data as Record<string, unknown>).taskId || '').trim();
+    }
+    return '';
+}
+
+function extractTaskStatus(payload: any): string {
+    const direct = String(payload?.task_status || payload?.status || '').trim();
+    if (direct) return direct.toUpperCase();
+    const data = payload?.data;
+    if (data && typeof data === 'object' && !Array.isArray(data)) {
+        return String((data as Record<string, unknown>).task_status || (data as Record<string, unknown>).status || '').trim().toUpperCase();
+    }
+    return '';
+}
+
+function extractTaskFailureMessage(payload: any): string {
+    const candidates = [
+        payload?.message,
+        payload?.error,
+        payload?.error_message,
+        payload?.detail,
+    ];
+    const data = payload?.data;
+    if (data && typeof data === 'object' && !Array.isArray(data)) {
+        candidates.push(
+            (data as Record<string, unknown>).message,
+            (data as Record<string, unknown>).error,
+            (data as Record<string, unknown>).error_message,
+            (data as Record<string, unknown>).detail,
+        );
+    }
+    for (const candidate of candidates) {
+        const text = String(candidate || '').trim();
+        if (text) return text;
+    }
+    return '';
 }
 
 function extractCompatibleVideoUrls(payload: any): string[] {
@@ -200,79 +268,6 @@ function extractCompatibleVideoUrls(payload: any): string[] {
     return urls;
 }
 
-async function generateViaOfficialOpenAiSdk(input: {
-    prompt: string;
-    endpoint: string;
-    apiKey: string;
-    model: string;
-    count: number;
-    aspectRatio: '16:9' | '9:16';
-    resolution: '720p' | '1080p';
-    durationSeconds: number;
-    title?: string;
-    projectId?: string;
-    referenceImages?: string[];
-}): Promise<GenerateVideosResult> {
-    const client = createOpenAiSdkClient(input.endpoint, input.apiKey);
-    const size = mapOpenAiVideoSize(input.aspectRatio, input.resolution);
-    const seconds = mapOpenAiVideoSeconds(input.durationSeconds);
-    const assets: MediaAsset[] = [];
-    const referenceImage = Array.isArray(input.referenceImages) ? input.referenceImages[0] : undefined;
-    const createBody: Record<string, unknown> = {
-        model: input.model,
-        prompt: input.prompt,
-        size,
-        seconds,
-    };
-
-    if (referenceImage) {
-        // eslint-disable-next-line @typescript-eslint/no-var-requires
-        const { toFile } = require('openai');
-        const base64Match = String(referenceImage).match(/^data:([^;,]+)?;base64,(.+)$/);
-        if (base64Match) {
-            createBody.input_reference = await toFile(
-                Buffer.from(base64Match[2], 'base64'),
-                'reference-image.png',
-                { type: base64Match[1] || 'image/png' }
-            );
-        }
-    }
-
-    for (let index = 0; index < input.count; index += 1) {
-        const job = await client.videos.create(createBody);
-        const video = await waitForOpenAiVideo(client, job.id);
-        const downloaded = await downloadOpenAiVideoBuffer(client, video.id);
-        const asset = await createGeneratedMediaAsset({
-            prompt: input.prompt,
-            dataBuffer: downloaded.buffer,
-            mimeType: downloaded.mimeType,
-            projectId: input.projectId?.trim() || undefined,
-            provider: input.endpoint.toLowerCase().includes('/redbox/') ? 'redbox' : 'openai-compatible',
-            model: input.model,
-            aspectRatio: input.aspectRatio,
-            size: input.resolution,
-            quality: `${input.durationSeconds}s`,
-            title: input.title?.trim() || undefined,
-        });
-        assets.push(asset);
-    }
-
-    if (!assets.length) {
-        throw new Error('生视频任务已完成，但没有可保存的视频文件。');
-    }
-
-    return {
-        model: input.model,
-        endpoint: input.endpoint,
-        provider: 'openai',
-        aspectRatio: input.aspectRatio,
-        resolution: input.resolution,
-        durationSeconds: input.durationSeconds,
-        generateAudio: false,
-        assets,
-    };
-}
-
 async function generateViaOpenAiCompatibleVideoRoute(input: {
     prompt: string;
     endpoint: string;
@@ -285,9 +280,12 @@ async function generateViaOpenAiCompatibleVideoRoute(input: {
     title?: string;
     projectId?: string;
     referenceImages?: string[];
-    generationMode?: 'text-to-video' | 'reference-guided' | 'first-last-frame';
+    generationMode?: VideoGenerationMode;
+    drivingAudio?: string;
+    firstClip?: string;
 }): Promise<GenerateVideosResult> {
-    const requestUrl = buildCompatibleVideoGenerationUrl(input.endpoint);
+    const createUrls = buildCompatibleVideoRouteUrls(input.endpoint, '/videos/generations/async');
+    const queryUrls = buildCompatibleVideoRouteUrls(input.endpoint, '/videos/generations/tasks/query');
     const size = mapOpenAiVideoSize(input.aspectRatio, input.resolution);
     const seconds = mapOpenAiVideoSeconds(input.durationSeconds);
     const refs = Array.isArray(input.referenceImages) ? input.referenceImages.filter(Boolean) : [];
@@ -298,31 +296,191 @@ async function generateViaOpenAiCompatibleVideoRoute(input: {
         seconds,
         n: input.count,
     };
-    if (refs[0]) {
-        body.image = refs[0];
-        body.image_url = refs[0];
-        body.reference_image = refs[0];
-        body.img_url = refs[0];
+    if (isRedBoxCompatibleEndpoint(input.endpoint)) {
+        body.resolution = input.resolution === '1080p' ? '1080P' : '720P';
+        body.duration = input.durationSeconds;
+
+        if (input.generationMode === 'reference-guided') {
+            const referenceImages = await Promise.all(refs.slice(0, 5).map((item) => normalizeMediaValueForRemote(item)));
+            const normalizedRefs = referenceImages.filter(Boolean);
+            if (normalizedRefs.length) {
+                body.images = normalizedRefs;
+                body.reference_images = normalizedRefs;
+                body.reference_image_urls = normalizedRefs;
+                body.image_urls = normalizedRefs;
+                body.image = normalizedRefs[0];
+                body.image_url = normalizedRefs[0];
+                body.reference_image = normalizedRefs[0];
+                body.img_url = normalizedRefs[0];
+            }
+        } else if (input.generationMode === 'first-last-frame') {
+            const firstFrame = refs[0] ? await normalizeMediaValueForRemote(refs[0]) : '';
+            const lastFrame = refs[1] ? await normalizeMediaValueForRemote(refs[1]) : '';
+            if (firstFrame || lastFrame) {
+                body.video_mode = 'first_last_frame';
+                body.media = [
+                    ...(firstFrame ? [{ type: 'first_frame', url: firstFrame }] : []),
+                    ...(lastFrame ? [{ type: 'last_frame', url: lastFrame }] : []),
+                ];
+                if (firstFrame) {
+                    body.image = firstFrame;
+                    body.image_url = firstFrame;
+                    body.reference_image = firstFrame;
+                    body.img_url = firstFrame;
+                }
+                body.images = [firstFrame, lastFrame].filter(Boolean);
+                if (lastFrame) {
+                    body.last_frame = lastFrame;
+                    body.last_frame_url = lastFrame;
+                    body.last_image_url = lastFrame;
+                }
+            }
+        } else if (input.generationMode === 'continuation') {
+            const firstClip = input.firstClip ? await normalizeMediaValueForRemote(input.firstClip) : '';
+            if (firstClip) {
+                body.video_mode = 'continuation';
+                body.media = [{ type: 'first_clip', url: firstClip }];
+                body.first_clip_url = firstClip;
+                body.video_url = firstClip;
+                body.video = firstClip;
+            }
+        }
+    } else {
+        if (refs[0]) {
+            body.image = refs[0];
+            body.image_url = refs[0];
+            body.reference_image = refs[0];
+            body.img_url = refs[0];
+        }
+        if (refs.length > 0) {
+            body.images = refs.slice(0, 2);
+        }
     }
-    if (refs.length > 0) {
-        body.images = refs.slice(0, 2);
+    let response: Response | null = null;
+    let payload: any = {};
+    let lastError = '';
+    let lastNetworkError = '';
+    for (const requestUrl of createUrls) {
+        try {
+            response = await fetch(requestUrl, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    Authorization: `Bearer ${input.apiKey}`,
+                },
+                body: JSON.stringify(body),
+            });
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error || 'fetch failed');
+            lastNetworkError = `[${requestUrl}] ${message}`;
+            lastError = `生视频网络请求失败：${lastNetworkError}`;
+            console.warn('[VideoGeneration] async create failed, trying fallback route', {
+                requestUrl,
+                error: message,
+            });
+            continue;
+        }
+        if (response.ok) {
+            payload = await response.json().catch(() => ({}));
+            break;
+        }
+        const errorText = await response.text();
+        lastError = `生视频异步创建失败 (${response.status}): ${errorText || response.statusText || 'request failed'}`;
+        if (response.status !== 404) {
+            throw new Error(lastError);
+        }
     }
-    const response = await fetch(requestUrl, {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${input.apiKey}`,
-        },
-        body: JSON.stringify(body),
+    if (!response?.ok) {
+        if (lastNetworkError) {
+            throw new Error(`生视频异步创建网络失败（请检查代理/网络/TLS）：${lastNetworkError}`);
+        }
+        throw new Error(lastError || '生视频异步创建失败');
+    }
+
+    const taskId = extractTaskId(payload);
+    if (!taskId) {
+        throw new Error('生视频异步创建成功，但接口未返回 task_id。');
+    }
+    console.log('[VideoGeneration] async task created', {
+        model: input.model,
+        taskId,
+        requestId: String(payload?.request_id || '').trim(),
+        endpoint: input.endpoint,
     });
 
-    if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`生视频请求失败 (${response.status}): ${errorText || response.statusText || 'request failed'}`);
+    const deadline = Date.now() + VIDEO_TASK_POLL_TIMEOUT_MS;
+    let finalPayload: any = payload;
+    let finalStatus = extractTaskStatus(payload);
+    let queryLastError = '';
+    let queryLastNetworkError = '';
+
+    while (Date.now() < deadline) {
+        if (finalStatus === 'SUCCEEDED') {
+            break;
+        }
+        if (finalStatus === 'FAILED' || finalStatus === 'CANCELLED') {
+            const failure = extractTaskFailureMessage(finalPayload);
+            throw new Error(`生视频异步任务失败：${failure || finalStatus}`);
+        }
+
+        await sleep(VIDEO_TASK_POLL_INTERVAL_MS);
+        response = null;
+
+        for (const queryUrl of queryUrls) {
+            try {
+                response = await fetch(queryUrl, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        Authorization: `Bearer ${input.apiKey}`,
+                    },
+                    body: JSON.stringify({
+                        model: input.model,
+                        task_id: taskId,
+                    }),
+                });
+            } catch (error) {
+                const message = error instanceof Error ? error.message : String(error || 'fetch failed');
+                queryLastNetworkError = `[${queryUrl}] ${message}`;
+                console.warn('[VideoGeneration] async query failed, trying fallback route', {
+                    queryUrl,
+                    error: message,
+                    taskId,
+                });
+                continue;
+            }
+
+            if (response.ok) {
+                finalPayload = await response.json().catch(() => ({}));
+                finalStatus = extractTaskStatus(finalPayload);
+                console.log('[VideoGeneration] async task polled', {
+                    taskId,
+                    status: finalStatus || 'UNKNOWN',
+                    requestId: String(finalPayload?.request_id || payload?.request_id || '').trim(),
+                });
+                break;
+            }
+
+            const errorText = await response.text();
+            queryLastError = `生视频异步查询失败 (${response.status}): ${errorText || response.statusText || 'request failed'}`;
+            if (response.status !== 404) {
+                throw new Error(queryLastError);
+            }
+        }
+
+        if (!response?.ok && queryLastNetworkError) {
+            queryLastError = `生视频异步查询网络失败（请检查代理/网络/TLS）：${queryLastNetworkError}`;
+        }
     }
 
-    const payload = await response.json().catch(() => ({}));
-    const videoUrls = extractCompatibleVideoUrls(payload);
+    if (finalStatus !== 'SUCCEEDED') {
+        if (queryLastError) {
+            throw new Error(queryLastError);
+        }
+        throw new Error(`生视频异步任务超时，task_id=${taskId}`);
+    }
+
+    const videoUrls = extractCompatibleVideoUrls(finalPayload);
     if (!videoUrls.length) {
         throw new Error('生视频任务已完成，但接口未返回可下载的视频地址。');
     }
@@ -368,154 +526,78 @@ export async function generateVideosToMediaLibrary(input: GenerateVideosInput): 
     }
 
     const settings = (getSettings() || {}) as Record<string, unknown>;
+    const generationMode = String(input.generationMode || '').trim() as VideoGenerationMode;
     const endpoint = normalizeApiBaseUrl(
         String(
-            input.endpoint ||
-            settings.video_endpoint ||
-            settings.api_endpoint ||
-            DEFAULT_VIDEO_ENDPOINT
-        ).trim()
+            REDBOX_OFFICIAL_VIDEO_BASE_URL
+        ).trim(),
+        REDBOX_OFFICIAL_VIDEO_BASE_URL
     );
-    const apiKey = String(input.apiKey || settings.video_api_key || settings.api_key || '').trim();
-    const isGeminiEndpoint = isOfficialGeminiEndpoint(endpoint);
-    const model = String(
-        input.model ||
-        settings.video_model ||
-        (isGeminiEndpoint ? GEMINI_DEFAULT_VIDEO_MODEL : OPENAI_DEFAULT_VIDEO_MODEL)
-    ).trim();
+    const inputApiKey = String(input.apiKey || '').trim();
+    const videoApiKey = String(settings.video_api_key || '').trim();
+    const globalApiKey = String(settings.api_key || '').trim();
+    const apiKey = inputApiKey || videoApiKey || globalApiKey;
+    const selectedKeySource = inputApiKey
+        ? 'input.apiKey'
+        : videoApiKey
+            ? 'settings.video_api_key'
+            : globalApiKey
+                ? 'settings.api_key'
+                : 'none';
     const aspectRatio = normalizeVideoAspectRatio(String(input.aspectRatio || '').trim());
     const resolution = normalizeVideoResolution(String(input.resolution || '').trim());
     const durationSeconds = normalizeVideoDuration(input.durationSeconds);
     const count = Math.max(1, Math.min(2, Number(input.count) || 1));
     const generateAudio = Boolean(input.generateAudio);
-    const generationMode = String(input.generationMode || '').trim() as 'text-to-video' | 'reference-guided' | 'first-last-frame';
-    const referenceImages = Array.isArray(input.referenceImages) ? input.referenceImages.filter(Boolean).slice(0, 2) : [];
+    const referenceImages = Array.isArray(input.referenceImages)
+        ? input.referenceImages.filter(Boolean).slice(0, generationMode === 'reference-guided' ? 5 : 2)
+        : [];
+    const drivingAudio = String(input.drivingAudio || '').trim();
+    const firstClip = String(input.firstClip || '').trim();
+    const model = getRedBoxOfficialVideoModel(generationMode || 'text-to-video');
 
     if (!endpoint) {
-        throw new Error('生视频 Endpoint 未配置。请先到“设置 → AI 模型”配置生视频模型。');
+        throw new Error('生视频 Endpoint 未配置。请先登录或配置 RedBox 官方 AI 源。');
     }
     if (!apiKey) {
-        throw new Error('生视频 API Key 未配置。请先到“设置 → AI 模型”配置生视频模型。');
+        throw new Error('生视频 API Key 未配置。请先登录或配置 RedBox 官方 AI 源。');
     }
-    if (!model) {
-        throw new Error('生视频模型未配置。请先到“设置 → AI 模型”选择生视频模型。');
+    if (!isRedBoxCompatibleEndpoint(endpoint)) {
+        throw new Error('生视频能力已锁定为 RedBox 官方视频源。请先使用 RedBox 官方 AI 源。');
     }
+    console.log('[VideoGeneration] auth prepared', {
+        endpoint,
+        keySource: selectedKeySource,
+        keySuffix: maskKeySuffix(apiKey),
+        videoKeySuffix: maskKeySuffix(videoApiKey),
+        globalKeySuffix: maskKeySuffix(globalApiKey),
+        model,
+        generationMode,
+    });
     if (generationMode === 'reference-guided' && referenceImages.length < 1) {
         throw new Error('参考图视频模式至少需要 1 张参考图。');
     }
     if (generationMode === 'first-last-frame' && referenceImages.length < 2) {
         throw new Error('首尾帧视频模式需要 2 张参考图。');
     }
-
-    if (!isGeminiEndpoint) {
-        const commonInput = {
-            prompt,
-            endpoint,
-            apiKey,
-            model,
-            count,
-            aspectRatio,
-            resolution,
-            durationSeconds,
-            title: input.title,
-            projectId: input.projectId,
-            referenceImages,
-            generationMode,
-        };
-        if (isOfficialOpenAiEndpoint(endpoint)) {
-            if (generationMode === 'first-last-frame') {
-                throw new Error('当前 OpenAI 官方视频 SDK 仅支持单参考图，不支持首尾帧视频模式。请改用 RedBox/兼容视频路由。');
-            }
-            return generateViaOfficialOpenAiSdk(commonInput);
-        }
-        return generateViaOpenAiCompatibleVideoRoute(commonInput);
+    if (generationMode === 'continuation' && !firstClip) {
+        throw new Error('视频续写模式需要 1 段起始视频。');
     }
 
-    if (generationMode !== 'text-to-video') {
-        throw new Error('当前 Gemini 官方视频链路仅支持文生视频。参考图视频和首尾帧视频请改用 OpenAI 兼容或 RedBox 官方视频路由。');
-    }
-
-    const { GoogleGenAI } = require('@google/genai');
-    const client = new GoogleGenAI({
-        apiKey,
-        apiVersion: detectGeminiApiVersionFromEndpoint(endpoint),
-        httpOptions: {
-            timeout: 600000,
-            retryOptions: {
-                attempts: 1,
-            },
-            baseUrl: `${new URL(endpoint).protocol}//${new URL(endpoint).host}`,
-        },
-    });
-
-    let operation = await client.models.generateVideos({
-        model,
-        source: {
-            prompt,
-        },
-        config: {
-            numberOfVideos: count,
-            aspectRatio,
-            resolution,
-            durationSeconds,
-            generateAudio,
-        },
-    });
-
-    for (let round = 0; round < VIDEO_POLL_MAX_ROUNDS && !operation?.done; round += 1) {
-        await delay(VIDEO_POLL_INTERVAL_MS);
-        operation = await client.operations.getVideosOperation({ operation });
-    }
-
-    if (!operation?.done) {
-        throw new Error('生视频任务超时，请稍后重试。');
-    }
-    if (operation.error) {
-        const reason = typeof operation.error === 'string'
-            ? operation.error
-            : JSON.stringify(operation.error);
-        throw new Error(`生视频任务失败：${reason}`);
-    }
-
-    const generatedVideos = Array.isArray(operation.response?.generatedVideos)
-        ? operation.response.generatedVideos
-        : [];
-    if (!generatedVideos.length) {
-        throw new Error('生视频任务未返回可用视频。');
-    }
-
-    const assets: MediaAsset[] = [];
-    for (const item of generatedVideos.slice(0, count)) {
-        const videoUrl = String(item?.video?.uri || '').trim();
-        if (!videoUrl) continue;
-        const downloaded = await fetchGeneratedVideoBuffer(videoUrl, apiKey);
-        const asset = await createGeneratedMediaAsset({
-            prompt,
-            dataBuffer: downloaded.buffer,
-            mimeType: downloaded.mimeType,
-            projectId: input.projectId?.trim() || undefined,
-            provider: 'gemini',
-            model,
-            aspectRatio,
-            size: resolution,
-            quality: `${durationSeconds}s${generateAudio ? '·audio' : ''}`,
-            title: input.title?.trim() || undefined,
-        });
-        assets.push(asset);
-    }
-
-    if (!assets.length) {
-        throw new Error('生视频任务已完成，但没有可保存的视频文件。');
-    }
-
-    return {
-        model,
+    return generateViaOpenAiCompatibleVideoRoute({
+        prompt,
         endpoint,
-        provider: 'gemini',
+        apiKey,
+        model,
+        count,
         aspectRatio,
         resolution,
         durationSeconds,
-        generateAudio,
-        assets,
-    };
+        title: input.title,
+        projectId: input.projectId,
+        referenceImages,
+        generationMode,
+        drivingAudio,
+        firstClip,
+    });
 }

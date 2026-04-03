@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ExternalLink, Link2, RefreshCw, Save, FolderOpen, ImagePlus, Sparkles, Search, SlidersHorizontal, Image, Pencil, X, Clapperboard } from 'lucide-react';
 import clsx from 'clsx';
 import { resolveAssetUrl } from '../utils/pathManager';
+import { REDBOX_OFFICIAL_VIDEO_BASE_URL, getRedBoxOfficialVideoModel } from '../../shared/redboxVideo';
 
 type MediaAssetSource = 'generated' | 'planned' | 'imported';
 
@@ -154,7 +155,7 @@ function flattenManuscripts(nodes: FileNode[]): string[] {
 
 function getVideoReferenceModeHint(mode: 'text-to-video' | 'reference-guided' | 'first-last-frame'): string {
     if (mode === 'reference-guided') {
-        return '上传 1 张主体参考图，视频会尽量贴近这张图的主体和风格。';
+        return '上传 1 到 5 张参考图，视频会尽量复用这些图中的主体元素、风格和构图线索。';
     }
     if (mode === 'first-last-frame') {
         return '请上传 2 张图片，第一张作为首帧，第二张作为尾帧。';
@@ -217,8 +218,8 @@ export function MediaLibrary() {
     const [videoPrompt, setVideoPrompt] = useState('');
     const [videoProjectId, setVideoProjectId] = useState('');
     const [videoTitle, setVideoTitle] = useState('');
-    const [videoModel, setVideoModel] = useState('');
     const [videoGenerationMode, setVideoGenerationMode] = useState<'text-to-video' | 'reference-guided' | 'first-last-frame'>('text-to-video');
+    const [videoReferenceImages, setVideoReferenceImages] = useState<Array<ReferenceImageItem | null>>([]);
     const [videoPrimaryReferenceImage, setVideoPrimaryReferenceImage] = useState<ReferenceImageItem | null>(null);
     const [videoLastFrameImage, setVideoLastFrameImage] = useState<ReferenceImageItem | null>(null);
     const [isReadingVideoRefImages, setIsReadingVideoRefImages] = useState(false);
@@ -274,7 +275,6 @@ export function MediaLibrary() {
             setAspectRatio(next.image_aspect_ratio || '3:4');
             setSize(next.image_size || '');
             setQuality(next.image_quality || 'standard');
-            setVideoModel(next.video_model || '');
         } catch (e) {
             console.error('Failed to load image settings:', e);
             setSettings({});
@@ -462,13 +462,14 @@ export function MediaLibrary() {
     const resolvedEndpoint = (settings.image_endpoint || settings.api_endpoint || '').trim();
     const resolvedApiKey = (settings.image_api_key || settings.api_key || '').trim();
     const hasImageConfig = Boolean(resolvedEndpoint) && Boolean(resolvedApiKey);
-    const resolvedVideoEndpoint = (settings.video_endpoint || settings.api_endpoint || '').trim();
+    const resolvedVideoEndpoint = REDBOX_OFFICIAL_VIDEO_BASE_URL;
     const resolvedVideoApiKey = (settings.video_api_key || settings.api_key || '').trim();
-    const hasVideoConfig = Boolean(resolvedVideoEndpoint) && Boolean(resolvedVideoApiKey) && Boolean(videoModel.trim());
+    const effectiveVideoModel = getRedBoxOfficialVideoModel(videoGenerationMode);
+    const hasVideoConfig = Boolean(resolvedVideoEndpoint) && Boolean(resolvedVideoApiKey);
 
     const handleGenerateVideo = useCallback(async () => {
         const effectiveVideoReferenceImages = videoGenerationMode === 'reference-guided'
-            ? (videoPrimaryReferenceImage ? [videoPrimaryReferenceImage] : [])
+            ? videoReferenceImages.filter(Boolean) as ReferenceImageItem[]
             : videoGenerationMode === 'first-last-frame'
                 ? [videoPrimaryReferenceImage, videoLastFrameImage].filter(Boolean) as ReferenceImageItem[]
                 : [];
@@ -496,7 +497,7 @@ export function MediaLibrary() {
                 prompt: videoPrompt,
                 projectId: videoProjectId.trim() || undefined,
                 title: videoTitle.trim() || undefined,
-                model: videoModel.trim() || undefined,
+                model: effectiveVideoModel,
                 generationMode: effectiveVideoReferenceImages.length > 0 ? videoGenerationMode : 'text-to-video',
                 referenceImages: effectiveVideoReferenceImages.map((item) => item.dataUrl),
                 aspectRatio: videoAspectRatio,
@@ -524,9 +525,10 @@ export function MediaLibrary() {
         videoGenerationMode,
         videoAspectRatio,
         videoDurationSeconds,
-        videoModel,
+        effectiveVideoModel,
         videoLastFrameImage,
         videoPrimaryReferenceImage,
+        videoReferenceImages,
         videoProjectId,
         videoPrompt,
         videoResolution,
@@ -534,7 +536,7 @@ export function MediaLibrary() {
     ]);
     const handleVideoReferenceFile = useCallback(async (
         event: React.ChangeEvent<HTMLInputElement>,
-        target: 'primary' | 'last'
+        target: 'primary' | 'last' | number
     ) => {
         const file = event.target.files?.[0];
         if (!file) return;
@@ -544,7 +546,13 @@ export function MediaLibrary() {
                 name: file.name,
                 dataUrl: await readFileAsDataUrl(file),
             };
-            if (target === 'primary') {
+            if (typeof target === 'number') {
+                setVideoReferenceImages((prev) => {
+                    const next = [...prev];
+                    next[target] = item;
+                    return next.slice(0, 5);
+                });
+            } else if (target === 'primary') {
                 setVideoPrimaryReferenceImage(item);
             } else {
                 setVideoLastFrameImage(item);
@@ -1058,11 +1066,11 @@ export function MediaLibrary() {
 
                         <div className="p-5 space-y-4">
                             <div className="text-xs text-text-secondary">
-                                当前生视频配置：model=<span className="font-mono">{videoModel || '(未设置)'}</span> · endpoint=<span className="font-mono">{resolvedVideoEndpoint || '(未设置)'}</span>
+                                当前生视频配置：source=<span className="font-mono">RedBox 官方</span> · model=<span className="font-mono">{effectiveVideoModel}</span> · endpoint=<span className="font-mono">{resolvedVideoEndpoint || '(未设置)'}</span>
                             </div>
                             {!hasVideoConfig && (
                                 <div className="text-xs text-status-error">
-                                    未检测到可用的生视频配置。请先到“设置 → AI 模型”选择生视频模型。当前已支持 Gemini 官方视频模型，以及 OpenAI 兼容的视频生成接口。
+                                    未检测到可用的 RedBox 官方视频配置。请先登录或配置 RedBox 官方 AI 源。
                                 </div>
                             )}
 
@@ -1088,43 +1096,51 @@ export function MediaLibrary() {
                                 </div>
 
                                 {videoGenerationMode === 'reference-guided' && (
-                                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                                        <label className="group relative flex aspect-square max-w-[160px] cursor-pointer overflow-hidden rounded-xl border border-dashed border-border bg-surface-secondary/20 hover:border-accent-primary/40 hover:bg-surface-secondary/40">
-                                            {videoPrimaryReferenceImage ? (
-                                                <img src={videoPrimaryReferenceImage.dataUrl} alt={videoPrimaryReferenceImage.name} className="h-full w-full object-cover" />
-                                            ) : (
-                                                <div className="flex h-full w-full flex-col items-center justify-center gap-2 text-text-tertiary">
-                                                    <ImagePlus className="h-5 w-5" />
-                                                    <div className="text-xs">上传参考图</div>
-                                                    <div className="text-[11px]">1 张</div>
-                                                </div>
-                                            )}
-                                            <div className="absolute left-2 top-2 rounded-md bg-black/55 px-2 py-1 text-[10px] text-white">参考图</div>
-                                            {videoPrimaryReferenceImage && (
-                                                <>
-                                                    <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/70 to-transparent px-3 pb-2 pt-6 text-[11px] text-white">
-                                                        <div className="truncate">{videoPrimaryReferenceImage.name}</div>
-                                                    </div>
-                                                    <button
-                                                        type="button"
-                                                        onClick={(event) => {
-                                                            event.preventDefault();
-                                                            event.stopPropagation();
-                                                            setVideoPrimaryReferenceImage(null);
-                                                        }}
-                                                        className="absolute right-2 top-2 inline-flex h-7 w-7 items-center justify-center rounded-full bg-black/55 text-white hover:bg-black/70"
-                                                    >
-                                                        <X className="h-4 w-4" />
-                                                    </button>
-                                                </>
-                                            )}
-                                            <input
-                                                type="file"
-                                                accept="image/*"
-                                                className="hidden"
-                                                onChange={(event) => void handleVideoReferenceFile(event, 'primary')}
-                                            />
-                                        </label>
+                                    <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-3">
+                                        {Array.from({ length: 5 }).map((_, index) => {
+                                            const item = videoReferenceImages[index] || null;
+                                            return (
+                                                <label key={index} className="group relative flex aspect-square max-w-[120px] cursor-pointer overflow-hidden rounded-xl border border-dashed border-border bg-surface-secondary/20 hover:border-accent-primary/40 hover:bg-surface-secondary/40">
+                                                    {item ? (
+                                                        <img src={item.dataUrl} alt={item.name} className="h-full w-full object-cover" />
+                                                    ) : (
+                                                        <div className="flex h-full w-full flex-col items-center justify-center gap-2 text-text-tertiary">
+                                                            <ImagePlus className="h-4 w-4" />
+                                                            <div className="text-[11px]">参考图{index + 1}</div>
+                                                        </div>
+                                                    )}
+                                                    <div className="absolute left-2 top-2 rounded-md bg-black/55 px-2 py-1 text-[10px] text-white">图{index + 1}</div>
+                                                    {item && (
+                                                        <>
+                                                            <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/70 to-transparent px-2 pb-2 pt-6 text-[10px] text-white">
+                                                                <div className="truncate">{item.name}</div>
+                                                            </div>
+                                                            <button
+                                                                type="button"
+                                                                onClick={(event) => {
+                                                                    event.preventDefault();
+                                                                    event.stopPropagation();
+                                                                    setVideoReferenceImages((prev) => {
+                                                                        const next = [...prev];
+                                                                        next[index] = null;
+                                                                        return next;
+                                                                    });
+                                                                }}
+                                                                className="absolute right-2 top-2 inline-flex h-6 w-6 items-center justify-center rounded-full bg-black/55 text-white hover:bg-black/70"
+                                                            >
+                                                                <X className="h-3.5 w-3.5" />
+                                                            </button>
+                                                        </>
+                                                    )}
+                                                    <input
+                                                        type="file"
+                                                        accept="image/*"
+                                                        className="hidden"
+                                                        onChange={(event) => void handleVideoReferenceFile(event, index)}
+                                                    />
+                                                </label>
+                                            );
+                                        })}
                                     </div>
                                 )}
 
@@ -1182,7 +1198,9 @@ export function MediaLibrary() {
                             <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
                                 <input value={videoTitle} onChange={(event) => setVideoTitle(event.target.value)} placeholder="视频标题（可选）" className="px-3 py-2 text-sm rounded-md border border-border bg-surface-secondary/20 focus:outline-none focus:ring-1 focus:ring-accent-primary" />
                                 <input value={videoProjectId} onChange={(event) => setVideoProjectId(event.target.value)} placeholder="项目ID（可选）" className="px-3 py-2 text-sm rounded-md border border-border bg-surface-secondary/20 focus:outline-none focus:ring-1 focus:ring-accent-primary" />
-                                <input value={videoModel} onChange={(event) => setVideoModel(event.target.value)} placeholder="视频模型（如 veo-2.0-generate-001）" className="px-3 py-2 text-sm rounded-md border border-border bg-surface-secondary/20 focus:outline-none focus:ring-1 focus:ring-accent-primary" />
+                                <div className="px-3 py-2 text-sm rounded-md border border-border bg-surface-primary/70 text-text-secondary">
+                                    当前模式模型：<span className="font-mono text-text-primary">{effectiveVideoModel}</span>
+                                </div>
                                 <select value={videoAspectRatio} onChange={(event) => setVideoAspectRatio(event.target.value as '16:9' | '9:16')} className="px-3 py-2 text-sm rounded-md border border-border bg-surface-secondary/20 focus:outline-none focus:ring-1 focus:ring-accent-primary">
                                     {VIDEO_ASPECT_RATIO_OPTIONS.map((option) => (
                                         <option key={option.value} value={option.value}>{option.label}</option>

@@ -335,9 +335,10 @@ function GeneralSettingsSectionInner({
                     <button
                         type="button"
                         onClick={() => setFormData((prev: any) => ({ ...prev, proxy_enabled: !prev.proxy_enabled }))}
-                        className={clsx('relative inline-flex h-7 w-12 items-center rounded-full transition-colors', formData.proxy_enabled ? 'bg-[#34C759]' : 'bg-gray-300')}
+                        className="ui-switch-track h-7 w-12"
+                        data-state={formData.proxy_enabled ? 'on' : 'off'}
                     >
-                        <span className={clsx('inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform', formData.proxy_enabled ? 'translate-x-6' : 'translate-x-1')} />
+                        <span className={clsx('ui-switch-thumb inline-block h-5 w-5', formData.proxy_enabled ? 'translate-x-6' : 'translate-x-1')} />
                     </button>
                 </div>
                 <div>
@@ -452,9 +453,10 @@ function GeneralSettingsSectionInner({
                         <button
                             type="button"
                             onClick={() => setAssistantDaemonDraft((prev) => ({ ...prev, enabled: !prev.enabled }))}
-                            className={clsx('relative inline-flex h-7 w-12 items-center rounded-full transition-colors', assistantDaemonDraft.enabled ? 'bg-[#34C759]' : 'bg-gray-300')}
+                            className="ui-switch-track h-7 w-12"
+                            data-state={assistantDaemonDraft.enabled ? 'on' : 'off'}
                         >
-                            <span className={clsx('inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform', assistantDaemonDraft.enabled ? 'translate-x-6' : 'translate-x-1')} />
+                            <span className={clsx('ui-switch-thumb inline-block h-5 w-5', assistantDaemonDraft.enabled ? 'translate-x-6' : 'translate-x-1')} />
                         </button>
                     </div>
                     <div className="flex items-center justify-between">
@@ -462,9 +464,10 @@ function GeneralSettingsSectionInner({
                         <button
                             type="button"
                             onClick={() => setAssistantDaemonDraft((prev) => ({ ...prev, autoStart: !prev.autoStart }))}
-                            className={clsx('relative inline-flex h-7 w-12 items-center rounded-full transition-colors', assistantDaemonDraft.autoStart ? 'bg-[#34C759]' : 'bg-gray-300')}
+                            className="ui-switch-track h-7 w-12"
+                            data-state={assistantDaemonDraft.autoStart ? 'on' : 'off'}
                         >
-                            <span className={clsx('inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform', assistantDaemonDraft.autoStart ? 'translate-x-6' : 'translate-x-1')} />
+                            <span className={clsx('ui-switch-thumb inline-block h-5 w-5', assistantDaemonDraft.autoStart ? 'translate-x-6' : 'translate-x-1')} />
                         </button>
                     </div>
                     <div className="flex items-center justify-between">
@@ -472,9 +475,10 @@ function GeneralSettingsSectionInner({
                         <button
                             type="button"
                             onClick={() => setAssistantDaemonDraft((prev) => ({ ...prev, keepAliveWhenNoWindow: !prev.keepAliveWhenNoWindow }))}
-                            className={clsx('relative inline-flex h-7 w-12 items-center rounded-full transition-colors', assistantDaemonDraft.keepAliveWhenNoWindow ? 'bg-[#34C759]' : 'bg-gray-300')}
+                            className="ui-switch-track h-7 w-12"
+                            data-state={assistantDaemonDraft.keepAliveWhenNoWindow ? 'on' : 'off'}
                         >
-                            <span className={clsx('inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform', assistantDaemonDraft.keepAliveWhenNoWindow ? 'translate-x-6' : 'translate-x-1')} />
+                            <span className={clsx('ui-switch-thumb inline-block h-5 w-5', assistantDaemonDraft.keepAliveWhenNoWindow ? 'translate-x-6' : 'translate-x-1')} />
                         </button>
                     </div>
                     <div>
@@ -551,9 +555,10 @@ function GeneralSettingsSectionInner({
                             <button
                                 type="button"
                                 onClick={() => setAssistantDaemonDraft((prev) => ({ ...prev, feishu: { ...prev.feishu, enabled: !prev.feishu.enabled } }))}
-                                className={clsx('relative inline-flex h-7 w-12 items-center rounded-full transition-colors', assistantDaemonDraft.feishu.enabled ? 'bg-[#34C759]' : 'bg-gray-300')}
+                                className="ui-switch-track h-7 w-12"
+                                data-state={assistantDaemonDraft.feishu.enabled ? 'on' : 'off'}
                             >
-                                <span className={clsx('inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform', assistantDaemonDraft.feishu.enabled ? 'translate-x-6' : 'translate-x-1')} />
+                                <span className={clsx('ui-switch-thumb inline-block h-5 w-5', assistantDaemonDraft.feishu.enabled ? 'translate-x-6' : 'translate-x-1')} />
                             </button>
                         </div>
                         <div>
@@ -639,9 +644,10 @@ function GeneralSettingsSectionInner({
                             <button
                                 type="button"
                                 onClick={() => setAssistantDaemonDraft((prev) => ({ ...prev, weixin: { ...prev.weixin, enabled: !prev.weixin.enabled } }))}
-                                className={clsx('relative inline-flex h-7 w-12 items-center rounded-full transition-colors', assistantDaemonDraft.weixin.enabled ? 'bg-[#34C759]' : 'bg-gray-300')}
+                                className="ui-switch-track h-7 w-12"
+                                data-state={assistantDaemonDraft.weixin.enabled ? 'on' : 'off'}
                             >
-                                <span className={clsx('inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform', assistantDaemonDraft.weixin.enabled ? 'translate-x-6' : 'translate-x-1')} />
+                                <span className={clsx('ui-switch-thumb inline-block h-5 w-5', assistantDaemonDraft.weixin.enabled ? 'translate-x-6' : 'translate-x-1')} />
                             </button>
                         </div>
                         <div className="rounded border border-border bg-surface-secondary/20 p-3 space-y-3">
@@ -688,7 +694,7 @@ function GeneralSettingsSectionInner({
                                     <img
                                         src={assistantDaemonWeixinLogin.qrcodeImageUrl || assistantDaemonWeixinLogin.qrcodeUrl}
                                         alt="微信登录二维码"
-                                        className="h-40 w-40 rounded border border-border bg-white object-contain"
+                                        className="h-40 w-40 rounded border border-border bg-surface-secondary/30 object-contain p-2"
                                     />
                                     <p className="text-[10px] text-text-tertiary break-all">{assistantDaemonWeixinLogin.qrcodeUrl}</p>
                                 </div>
@@ -831,16 +837,11 @@ function GeneralSettingsSectionInner({
                     <button
                         type="button"
                         onClick={() => setFormData((prev: any) => ({ ...prev, debug_log_enabled: !prev.debug_log_enabled }))}
-                        className={clsx(
-                            'relative inline-flex h-7 w-12 items-center rounded-full transition-colors',
-                            formData.debug_log_enabled ? 'bg-[#34C759]' : 'bg-gray-300'
-                        )}
+                        className="ui-switch-track h-7 w-12"
+                        data-state={formData.debug_log_enabled ? 'on' : 'off'}
                     >
                         <span
-                            className={clsx(
-                                'inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform',
-                                formData.debug_log_enabled ? 'translate-x-6' : 'translate-x-1'
-                            )}
+                            className={clsx('ui-switch-thumb inline-block h-5 w-5', formData.debug_log_enabled ? 'translate-x-6' : 'translate-x-1')}
                         />
                     </button>
                 </div>
@@ -2685,14 +2686,12 @@ export function ExperimentalSettingsSection({ flags, updateFlag }: ExperimentalS
                         <button
                             type="button"
                             onClick={() => updateFlag('vectorRecommendation', !flags.vectorRecommendation)}
-                            className={clsx(
-                                'relative w-11 h-6 rounded-full transition-colors shrink-0',
-                                flags.vectorRecommendation ? 'bg-accent-primary' : 'bg-border'
-                            )}
+                            className="ui-switch-track w-11 h-6 shrink-0"
+                            data-state={flags.vectorRecommendation ? 'on' : 'off'}
                         >
                             <div
                                 className={clsx(
-                                    'absolute top-1 w-4 h-4 bg-white rounded-full shadow transition-transform',
+                                    'ui-switch-thumb top-1 w-4 h-4',
                                     flags.vectorRecommendation ? 'translate-x-6' : 'translate-x-1'
                                 )}
                             />

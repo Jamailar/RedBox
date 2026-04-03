@@ -327,6 +327,7 @@ ${examples.join('\n')}`;
 }
 
 function getSkillsSection(skills: SkillDefinition[]): string {
+    const hasRedboxVideoDirector = skills.some((skill) => !skill.disabled && skill.name === 'redbox-video-director');
     const skillsXml = skills
         .filter(s => !s.disabled)
         .map(skill => `  <skill>
@@ -339,20 +340,41 @@ function getSkillsSection(skills: SkillDefinition[]): string {
   </skill>`)
         .join('\n');
 
-    return `# Available Skills
+    const lines = [
+        '# Available Skills',
+        '',
+        'You have access to specialized skills. Keep skill bodies out of context until they are actually needed.',
+        '',
+        '<available_skills>',
+        skillsXml,
+        '</available_skills>',
+        '',
+        '## Skill Activation Rules',
+        '1. Load a skill when the task clearly matches its description, workflow, or the user names it explicitly',
+        '2. Prefer `skill({ "skill": "skill-name" })`',
+        '3. Do not load multiple overlapping skills unless the task genuinely needs them',
+        '4. Do not call the skill tool with empty parameters',
+        '5. If a skill is loaded, follow its instructions for the current task until they conflict with newer user instructions',
+    ];
 
-You have access to specialized skills. Keep skill bodies out of context until they are actually needed.
+    if (hasRedboxVideoDirector) {
+        lines.push(
+            '',
+            '## Video Generation Hard Rule',
+            '- If the task is to generate a video, animated shot, motion clip, reference-image video, or first/last-frame transition, you must load `redbox-video-director` before using any video tool.',
+            '- Once `redbox-video-director` is loaded, you must strictly follow its workflow.',
+            '- Before any video tool call, first draft the video script and show it to the user for confirmation.',
+            '- That confirmation must include video duration and aspect ratio.',
+            '- Unless the user explicitly asks otherwise, each shot in the script should usually be 1-3 seconds, and no single shot may exceed 5 seconds.',
+            '- Prefer single-video mode only when the whole idea fits stably in one clip; a single clip must stay within 15 seconds.',
+            '- If the request is complex or shot-heavy, split it into multiple clips and plan to concatenate them with ffmpeg after generation.',
+            '- If the script is visually complex, ask whether storyboard stills should be generated first; if they are, prefer image-based video modes and use first/last-frame when the start/end transition is explicit.',
+            '- Only after confirmation may you call `app_cli(command="video generate ...")`.',
+            '- Do not skip this workflow even if the request sounds simple or the mode seems obvious.',
+        );
+    }
 
-<available_skills>
-${skillsXml}
-</available_skills>
-
-## ⚠️ Skill Activation Rules
-1. Load a skill when the task clearly matches its description, workflow, or the user names it explicitly
-2. Prefer \`skill({ "skill": "skill-name" })\`
-3. Do not load multiple overlapping skills unless the task genuinely needs them
-4. Do not call the skill tool with empty parameters
-5. If a skill is loaded, follow its instructions for the current task until they conflict with newer user instructions`;
+    return lines.join('\n');
 }
 
 function getOperationalGuidelines(interactive: boolean): string {

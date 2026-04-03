@@ -156,8 +156,6 @@ export class DiscussionFlowService extends EventEmitter {
                     advisorNames: params.advisors.map((advisor) => advisor.name),
                     isSixHatsMode: params.isSixHatsMode,
                     filePath: params.fileContext?.filePath,
-                    forceMultiAgent: params.advisors.length > 1,
-                    forceLongRunningTask: params.advisors.length >= 4 || Boolean(params.fileContext),
                 },
             },
         });
@@ -194,7 +192,7 @@ export class DiscussionFlowService extends EventEmitter {
         });
 
         let plannerOutput: SubagentOutput | null = null;
-        const shouldUseCoordinator = Boolean(routeAnalysis.shouldUseCoordinator || params.advisors.length > 1);
+        const shouldUseCoordinator = Boolean(routeAnalysis.shouldUseCoordinator);
         const shouldRunPlanner = shouldUseCoordinator && (
             params.advisors.length >= 4
             || Boolean(params.fileContext)

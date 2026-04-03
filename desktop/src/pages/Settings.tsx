@@ -58,6 +58,11 @@ import {
   toAiModelDescriptor,
 } from './settings/shared';
 import { type ModelCapability } from '../../shared/modelCapabilities';
+import {
+  REDBOX_OFFICIAL_VIDEO_BASE_URL,
+  REDBOX_OFFICIAL_VIDEO_MODEL_LIST,
+  REDBOX_OFFICIAL_VIDEO_MODELS,
+} from '../../shared/redboxVideo';
 import { hasOfficialAiPanel, loadOfficialAiPanelModule, type OfficialAiPanelProps } from '../features/official';
 import {
   ExperimentalSettingsSection,
@@ -279,7 +284,7 @@ export function Settings() {
     image_model: 'gpt-image-1',
     video_endpoint: '',
     video_api_key: '',
-    video_model: '',
+    video_model: String(REDBOX_OFFICIAL_VIDEO_MODELS['text-to-video']),
     image_provider_template: 'openai-images',
     image_aspect_ratio: '3:4',
     image_size: '',
@@ -316,8 +321,6 @@ export function Settings() {
   const [transcriptionSourceId, setTranscriptionSourceId] = useState('');
   const [embeddingSourceId, setEmbeddingSourceId] = useState('');
   const [imageSourceId, setImageSourceId] = useState('');
-  const [videoSourceId, setVideoSourceId] = useState('');
-
   const [modelsBySource, setModelsBySource] = useState<Record<string, AiModelDescriptor[]>>({});
   const [isTesting, setIsTesting] = useState(false);
   const [testStatus, setTestStatus] = useState<'idle' | 'success' | 'error'>('idle');
@@ -520,8 +523,6 @@ export function Settings() {
     if (feature === 'transcription') setTranscriptionSourceId(nextSourceId);
     if (feature === 'embedding') setEmbeddingSourceId(nextSourceId);
     if (feature === 'image') setImageSourceId(nextSourceId);
-    if (feature === 'video') setVideoSourceId(nextSourceId);
-
     setFormData((prev) => {
       if (feature === 'transcription') {
         return {
@@ -540,15 +541,7 @@ export function Settings() {
         };
       }
       if (feature === 'video') {
-        const nextVideoModels = filterAiModelsByCapability(getSourceModelList(source), 'video');
-        return {
-          ...prev,
-          video_endpoint: String(source.baseURL || '').trim(),
-          video_api_key: String(source.apiKey || '').trim(),
-          video_model: nextVideoModels.some((item) => item.id === String(prev.video_model || '').trim())
-            ? String(prev.video_model || '').trim()
-            : String(nextVideoModels[0]?.id || '').trim(),
-        };
+        return prev;
       }
 
       const nextRouting = inferImageRoutingFromSource(source);
@@ -585,10 +578,6 @@ export function Settings() {
     return getAiSourceById(imageSourceId);
   }, [getAiSourceById, imageSourceId]);
 
-  const selectedVideoSource = useMemo(() => {
-    return getAiSourceById(videoSourceId);
-  }, [getAiSourceById, videoSourceId]);
-
   const transcriptionSourceModels = useMemo(() => {
     return selectedTranscriptionSource ? filterAiModelsByCapability(getSourceModelList(selectedTranscriptionSource), 'transcription') : [];
   }, [getSourceModelList, selectedTranscriptionSource]);
@@ -600,10 +589,6 @@ export function Settings() {
   const imageSourceModels = useMemo(() => {
     return selectedImageSource ? filterAiModelsByCapability(getSourceModelList(selectedImageSource), 'image') : [];
   }, [getSourceModelList, selectedImageSource]);
-
-  const videoSourceModels = useMemo(() => {
-    return selectedVideoSource ? filterAiModelsByCapability(getSourceModelList(selectedVideoSource), 'video') : [];
-  }, [getSourceModelList, selectedVideoSource]);
 
   const allConfiguredModels = useMemo(() => {
     const collected: string[] = [];
@@ -1448,25 +1433,6 @@ export function Settings() {
     resolveLinkedSourceId,
   ]);
 
-  useEffect(() => {
-    const nextSourceId = resolveLinkedSourceId({
-      endpoint: formData.video_endpoint || formData.api_endpoint,
-      apiKey: formData.video_api_key || formData.api_key,
-      model: formData.video_model,
-      fallbackId: defaultAiSourceId,
-    });
-    setVideoSourceId((prev) => prev === nextSourceId ? prev : nextSourceId);
-  }, [
-    aiSources,
-    defaultAiSourceId,
-    formData.api_endpoint,
-    formData.api_key,
-    formData.video_endpoint,
-    formData.video_api_key,
-    formData.video_model,
-    resolveLinkedSourceId,
-  ]);
-
   const persistMcpServers = async (nextServers: McpServerConfig[], tip?: string) => {
     setIsSyncingMcp(true);
     try {
@@ -2037,9 +2003,9 @@ export function Settings() {
             }
             return settings.image_model || 'gpt-image-1';
           })(),
-          video_endpoint: settings.video_endpoint || '',
+          video_endpoint: REDBOX_OFFICIAL_VIDEO_BASE_URL,
           video_api_key: settings.video_api_key || '',
-          video_model: settings.video_model || '',
+          video_model: settings.video_model || REDBOX_OFFICIAL_VIDEO_MODELS['text-to-video'],
           image_aspect_ratio: settings.image_aspect_ratio || '3:4',
           image_size: '',
           image_quality: settings.image_quality || 'standard',
@@ -2436,18 +2402,12 @@ export function Settings() {
       const resolvedTranscriptionSource = getAiSourceById(transcriptionSourceId) || defaultSource || null;
       const resolvedEmbeddingSource = getAiSourceById(embeddingSourceId) || defaultSource || null;
       const resolvedImageSource = getAiSourceById(imageSourceId) || defaultSource || null;
-      const resolvedVideoSource = getAiSourceById(videoSourceId) || defaultSource || null;
       const resolvedTranscriptionModel = String(formData.transcription_model || pickBestModelForSource(resolvedTranscriptionSource) || '').trim();
       const resolvedEmbeddingModel = String(formData.embedding_model || pickBestModelForSource(resolvedEmbeddingSource) || '').trim();
       const resolvedImageModel = String(formData.image_model || pickBestModelForSource(resolvedImageSource) || '').trim();
-      const resolvedVideoModel = String(
-        formData.video_model ||
-        filterAiModelsByCapability(
-          resolvedVideoSource ? getSourceModelList(resolvedVideoSource) : [],
-          'video',
-        )[0]?.id ||
-        ''
-      ).trim();
+      const resolvedVideoModel = REDBOX_OFFICIAL_VIDEO_MODEL_LIST.includes(String(formData.video_model || '').trim() as typeof REDBOX_OFFICIAL_VIDEO_MODEL_LIST[number])
+        ? String(formData.video_model || '').trim()
+        : REDBOX_OFFICIAL_VIDEO_MODELS['text-to-video'];
       const selectedImageModel = String(resolvedImageModel || '').trim();
       if (!selectedImageModel) {
         throw new Error('请填写生图模型（可手动输入或从列表选择）');
@@ -2491,8 +2451,8 @@ export function Settings() {
         image_endpoint: String(resolvedImageSource?.baseURL || formData.image_endpoint || '').trim(),
         image_api_key: String(resolvedImageSource?.apiKey || formData.image_api_key || '').trim(),
         image_model: resolvedImageModel,
-        video_endpoint: String(resolvedVideoSource?.baseURL || formData.video_endpoint || '').trim(),
-        video_api_key: String(resolvedVideoSource?.apiKey || formData.video_api_key || '').trim(),
+        video_endpoint: REDBOX_OFFICIAL_VIDEO_BASE_URL,
+        video_api_key: String(formData.video_api_key || formData.api_key || '').trim(),
         video_model: resolvedVideoModel,
         ai_sources_json: JSON.stringify(sanitizedSources),
         default_ai_source_id: resolvedDefaultSourceId || defaultSource?.id || '',
@@ -3155,38 +3115,25 @@ export function Settings() {
                     <h3 className="text-sm font-medium text-text-primary mb-4">生视频模型设置</h3>
 
                     <div className="rounded-xl border border-border bg-surface-secondary/20 p-3 space-y-3">
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                        <div className="group">
-                          <label className="block text-xs font-medium text-text-secondary mb-1.5">
-                            生视频 AI 源
-                          </label>
-                          <AiSourceSelect
-                            value={videoSourceId}
-                            sources={aiSources}
-                            onChange={(nextSourceId) => handleLinkedSourceChange('video', nextSourceId)}
-                            className="w-full"
-                          />
+                      <div className="rounded-lg border border-border bg-surface-primary/70 p-3 text-xs text-text-secondary">
+                        生视频能力已固定为 <span className="font-medium text-text-primary">RedBox 官方视频源</span>。Endpoint 已锁定为官方地址，默认复用当前官方聊天配置的 API Key。
+                      </div>
+                      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                        <div className="rounded-lg border border-border bg-surface-primary/70 p-3">
+                          <div className="text-[11px] text-text-tertiary mb-1">文生视频</div>
+                          <div className="text-sm font-medium text-text-primary">{REDBOX_OFFICIAL_VIDEO_MODELS['text-to-video']}</div>
                         </div>
-                        <div className="group">
-                          <label className="block text-xs font-medium text-text-secondary mb-1.5">
-                            生视频模型
-                          </label>
-                          <AiModelSelect
-                            value={formData.video_model}
-                            onChange={(modelId) => setFormData((d) => ({ ...d, video_model: modelId }))}
-                            className="w-full"
-                            disabled={!videoSourceModels.length}
-                            placeholder="请先在该源中添加视频模型"
-                            options={videoSourceModels.map((model) => ({
-                              id: model.id,
-                              label: model.id,
-                              badges: buildModelCapabilityBadges(model.capabilities),
-                            }))}
-                          />
+                        <div className="rounded-lg border border-border bg-surface-primary/70 p-3">
+                          <div className="text-[11px] text-text-tertiary mb-1">参考图视频</div>
+                          <div className="text-sm font-medium text-text-primary">{REDBOX_OFFICIAL_VIDEO_MODELS['reference-guided']}</div>
+                        </div>
+                        <div className="rounded-lg border border-border bg-surface-primary/70 p-3">
+                          <div className="text-[11px] text-text-tertiary mb-1">图片/首尾帧视频</div>
+                          <div className="text-sm font-medium text-text-primary">{REDBOX_OFFICIAL_VIDEO_MODELS['first-last-frame']}</div>
                         </div>
                       </div>
                       <p className="text-[11px] text-text-tertiary">
-                        生视频会自动复用所选 AI 源的 Endpoint 与 API Key。当前已支持 Gemini 官方视频模型，以及 OpenAI 兼容的视频生成接口（包括 RedBox 官方视频路由）。
+                        RedClaw 与媒体库会按任务模式自动选择这 3 个官方模型之一，不再从自定义 AI 源中选择视频模型。
                       </p>
                     </div>
                   </div>
@@ -3273,14 +3220,12 @@ export function Settings() {
                         <button
                           type="button"
                           onClick={() => setFormData((d) => ({ ...d, wander_deep_think_enabled: !d.wander_deep_think_enabled }))}
-                          className={clsx(
-                            'relative w-11 h-6 rounded-full transition-colors shrink-0 mt-0.5',
-                            formData.wander_deep_think_enabled ? 'bg-accent-primary' : 'bg-border'
-                          )}
+                          className="ui-switch-track w-11 h-6 shrink-0 mt-0.5"
+                          data-state={formData.wander_deep_think_enabled ? 'on' : 'off'}
                         >
                           <div
                             className={clsx(
-                              'absolute top-1 w-4 h-4 bg-white rounded-full shadow transition-transform',
+                              'ui-switch-thumb top-1 w-4 h-4',
                               formData.wander_deep_think_enabled ? 'translate-x-6' : 'translate-x-1'
                             )}
                           />

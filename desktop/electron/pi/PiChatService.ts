@@ -1538,7 +1538,6 @@ export class PiChatService {
       'bash',
       'app_cli',
       'skill',
-      'activate_skill',
     ]);
   }
 
@@ -2118,22 +2117,6 @@ export class PiChatService {
       };
     };
 
-    tools.push({
-      name: 'activate_skill',
-      label: 'Activate Skill',
-      description: 'Legacy alias for the skill tool. Use this only if explicitly needed; prefer `skill`.',
-      parameters: {
-        type: 'object',
-        properties: {
-          skill: { type: 'string' },
-          name: { type: 'string' },
-        },
-        anyOf: [{ required: ['skill'] }, { required: ['name'] }],
-        additionalProperties: false,
-      } as any,
-      execute: async (_toolCallId: string, params: Record<string, unknown>) => executeSkillLoad(params),
-    } as AgentTool);
-
     return tools;
   }
 
@@ -2267,7 +2250,6 @@ export class PiChatService {
       'bash',
       'app_cli',
       'skill',
-      'activate_skill',
     ]);
 
     const mergedToolSet = new Set([...toolNameSet, ...explicitToolLikeTags]);
@@ -3038,8 +3020,12 @@ export class PiChatService {
         '- 当用户提到具体人物、商品、场景、道具、品牌款式时，先查询主体库：不确定命令时先 `app_cli(command="help subjects")`；通常先 `subjects search`，命中后再 `subjects get --id ...`。',
         '- 如果主体库没有结果，必须明确说未找到，不要自行臆测主体长相、服饰、商品款式或细节。',
         '- 当生图任务存在用户上传参考图、主体库图片、模板图、人物图、商品图时，必须优先使用 `app_cli(command="image generate ...")` 的参考图模式，不要退回纯文生图。',
+        '- 若任务是在已有图片上加标题、加字、补局部元素、替换局部内容或延续上一张图做修改，必须优先使用 `image-to-image` 模式，并先确认上一张图的真实路径，再把该图片作为 `referenceImages` 传入。',
+        '- 在 `image-to-image` 模式下，提示词只写“本次要修改的部分”；不要重新长篇描述整张图的风格、构图、氛围和主体，否则容易过拟合并破坏原图。',
         '- 当用户要求生成短视频、动态镜头、运镜片段、首尾帧过渡时，必须优先使用 `app_cli(command="video generate ...")`，不要把视频需求错误降级成静态图片。',
-        '- 视频生成模式选择规则：无参考图时用 `text-to-video`；有 1 张参考图时优先 `reference-guided`；有 2 张参考图且用户强调起止状态、首尾帧、过渡时用 `first-last-frame`。',
+        '- 视频生成模式选择规则：无参考图时用 `text-to-video`，并且不要传 `referenceImages`；有 1 张参考图时优先 `reference-guided`，并且只传 1 张图；只有当用户明确强调起始状态、结束状态、首尾帧、从图A过渡到图B时，才用 `first-last-frame`，并按“首帧,尾帧”顺序传 2 张图。',
+        '- 如果用户给了两张图，但意图只是“参考这两张图做视频”或“融合两张图元素”，不要直接用 `first-last-frame`；只有两张图分别承担首帧和尾帧语义时，才使用该模式。',
+        '- 若当前视频模型或路由不支持目标模式，必须明确说明兼容性限制，并改用支持该模式的视频路由；禁止静默改成别的模式后假装成功。',
         '- 如果已经命中主体库且主体含图片，优先通过 `payload.subjectIds` 或 `referenceImages` 把主体图片传进生图工具。',
         '- 多图参考时，提示词必须明确写出“图1/图2/图3 各自代表什么”，例如：图1是人物主体，图2是商品主体，图3是场景氛围参考。',
         '- 若本轮生图调用有参考图，但工具返回 `referenceImageCount = 0`，不能宣称“已按参考图生成成功”，必须说明参考图没有真正带入。',

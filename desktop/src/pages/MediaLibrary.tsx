@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { ExternalLink, Link2, RefreshCw, Save, FolderOpen, ImagePlus, Sparkles, Search, SlidersHorizontal, Image, Pencil } from 'lucide-react';
+import { ExternalLink, Link2, RefreshCw, Save, FolderOpen, ImagePlus, Sparkles, Search, SlidersHorizontal, Image, Pencil, X, Clapperboard } from 'lucide-react';
 import clsx from 'clsx';
 import { resolveAssetUrl } from '../utils/pathManager';
 
@@ -62,6 +62,11 @@ interface GeneratedAsset {
     quality?: string;
     relativePath?: string;
     updatedAt: string;
+}
+
+interface ReferenceImageItem {
+    name: string;
+    dataUrl: string;
 }
 
 interface SettingsShape {
@@ -147,6 +152,42 @@ function flattenManuscripts(nodes: FileNode[]): string[] {
     return result.sort((a, b) => a.localeCompare(b));
 }
 
+function getVideoReferenceModeHint(mode: 'text-to-video' | 'reference-guided' | 'first-last-frame'): string {
+    if (mode === 'reference-guided') {
+        return '上传 1 张主体参考图，视频会尽量贴近这张图的主体和风格。';
+    }
+    if (mode === 'first-last-frame') {
+        return '请上传 2 张图片，第一张作为首帧，第二张作为尾帧。';
+    }
+    return '文生视频不需要参考图。';
+}
+
+function inferImageAspectFromSize(size: string): string {
+    const matched = String(size || '').trim().match(/^(\d{2,5})x(\d{2,5})$/i);
+    if (!matched) return '';
+    const width = Number(matched[1]);
+    const height = Number(matched[2]);
+    if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return '';
+    const ratio = width / height;
+    const candidates: Array<{ label: string; value: number }> = [
+        { label: '1:1', value: 1 },
+        { label: '3:4', value: 3 / 4 },
+        { label: '4:3', value: 4 / 3 },
+        { label: '9:16', value: 9 / 16 },
+        { label: '16:9', value: 16 / 9 },
+    ];
+    let best = '';
+    let bestDelta = Number.POSITIVE_INFINITY;
+    for (const candidate of candidates) {
+        const delta = Math.abs(ratio - candidate.value);
+        if (delta < bestDelta) {
+            best = candidate.label;
+            bestDelta = delta;
+        }
+    }
+    return bestDelta <= 0.04 ? best : '';
+}
+
 export function MediaLibrary() {
     const [assets, setAssets] = useState<MediaAsset[]>([]);
     const [manuscripts, setManuscripts] = useState<string[]>([]);
@@ -178,7 +219,8 @@ export function MediaLibrary() {
     const [videoTitle, setVideoTitle] = useState('');
     const [videoModel, setVideoModel] = useState('');
     const [videoGenerationMode, setVideoGenerationMode] = useState<'text-to-video' | 'reference-guided' | 'first-last-frame'>('text-to-video');
-    const [videoReferenceImages, setVideoReferenceImages] = useState<Array<{ name: string; dataUrl: string }>>([]);
+    const [videoPrimaryReferenceImage, setVideoPrimaryReferenceImage] = useState<ReferenceImageItem | null>(null);
+    const [videoLastFrameImage, setVideoLastFrameImage] = useState<ReferenceImageItem | null>(null);
     const [isReadingVideoRefImages, setIsReadingVideoRefImages] = useState(false);
     const [videoAspectRatio, setVideoAspectRatio] = useState<'16:9' | '9:16'>('16:9');
     const [videoResolution, setVideoResolution] = useState<'720p' | '1080p'>('720p');
@@ -187,6 +229,8 @@ export function MediaLibrary() {
     const [videoGenError, setVideoGenError] = useState('');
     const [generatedVideoAssets, setGeneratedVideoAssets] = useState<GeneratedAsset[]>([]);
     const [expandedAssetId, setExpandedAssetId] = useState<string | null>(null);
+    const [isImageModalOpen, setIsImageModalOpen] = useState(false);
+    const [isVideoModalOpen, setIsVideoModalOpen] = useState(false);
 
     const loadData = useCallback(async () => {
         setLoading(true);
@@ -240,6 +284,14 @@ export function MediaLibrary() {
     useEffect(() => {
         void loadSettings();
     }, [loadSettings]);
+
+    useEffect(() => {
+        if (!size) return;
+        const sizeAspect = inferImageAspectFromSize(size);
+        if (sizeAspect && aspectRatio && aspectRatio !== 'auto' && sizeAspect !== aspectRatio) {
+            setSize('');
+        }
+    }, [aspectRatio, size]);
 
     const filteredAssets = useMemo(() => {
         const keyword = query.trim().toLowerCase();
@@ -384,23 +436,19 @@ export function MediaLibrary() {
         }
     }, [aspectRatio, count, genProjectId, genTitle, generationMode, loadData, model, prompt, quality, referenceImages, settings.image_provider, settings.image_provider_template, size]);
 
-    const handleReferenceFiles = useCallback(async (event: React.ChangeEvent<HTMLInputElement>) => {
-        const files = Array.from(event.target.files || []);
-        if (!files.length) return;
+    const handleReferenceFile = useCallback(async (event: React.ChangeEvent<HTMLInputElement>, targetIndex: number) => {
+        const file = event.target.files?.[0];
+        if (!file) return;
         setIsReadingRefImages(true);
         try {
-            const results = await Promise.all(files.slice(0, 4).map(async (file) => ({
+            const nextItem = {
                 name: file.name,
                 dataUrl: await readFileAsDataUrl(file),
-            })));
+            };
             setReferenceImages((prev) => {
-                const merged = [...prev, ...results].slice(0, 4);
-                const deduped = new Map<string, { name: string; dataUrl: string }>();
-                for (const item of merged) {
-                    const key = `${item.name}:${item.dataUrl.slice(0, 64)}`;
-                    if (!deduped.has(key)) deduped.set(key, item);
-                }
-                return Array.from(deduped.values()).slice(0, 4);
+                const next = [...prev];
+                next[targetIndex] = nextItem;
+                return next.slice(0, 4);
             });
         } catch (uploadError) {
             console.error('Failed to parse reference images:', uploadError);
@@ -419,15 +467,20 @@ export function MediaLibrary() {
     const hasVideoConfig = Boolean(resolvedVideoEndpoint) && Boolean(resolvedVideoApiKey) && Boolean(videoModel.trim());
 
     const handleGenerateVideo = useCallback(async () => {
+        const effectiveVideoReferenceImages = videoGenerationMode === 'reference-guided'
+            ? (videoPrimaryReferenceImage ? [videoPrimaryReferenceImage] : [])
+            : videoGenerationMode === 'first-last-frame'
+                ? [videoPrimaryReferenceImage, videoLastFrameImage].filter(Boolean) as ReferenceImageItem[]
+                : [];
         if (!videoPrompt.trim()) {
             setVideoGenError('请先输入视频提示词');
             return;
         }
-        if (videoGenerationMode === 'reference-guided' && videoReferenceImages.length < 1) {
+        if (videoGenerationMode === 'reference-guided' && effectiveVideoReferenceImages.length < 1) {
             setVideoGenError('参考图视频模式至少需要 1 张参考图');
             return;
         }
-        if (videoGenerationMode === 'first-last-frame' && videoReferenceImages.length < 2) {
+        if (videoGenerationMode === 'first-last-frame' && effectiveVideoReferenceImages.length < 2) {
             setVideoGenError('首尾帧视频模式需要 2 张参考图');
             return;
         }
@@ -444,8 +497,8 @@ export function MediaLibrary() {
                 projectId: videoProjectId.trim() || undefined,
                 title: videoTitle.trim() || undefined,
                 model: videoModel.trim() || undefined,
-                generationMode: videoReferenceImages.length > 0 ? videoGenerationMode : 'text-to-video',
-                referenceImages: videoReferenceImages.map((item) => item.dataUrl),
+                generationMode: effectiveVideoReferenceImages.length > 0 ? videoGenerationMode : 'text-to-video',
+                referenceImages: effectiveVideoReferenceImages.map((item) => item.dataUrl),
                 aspectRatio: videoAspectRatio,
                 resolution: videoResolution,
                 durationSeconds: videoDurationSeconds,
@@ -472,33 +525,32 @@ export function MediaLibrary() {
         videoAspectRatio,
         videoDurationSeconds,
         videoModel,
+        videoLastFrameImage,
+        videoPrimaryReferenceImage,
         videoProjectId,
         videoPrompt,
-        videoReferenceImages,
         videoResolution,
         videoTitle,
     ]);
-
-    const handleVideoReferenceFiles = useCallback(async (event: React.ChangeEvent<HTMLInputElement>) => {
-        const files = Array.from(event.target.files || []);
-        if (!files.length) return;
+    const handleVideoReferenceFile = useCallback(async (
+        event: React.ChangeEvent<HTMLInputElement>,
+        target: 'primary' | 'last'
+    ) => {
+        const file = event.target.files?.[0];
+        if (!file) return;
         setIsReadingVideoRefImages(true);
         try {
-            const results = await Promise.all(files.slice(0, 2).map(async (file) => ({
+            const item = {
                 name: file.name,
                 dataUrl: await readFileAsDataUrl(file),
-            })));
-            setVideoReferenceImages((prev) => {
-                const merged = [...prev, ...results].slice(0, 2);
-                const deduped = new Map<string, { name: string; dataUrl: string }>();
-                for (const item of merged) {
-                    const key = `${item.name}:${item.dataUrl.slice(0, 64)}`;
-                    if (!deduped.has(key)) deduped.set(key, item);
-                }
-                return Array.from(deduped.values()).slice(0, 2);
-            });
+            };
+            if (target === 'primary') {
+                setVideoPrimaryReferenceImage(item);
+            } else {
+                setVideoLastFrameImage(item);
+            }
         } catch (uploadError) {
-            console.error('Failed to parse video reference images:', uploadError);
+            console.error('Failed to parse video reference image:', uploadError);
             setVideoGenError('视频参考图读取失败，请重试');
         } finally {
             setIsReadingVideoRefImages(false);
@@ -534,6 +586,24 @@ export function MediaLibrary() {
                     </div>
 
                     <div className="ml-auto flex items-center gap-1.5">
+                        <button
+                            onClick={() => setIsImageModalOpen(true)}
+                            className="h-7 px-2.5 text-[11px] rounded-md border border-border hover:bg-surface-secondary text-text-secondary"
+                        >
+                            <span className="inline-flex items-center gap-1">
+                                <ImagePlus className="w-3.5 h-3.5" />
+                                生图
+                            </span>
+                        </button>
+                        <button
+                            onClick={() => setIsVideoModalOpen(true)}
+                            className="h-7 px-2.5 text-[11px] rounded-md border border-border hover:bg-surface-secondary text-text-secondary"
+                        >
+                            <span className="inline-flex items-center gap-1">
+                                <Clapperboard className="w-3.5 h-3.5" />
+                                生视频
+                            </span>
+                        </button>
                         <button
                             onClick={() => void window.ipcRenderer.invoke('media:open-root')}
                             className="h-7 px-2.5 text-[11px] rounded-md border border-border hover:bg-surface-secondary text-text-secondary"
@@ -615,384 +685,7 @@ export function MediaLibrary() {
                 </div>
             </div>
 
-            <div className="flex-1 overflow-auto p-6 space-y-6">
-                <div className="border border-border rounded-xl bg-surface-primary p-4 md:p-5 space-y-4 shadow-sm">
-                    <div className="flex items-center gap-2 text-sm font-medium text-text-primary">
-                        <Sparkles className="w-4 h-4 text-accent-primary" />
-                        在媒体库内生图
-                    </div>
-                    <div className="text-xs text-text-secondary">
-                        当前生图配置：provider=<span className="font-mono">{settings.image_provider || 'openai-compatible'}</span> · template=<span className="font-mono">{settings.image_provider_template || 'openai-images'}</span> · endpoint=<span className="font-mono">{resolvedEndpoint || '(未设置)'}</span>
-                    </div>
-                    {!hasImageConfig && (
-                        <div className="text-xs text-status-error">
-                            未检测到生图配置。请先到“设置 → AI 模型”填写生图 Endpoint 和 API Key。
-                        </div>
-                    )}
-
-                    <textarea
-                        value={prompt}
-                        onChange={(event) => setPrompt(event.target.value)}
-                        placeholder="输入提示词，例如：一张温暖晨光中的北欧风民宿客厅，真实摄影风格，适合小红书封面"
-                        rows={4}
-                        className="w-full px-3 py-2 text-sm rounded-md border border-border bg-surface-secondary/20 focus:outline-none focus:ring-1 focus:ring-accent-primary"
-                    />
-
-                    <div className="space-y-2">
-                        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                            <select
-                                value={generationMode}
-                                onChange={(event) => setGenerationMode(event.target.value as 'text-to-image' | 'reference-guided' | 'image-to-image')}
-                                className="px-3 py-2 text-sm rounded-md border border-border bg-surface-secondary/20 focus:outline-none focus:ring-1 focus:ring-accent-primary"
-                            >
-                                <option value="text-to-image">文生图</option>
-                                <option value="reference-guided">参考图引导</option>
-                                <option value="image-to-image">图生图</option>
-                            </select>
-                            <label className="px-3 py-2 text-sm rounded-md border border-border bg-surface-secondary/20 cursor-pointer hover:bg-surface-secondary/30">
-                                {isReadingRefImages ? '读取参考图中...' : '上传参考图（最多4张）'}
-                                <input
-                                    type="file"
-                                    accept="image/*"
-                                    multiple
-                                    className="hidden"
-                                    onChange={handleReferenceFiles}
-                                />
-                            </label>
-                            <button
-                                type="button"
-                                onClick={() => setReferenceImages([])}
-                                className="px-3 py-2 text-sm rounded-md border border-border bg-surface-secondary/20 hover:bg-surface-secondary/30 disabled:opacity-50"
-                                disabled={!referenceImages.length}
-                            >
-                                清空参考图
-                            </button>
-                        </div>
-                        {referenceImages.length > 0 && (
-                            <div className="flex flex-wrap gap-2">
-                                {referenceImages.map((item, index) => (
-                                    <div key={`${item.name}-${index}`} className="inline-flex items-center gap-2 px-2.5 py-1.5 rounded border border-border bg-surface-secondary/20 text-xs text-text-secondary">
-                                        <span className="truncate max-w-[220px]">{item.name}</span>
-                                        <button
-                                            type="button"
-                                            onClick={() => setReferenceImages((prev) => prev.filter((_, i) => i !== index))}
-                                            className="text-text-tertiary hover:text-text-primary"
-                                        >
-                                            移除
-                                        </button>
-                                    </div>
-                                ))}
-                            </div>
-                        )}
-                    </div>
-
-                    <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
-                        <input
-                            value={genTitle}
-                            onChange={(event) => setGenTitle(event.target.value)}
-                            placeholder="资产标题（可选）"
-                            className="px-3 py-2 text-sm rounded-md border border-border bg-surface-secondary/20 focus:outline-none focus:ring-1 focus:ring-accent-primary"
-                        />
-                        <input
-                            value={genProjectId}
-                            onChange={(event) => setGenProjectId(event.target.value)}
-                            placeholder="项目ID（可选）"
-                            className="px-3 py-2 text-sm rounded-md border border-border bg-surface-secondary/20 focus:outline-none focus:ring-1 focus:ring-accent-primary"
-                        />
-                        <input
-                            value={model}
-                            onChange={(event) => setModel(event.target.value)}
-                            placeholder="模型（如 gpt-image-1）"
-                            className="px-3 py-2 text-sm rounded-md border border-border bg-surface-secondary/20 focus:outline-none focus:ring-1 focus:ring-accent-primary"
-                        />
-                        <select
-                            value={aspectRatio}
-                            onChange={(event) => setAspectRatio(event.target.value)}
-                            className="px-3 py-2 text-sm rounded-md border border-border bg-surface-secondary/20 focus:outline-none focus:ring-1 focus:ring-accent-primary"
-                        >
-                            {ASPECT_RATIO_OPTIONS.map((option) => (
-                                <option key={option.value} value={option.value}>
-                                    {option.label}
-                                </option>
-                            ))}
-                        </select>
-                        <select
-                            value={size}
-                            onChange={(event) => setSize(event.target.value)}
-                            className="px-3 py-2 text-sm rounded-md border border-border bg-surface-secondary/20 focus:outline-none focus:ring-1 focus:ring-accent-primary"
-                        >
-                            <option value="">自动（按比例）</option>
-                            <option value="1024x1024">1024x1024</option>
-                            <option value="1024x1536">1024x1536</option>
-                            <option value="1536x1024">1536x1024</option>
-                            <option value="auto">auto</option>
-                        </select>
-                        <select
-                            value={quality}
-                            onChange={(event) => setQuality(event.target.value)}
-                            className="px-3 py-2 text-sm rounded-md border border-border bg-surface-secondary/20 focus:outline-none focus:ring-1 focus:ring-accent-primary"
-                        >
-                            <option value="standard">standard</option>
-                            <option value="high">high</option>
-                            <option value="auto">auto</option>
-                        </select>
-                        <select
-                            value={count}
-                            onChange={(event) => setCount(Number(event.target.value))}
-                            className="px-3 py-2 text-sm rounded-md border border-border bg-surface-secondary/20 focus:outline-none focus:ring-1 focus:ring-accent-primary"
-                        >
-                            <option value={1}>1 张</option>
-                            <option value={2}>2 张</option>
-                            <option value={3}>3 张</option>
-                            <option value={4}>4 张</option>
-                        </select>
-                    </div>
-
-                    <div className="flex items-center gap-2">
-                        <button
-                            onClick={() => void handleGenerate()}
-                            disabled={isGenerating || !hasImageConfig}
-                            className="px-4 py-2 text-sm rounded-md bg-accent-primary text-white hover:bg-accent-primary/90 disabled:opacity-50"
-                        >
-                            <span className="inline-flex items-center gap-1.5">
-                                {isGenerating ? <RefreshCw className="w-4 h-4 animate-spin" /> : <ImagePlus className="w-4 h-4" />}
-                                {isGenerating ? '生成中...' : '开始生图'}
-                            </span>
-                        </button>
-                        <button
-                            onClick={() => void loadSettings()}
-                            className="px-3 py-2 text-xs rounded-md border border-border hover:bg-surface-secondary text-text-secondary"
-                        >
-                            刷新生图配置
-                        </button>
-                    </div>
-
-                    {genError && <div className="text-xs text-status-error">{genError}</div>}
-                </div>
-
-                <div className="border border-border rounded-xl bg-surface-primary p-4 md:p-5 space-y-4 shadow-sm">
-                    <div className="flex items-center gap-2 text-sm font-medium text-text-primary">
-                        <Sparkles className="w-4 h-4 text-accent-primary" />
-                        在媒体库内生视频
-                    </div>
-                    <div className="text-xs text-text-secondary">
-                        当前生视频配置：model=<span className="font-mono">{videoModel || '(未设置)'}</span> · endpoint=<span className="font-mono">{resolvedVideoEndpoint || '(未设置)'}</span>
-                    </div>
-                    {!hasVideoConfig && (
-                        <div className="text-xs text-status-error">
-                            未检测到可用的生视频配置。请先到“设置 → AI 模型”选择生视频模型。当前已支持 Gemini 官方视频模型，以及 OpenAI 兼容的视频生成接口（包括 RedBox 官方视频路由）。
-                        </div>
-                    )}
-
-                    <textarea
-                        value={videoPrompt}
-                        onChange={(event) => setVideoPrompt(event.target.value)}
-                        placeholder="输入视频提示词，例如：晨光下的海边公路航拍镜头，电影感，轻微推镜，适合社媒短视频"
-                        rows={4}
-                        className="w-full px-3 py-2 text-sm rounded-md border border-border bg-surface-secondary/20 focus:outline-none focus:ring-1 focus:ring-accent-primary"
-                    />
-
-                    <div className="space-y-2">
-                        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                            <select
-                                value={videoGenerationMode}
-                                onChange={(event) => setVideoGenerationMode(event.target.value as 'text-to-video' | 'reference-guided' | 'first-last-frame')}
-                                className="px-3 py-2 text-sm rounded-md border border-border bg-surface-secondary/20 focus:outline-none focus:ring-1 focus:ring-accent-primary"
-                            >
-                                {VIDEO_GENERATION_MODE_OPTIONS.map((option) => (
-                                    <option key={option.value} value={option.value}>
-                                        {option.label}
-                                    </option>
-                                ))}
-                            </select>
-                            <label className="px-3 py-2 text-sm rounded-md border border-border bg-surface-secondary/20 cursor-pointer hover:bg-surface-secondary/30">
-                                {isReadingVideoRefImages ? '读取参考图中...' : '上传参考图（最多2张）'}
-                                <input
-                                    type="file"
-                                    accept="image/*"
-                                    multiple
-                                    className="hidden"
-                                    onChange={handleVideoReferenceFiles}
-                                />
-                            </label>
-                            <button
-                                type="button"
-                                onClick={() => setVideoReferenceImages([])}
-                                className="px-3 py-2 text-sm rounded-md border border-border bg-surface-secondary/20 hover:bg-surface-secondary/30 disabled:opacity-50"
-                                disabled={!videoReferenceImages.length}
-                            >
-                                清空参考图
-                            </button>
-                        </div>
-                        {videoReferenceImages.length > 0 && (
-                            <div className="flex flex-wrap gap-2">
-                                {videoReferenceImages.map((item, index) => (
-                                    <div key={`${item.name}-${index}`} className="inline-flex items-center gap-2 px-2.5 py-1.5 rounded border border-border bg-surface-secondary/20 text-xs text-text-secondary">
-                                        <span className="truncate max-w-[220px]">{item.name}</span>
-                                        <button
-                                            type="button"
-                                            onClick={() => setVideoReferenceImages((prev) => prev.filter((_, i) => i !== index))}
-                                            className="text-text-tertiary hover:text-text-primary"
-                                        >
-                                            移除
-                                        </button>
-                                    </div>
-                                ))}
-                            </div>
-                        )}
-                        <div className="text-[11px] text-text-tertiary">
-                            文生视频不需要参考图。参考图视频建议上传 1 张主体参考图。首尾帧模式请上传 2 张图片，按顺序作为首帧和尾帧。
-                        </div>
-                    </div>
-
-                    <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
-                        <input
-                            value={videoTitle}
-                            onChange={(event) => setVideoTitle(event.target.value)}
-                            placeholder="视频标题（可选）"
-                            className="px-3 py-2 text-sm rounded-md border border-border bg-surface-secondary/20 focus:outline-none focus:ring-1 focus:ring-accent-primary"
-                        />
-                        <input
-                            value={videoProjectId}
-                            onChange={(event) => setVideoProjectId(event.target.value)}
-                            placeholder="项目ID（可选）"
-                            className="px-3 py-2 text-sm rounded-md border border-border bg-surface-secondary/20 focus:outline-none focus:ring-1 focus:ring-accent-primary"
-                        />
-                        <input
-                            value={videoModel}
-                            onChange={(event) => setVideoModel(event.target.value)}
-                            placeholder="视频模型（如 veo-2.0-generate-001）"
-                            className="px-3 py-2 text-sm rounded-md border border-border bg-surface-secondary/20 focus:outline-none focus:ring-1 focus:ring-accent-primary"
-                        />
-                        <select
-                            value={videoAspectRatio}
-                            onChange={(event) => setVideoAspectRatio(event.target.value as '16:9' | '9:16')}
-                            className="px-3 py-2 text-sm rounded-md border border-border bg-surface-secondary/20 focus:outline-none focus:ring-1 focus:ring-accent-primary"
-                        >
-                            {VIDEO_ASPECT_RATIO_OPTIONS.map((option) => (
-                                <option key={option.value} value={option.value}>
-                                    {option.label}
-                                </option>
-                            ))}
-                        </select>
-                        <select
-                            value={videoResolution}
-                            onChange={(event) => setVideoResolution(event.target.value as '720p' | '1080p')}
-                            className="px-3 py-2 text-sm rounded-md border border-border bg-surface-secondary/20 focus:outline-none focus:ring-1 focus:ring-accent-primary"
-                        >
-                            <option value="720p">720p</option>
-                            <option value="1080p">1080p</option>
-                        </select>
-                        <select
-                            value={videoDurationSeconds}
-                            onChange={(event) => setVideoDurationSeconds(Number(event.target.value))}
-                            className="px-3 py-2 text-sm rounded-md border border-border bg-surface-secondary/20 focus:outline-none focus:ring-1 focus:ring-accent-primary"
-                        >
-                            <option value={5}>5 秒</option>
-                            <option value={8}>8 秒</option>
-                            <option value={10}>10 秒</option>
-                            <option value={12}>12 秒</option>
-                        </select>
-                    </div>
-
-                    <div className="flex items-center gap-2">
-                        <button
-                            onClick={() => void handleGenerateVideo()}
-                            disabled={isGeneratingVideo || !hasVideoConfig}
-                            className="px-4 py-2 text-sm rounded-md bg-accent-primary text-white hover:bg-accent-primary/90 disabled:opacity-50"
-                        >
-                            <span className="inline-flex items-center gap-1.5">
-                                {isGeneratingVideo ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
-                                {isGeneratingVideo ? '生成中...' : '开始生视频'}
-                            </span>
-                        </button>
-                        <button
-                            onClick={() => void loadSettings()}
-                            className="px-3 py-2 text-xs rounded-md border border-border hover:bg-surface-secondary text-text-secondary"
-                        >
-                            刷新生视频配置
-                        </button>
-                    </div>
-
-                    {videoGenError && <div className="text-xs text-status-error">{videoGenError}</div>}
-                </div>
-
-                {generatedAssets.length > 0 && (
-                    <div className="space-y-3">
-                        <div className="text-sm font-medium text-text-primary inline-flex items-center gap-2">
-                            <Sparkles className="w-4 h-4 text-accent-primary" />
-                            最新生成结果（{generatedAssets.length}）
-                        </div>
-                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-3">
-                            {generatedAssets.map((asset) => (
-                                <div key={asset.id} className="group border border-border rounded-xl bg-surface-primary overflow-hidden shadow-sm hover:shadow-md transition-shadow">
-                                    {asset.previewUrl && asset.exists ? (
-                                        isVideoAsset(asset) ? (
-                                            <video src={resolveAssetUrl(asset.previewUrl)} className="w-full aspect-[4/5] object-cover bg-black" controls preload="metadata" />
-                                        ) : (
-                                            <img src={resolveAssetUrl(asset.previewUrl)} alt={asset.title || asset.id} className="w-full aspect-[4/5] object-cover" />
-                                        )
-                                    ) : (
-                                        <div className="w-full aspect-[4/5] bg-surface-secondary flex items-center justify-center text-text-tertiary text-xs">
-                                            无法预览
-                                        </div>
-                                    )}
-                                    <div className="p-3 space-y-1.5">
-                                        <div className="text-sm text-text-primary truncate">{asset.title || asset.id}</div>
-                                        <div className="text-[11px] text-text-tertiary truncate">{asset.projectId || '(无项目ID)'}</div>
-                                        <div className="text-[11px] text-text-tertiary truncate">{asset.model || ''} · {asset.aspectRatio || asset.size || ''} · {asset.quality || ''}</div>
-                                        <button
-                                            onClick={() => void window.ipcRenderer.invoke('media:open', { assetId: asset.id })}
-                                            className="mt-1 px-2.5 py-1.5 text-xs rounded border border-border hover:bg-surface-secondary text-text-secondary"
-                                        >
-                                            <span className="inline-flex items-center gap-1">
-                                                <ExternalLink className="w-3.5 h-3.5" />
-                                                打开文件
-                                            </span>
-                                        </button>
-                                    </div>
-                                </div>
-                            ))}
-                        </div>
-                    </div>
-                )}
-
-                {generatedVideoAssets.length > 0 && (
-                    <div className="space-y-3">
-                        <div className="text-sm font-medium text-text-primary inline-flex items-center gap-2">
-                            <Sparkles className="w-4 h-4 text-accent-primary" />
-                            最新生视频结果（{generatedVideoAssets.length}）
-                        </div>
-                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-3">
-                            {generatedVideoAssets.map((asset) => (
-                                <div key={asset.id} className="group border border-border rounded-xl bg-surface-primary overflow-hidden shadow-sm hover:shadow-md transition-shadow">
-                                    {asset.previewUrl && asset.exists ? (
-                                        <video src={resolveAssetUrl(asset.previewUrl)} className="w-full aspect-[4/5] object-cover bg-black" controls preload="metadata" />
-                                    ) : (
-                                        <div className="w-full aspect-[4/5] bg-surface-secondary flex items-center justify-center text-text-tertiary text-xs">
-                                            无法预览
-                                        </div>
-                                    )}
-                                    <div className="p-3 space-y-1.5">
-                                        <div className="text-sm text-text-primary truncate">{asset.title || asset.id}</div>
-                                        <div className="text-[11px] text-text-tertiary truncate">{asset.projectId || '(无项目ID)'}</div>
-                                        <div className="text-[11px] text-text-tertiary truncate">{asset.model || ''} · {asset.aspectRatio || ''} · {asset.size || ''}</div>
-                                        <button
-                                            onClick={() => void window.ipcRenderer.invoke('media:open', { assetId: asset.id })}
-                                            className="mt-1 px-2.5 py-1.5 text-xs rounded border border-border hover:bg-surface-secondary text-text-secondary"
-                                        >
-                                            <span className="inline-flex items-center gap-1">
-                                                <ExternalLink className="w-3.5 h-3.5" />
-                                                打开文件
-                                            </span>
-                                        </button>
-                                    </div>
-                                </div>
-                            ))}
-                        </div>
-                    </div>
-                )}
-
+            <div className="flex-1 overflow-auto p-6">
                 {loading ? (
                     <div className="text-sm text-text-tertiary">正在加载媒体库...</div>
                 ) : error ? (
@@ -1143,6 +836,423 @@ export function MediaLibrary() {
                     </div>
                 )}
             </div>
+            {isImageModalOpen && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4">
+                    <div className="w-full max-w-5xl max-h-[88vh] overflow-auto rounded-2xl border border-border bg-surface-primary shadow-2xl">
+                        <div className="sticky top-0 z-10 flex items-center gap-2 border-b border-border bg-surface-primary/95 px-5 py-4 backdrop-blur">
+                            <div className="flex items-center gap-2 text-sm font-medium text-text-primary">
+                                <ImagePlus className="w-4 h-4 text-accent-primary" />
+                                在媒体库内生图
+                            </div>
+                            <button
+                                onClick={() => void loadSettings()}
+                                className="ml-auto px-3 py-2 text-xs rounded-md border border-border hover:bg-surface-secondary text-text-secondary"
+                            >
+                                刷新配置
+                            </button>
+                            <button
+                                onClick={() => setIsImageModalOpen(false)}
+                                className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-border text-text-secondary hover:bg-surface-secondary"
+                            >
+                                <X className="w-4 h-4" />
+                            </button>
+                        </div>
+
+                        <div className="p-5 space-y-4">
+                            <div className="text-xs text-text-secondary">
+                                当前生图配置：provider=<span className="font-mono">{settings.image_provider || 'openai-compatible'}</span> · template=<span className="font-mono">{settings.image_provider_template || 'openai-images'}</span> · endpoint=<span className="font-mono">{resolvedEndpoint || '(未设置)'}</span>
+                            </div>
+                            {!hasImageConfig && (
+                                <div className="text-xs text-status-error">
+                                    未检测到生图配置。请先到“设置 → AI 模型”填写生图 Endpoint 和 API Key。
+                                </div>
+                            )}
+
+                            <textarea
+                                value={prompt}
+                                onChange={(event) => setPrompt(event.target.value)}
+                                placeholder="输入提示词，例如：一张温暖晨光中的北欧风民宿客厅，真实摄影风格，适合小红书封面"
+                                rows={4}
+                                className="w-full px-3 py-2 text-sm rounded-md border border-border bg-surface-secondary/20 focus:outline-none focus:ring-1 focus:ring-accent-primary"
+                            />
+
+                            <div className="space-y-2">
+                                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                                    <select
+                                        value={generationMode}
+                                        onChange={(event) => setGenerationMode(event.target.value as 'text-to-image' | 'reference-guided' | 'image-to-image')}
+                                        className="px-3 py-2 text-sm rounded-md border border-border bg-surface-secondary/20 focus:outline-none focus:ring-1 focus:ring-accent-primary"
+                                    >
+                                        <option value="text-to-image">文生图</option>
+                                        <option value="reference-guided">参考图引导</option>
+                                        <option value="image-to-image">图生图</option>
+                                    </select>
+                                </div>
+
+                                {generationMode !== 'text-to-image' && (
+                                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                                        {Array.from({ length: 4 }).map((_, index) => {
+                                            const item = referenceImages[index];
+                                            return (
+                                                <label key={index} className="group relative flex aspect-square max-w-[144px] cursor-pointer overflow-hidden rounded-xl border border-dashed border-border bg-surface-secondary/20 hover:border-accent-primary/40 hover:bg-surface-secondary/40">
+                                                    {item ? (
+                                                        <img src={item.dataUrl} alt={item.name} className="h-full w-full object-cover" />
+                                                    ) : (
+                                                        <div className="flex h-full w-full flex-col items-center justify-center gap-2 text-text-tertiary">
+                                                            <ImagePlus className="h-5 w-5" />
+                                                            <div className="text-xs">上传参考图</div>
+                                                            <div className="text-[11px]">参考图 {index + 1}</div>
+                                                        </div>
+                                                    )}
+                                                    <div className="absolute left-2 top-2 rounded-md bg-black/55 px-2 py-1 text-[10px] text-white">
+                                                        {index === 0 && generationMode === 'image-to-image' ? '主图' : `参考图 ${index + 1}`}
+                                                    </div>
+                                                    {item && (
+                                                        <>
+                                                            <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/70 to-transparent px-3 pb-2 pt-6 text-[11px] text-white">
+                                                                <div className="truncate">{item.name}</div>
+                                                            </div>
+                                                            <button
+                                                                type="button"
+                                                                onClick={(event) => {
+                                                                    event.preventDefault();
+                                                                    event.stopPropagation();
+                                                                    setReferenceImages((prev) => prev.filter((_, i) => i !== index));
+                                                                }}
+                                                                className="absolute right-2 top-2 inline-flex h-7 w-7 items-center justify-center rounded-full bg-black/55 text-white hover:bg-black/70"
+                                                            >
+                                                                <X className="h-4 w-4" />
+                                                            </button>
+                                                        </>
+                                                    )}
+                                                    <input
+                                                        type="file"
+                                                        accept="image/*"
+                                                        className="hidden"
+                                                        onChange={(event) => void handleReferenceFile(event, index)}
+                                                    />
+                                                </label>
+                                            );
+                                        })}
+                                    </div>
+                                )}
+
+                                <div className="text-[11px] text-text-tertiary">
+                                    {generationMode === 'text-to-image'
+                                        ? '文生图不需要参考图。'
+                                        : isReadingRefImages
+                                            ? '正在读取参考图...'
+                                            : (generationMode === 'image-to-image'
+                                                ? '图生图至少需要 1 张参考图，其余槽位可作为附加参考图。'
+                                                : '参考图引导支持最多 4 张参考图。')}
+                                </div>
+                            </div>
+
+                            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+                                <input value={genTitle} onChange={(event) => setGenTitle(event.target.value)} placeholder="资产标题（可选）" className="px-3 py-2 text-sm rounded-md border border-border bg-surface-secondary/20 focus:outline-none focus:ring-1 focus:ring-accent-primary" />
+                                <input value={genProjectId} onChange={(event) => setGenProjectId(event.target.value)} placeholder="项目ID（可选）" className="px-3 py-2 text-sm rounded-md border border-border bg-surface-secondary/20 focus:outline-none focus:ring-1 focus:ring-accent-primary" />
+                                <input value={model} onChange={(event) => setModel(event.target.value)} placeholder="模型（如 gpt-image-1）" className="px-3 py-2 text-sm rounded-md border border-border bg-surface-secondary/20 focus:outline-none focus:ring-1 focus:ring-accent-primary" />
+                                <select value={aspectRatio} onChange={(event) => setAspectRatio(event.target.value)} className="px-3 py-2 text-sm rounded-md border border-border bg-surface-secondary/20 focus:outline-none focus:ring-1 focus:ring-accent-primary">
+                                    {ASPECT_RATIO_OPTIONS.map((option) => (
+                                        <option key={option.value} value={option.value}>{option.label}</option>
+                                    ))}
+                                </select>
+                                <select value={size} onChange={(event) => setSize(event.target.value)} className="px-3 py-2 text-sm rounded-md border border-border bg-surface-secondary/20 focus:outline-none focus:ring-1 focus:ring-accent-primary">
+                                    <option value="">自动（按比例）</option>
+                                    <option value="1024x1024">1024x1024</option>
+                                    <option value="1024x1536">1024x1536</option>
+                                    <option value="1536x1024">1536x1024</option>
+                                    <option value="auto">auto</option>
+                                </select>
+                                <select value={quality} onChange={(event) => setQuality(event.target.value)} className="px-3 py-2 text-sm rounded-md border border-border bg-surface-secondary/20 focus:outline-none focus:ring-1 focus:ring-accent-primary">
+                                    <option value="standard">standard</option>
+                                    <option value="high">high</option>
+                                    <option value="auto">auto</option>
+                                </select>
+                                <select value={count} onChange={(event) => setCount(Number(event.target.value))} className="px-3 py-2 text-sm rounded-md border border-border bg-surface-secondary/20 focus:outline-none focus:ring-1 focus:ring-accent-primary">
+                                    <option value={1}>1 张</option>
+                                    <option value={2}>2 张</option>
+                                    <option value={3}>3 张</option>
+                                    <option value={4}>4 张</option>
+                                </select>
+                            </div>
+
+                            <div className="flex items-center gap-2">
+                                <button
+                                    onClick={() => void handleGenerate()}
+                                    disabled={isGenerating || !hasImageConfig}
+                                    className="px-4 py-2 text-sm rounded-md bg-accent-primary text-white hover:bg-accent-primary/90 disabled:opacity-50"
+                                >
+                                    <span className="inline-flex items-center gap-1.5">
+                                        {isGenerating ? <RefreshCw className="w-4 h-4 animate-spin" /> : <ImagePlus className="w-4 h-4" />}
+                                        {isGenerating ? '生成中...' : '开始生图'}
+                                    </span>
+                                </button>
+                            </div>
+
+                            {genError && <div className="text-xs text-status-error">{genError}</div>}
+
+                            {generatedAssets.length > 0 && (
+                                <div className="space-y-3 border-t border-border pt-4">
+                                    <div className="text-sm font-medium text-text-primary inline-flex items-center gap-2">
+                                        <Sparkles className="w-4 h-4 text-accent-primary" />
+                                        最新生成结果（{generatedAssets.length}）
+                                    </div>
+                                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                                        {generatedAssets.map((asset) => (
+                                            <div key={asset.id} className="group border border-border rounded-xl bg-surface-primary overflow-hidden shadow-sm hover:shadow-md transition-shadow">
+                                                {asset.previewUrl && asset.exists ? (
+                                                    isVideoAsset(asset) ? (
+                                                        <video src={resolveAssetUrl(asset.previewUrl)} className="w-full aspect-[4/5] object-cover bg-black" controls preload="metadata" />
+                                                    ) : (
+                                                        <img src={resolveAssetUrl(asset.previewUrl)} alt={asset.title || asset.id} className="w-full aspect-[4/5] object-cover" />
+                                                    )
+                                                ) : (
+                                                    <div className="w-full aspect-[4/5] bg-surface-secondary flex items-center justify-center text-text-tertiary text-xs">无法预览</div>
+                                                )}
+                                                <div className="p-3 space-y-1.5">
+                                                    <div className="text-sm text-text-primary truncate">{asset.title || asset.id}</div>
+                                                    <div className="text-[11px] text-text-tertiary truncate">{asset.projectId || '(无项目ID)'}</div>
+                                                    <div className="text-[11px] text-text-tertiary truncate">{asset.model || ''} · {asset.aspectRatio || asset.size || ''} · {asset.quality || ''}</div>
+                                                    <button
+                                                        onClick={() => void window.ipcRenderer.invoke('media:open', { assetId: asset.id })}
+                                                        className="mt-1 px-2.5 py-1.5 text-xs rounded border border-border hover:bg-surface-secondary text-text-secondary"
+                                                    >
+                                                        <span className="inline-flex items-center gap-1">
+                                                            <ExternalLink className="w-3.5 h-3.5" />
+                                                            打开文件
+                                                        </span>
+                                                    </button>
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {isVideoModalOpen && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4">
+                    <div className="w-full max-w-5xl max-h-[88vh] overflow-auto rounded-2xl border border-border bg-surface-primary shadow-2xl">
+                        <div className="sticky top-0 z-10 flex items-center gap-2 border-b border-border bg-surface-primary/95 px-5 py-4 backdrop-blur">
+                            <div className="flex items-center gap-2 text-sm font-medium text-text-primary">
+                                <Clapperboard className="w-4 h-4 text-accent-primary" />
+                                在媒体库内生视频
+                            </div>
+                            <button
+                                onClick={() => void loadSettings()}
+                                className="ml-auto px-3 py-2 text-xs rounded-md border border-border hover:bg-surface-secondary text-text-secondary"
+                            >
+                                刷新配置
+                            </button>
+                            <button
+                                onClick={() => setIsVideoModalOpen(false)}
+                                className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-border text-text-secondary hover:bg-surface-secondary"
+                            >
+                                <X className="w-4 h-4" />
+                            </button>
+                        </div>
+
+                        <div className="p-5 space-y-4">
+                            <div className="text-xs text-text-secondary">
+                                当前生视频配置：model=<span className="font-mono">{videoModel || '(未设置)'}</span> · endpoint=<span className="font-mono">{resolvedVideoEndpoint || '(未设置)'}</span>
+                            </div>
+                            {!hasVideoConfig && (
+                                <div className="text-xs text-status-error">
+                                    未检测到可用的生视频配置。请先到“设置 → AI 模型”选择生视频模型。当前已支持 Gemini 官方视频模型，以及 OpenAI 兼容的视频生成接口。
+                                </div>
+                            )}
+
+                            <textarea
+                                value={videoPrompt}
+                                onChange={(event) => setVideoPrompt(event.target.value)}
+                                placeholder="输入视频提示词，例如：晨光下的海边公路航拍镜头，电影感，轻微推镜，适合社媒短视频"
+                                rows={4}
+                                className="w-full px-3 py-2 text-sm rounded-md border border-border bg-surface-secondary/20 focus:outline-none focus:ring-1 focus:ring-accent-primary"
+                            />
+
+                            <div className="space-y-2">
+                                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                                    <select
+                                        value={videoGenerationMode}
+                                        onChange={(event) => setVideoGenerationMode(event.target.value as 'text-to-video' | 'reference-guided' | 'first-last-frame')}
+                                        className="px-3 py-2 text-sm rounded-md border border-border bg-surface-secondary/20 focus:outline-none focus:ring-1 focus:ring-accent-primary"
+                                    >
+                                        {VIDEO_GENERATION_MODE_OPTIONS.map((option) => (
+                                            <option key={option.value} value={option.value}>{option.label}</option>
+                                        ))}
+                                    </select>
+                                </div>
+
+                                {videoGenerationMode === 'reference-guided' && (
+                                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                        <label className="group relative flex aspect-square max-w-[160px] cursor-pointer overflow-hidden rounded-xl border border-dashed border-border bg-surface-secondary/20 hover:border-accent-primary/40 hover:bg-surface-secondary/40">
+                                            {videoPrimaryReferenceImage ? (
+                                                <img src={videoPrimaryReferenceImage.dataUrl} alt={videoPrimaryReferenceImage.name} className="h-full w-full object-cover" />
+                                            ) : (
+                                                <div className="flex h-full w-full flex-col items-center justify-center gap-2 text-text-tertiary">
+                                                    <ImagePlus className="h-5 w-5" />
+                                                    <div className="text-xs">上传参考图</div>
+                                                    <div className="text-[11px]">1 张</div>
+                                                </div>
+                                            )}
+                                            <div className="absolute left-2 top-2 rounded-md bg-black/55 px-2 py-1 text-[10px] text-white">参考图</div>
+                                            {videoPrimaryReferenceImage && (
+                                                <>
+                                                    <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/70 to-transparent px-3 pb-2 pt-6 text-[11px] text-white">
+                                                        <div className="truncate">{videoPrimaryReferenceImage.name}</div>
+                                                    </div>
+                                                    <button
+                                                        type="button"
+                                                        onClick={(event) => {
+                                                            event.preventDefault();
+                                                            event.stopPropagation();
+                                                            setVideoPrimaryReferenceImage(null);
+                                                        }}
+                                                        className="absolute right-2 top-2 inline-flex h-7 w-7 items-center justify-center rounded-full bg-black/55 text-white hover:bg-black/70"
+                                                    >
+                                                        <X className="h-4 w-4" />
+                                                    </button>
+                                                </>
+                                            )}
+                                            <input
+                                                type="file"
+                                                accept="image/*"
+                                                className="hidden"
+                                                onChange={(event) => void handleVideoReferenceFile(event, 'primary')}
+                                            />
+                                        </label>
+                                    </div>
+                                )}
+
+                                {videoGenerationMode === 'first-last-frame' && (
+                                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                        {[
+                                            { key: 'primary' as const, label: '首帧', item: videoPrimaryReferenceImage, setter: setVideoPrimaryReferenceImage },
+                                            { key: 'last' as const, label: '尾帧', item: videoLastFrameImage, setter: setVideoLastFrameImage },
+                                        ].map((slot) => (
+                                            <label key={slot.key} className="group relative flex aspect-square max-w-[160px] cursor-pointer overflow-hidden rounded-xl border border-dashed border-border bg-surface-secondary/20 hover:border-accent-primary/40 hover:bg-surface-secondary/40">
+                                                {slot.item ? (
+                                                    <img src={slot.item.dataUrl} alt={slot.item.name} className="h-full w-full object-cover" />
+                                                ) : (
+                                                    <div className="flex h-full w-full flex-col items-center justify-center gap-2 text-text-tertiary">
+                                                        <ImagePlus className="h-5 w-5" />
+                                                        <div className="text-xs">上传{slot.label}</div>
+                                                        <div className="text-[11px]">{slot.label}图片</div>
+                                                    </div>
+                                                )}
+                                                <div className="absolute left-2 top-2 rounded-md bg-black/55 px-2 py-1 text-[10px] text-white">{slot.label}</div>
+                                                {slot.item && (
+                                                    <>
+                                                        <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/70 to-transparent px-3 pb-2 pt-6 text-[11px] text-white">
+                                                            <div className="truncate">{slot.item.name}</div>
+                                                        </div>
+                                                        <button
+                                                            type="button"
+                                                            onClick={(event) => {
+                                                                event.preventDefault();
+                                                                event.stopPropagation();
+                                                                slot.setter(null);
+                                                            }}
+                                                            className="absolute right-2 top-2 inline-flex h-7 w-7 items-center justify-center rounded-full bg-black/55 text-white hover:bg-black/70"
+                                                        >
+                                                            <X className="h-4 w-4" />
+                                                        </button>
+                                                    </>
+                                                )}
+                                                <input
+                                                    type="file"
+                                                    accept="image/*"
+                                                    className="hidden"
+                                                    onChange={(event) => void handleVideoReferenceFile(event, slot.key)}
+                                                />
+                                            </label>
+                                        ))}
+                                    </div>
+                                )}
+
+                                <div className="text-[11px] text-text-tertiary">
+                                    {isReadingVideoRefImages ? '正在读取参考图...' : getVideoReferenceModeHint(videoGenerationMode)}
+                                </div>
+                            </div>
+
+                            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+                                <input value={videoTitle} onChange={(event) => setVideoTitle(event.target.value)} placeholder="视频标题（可选）" className="px-3 py-2 text-sm rounded-md border border-border bg-surface-secondary/20 focus:outline-none focus:ring-1 focus:ring-accent-primary" />
+                                <input value={videoProjectId} onChange={(event) => setVideoProjectId(event.target.value)} placeholder="项目ID（可选）" className="px-3 py-2 text-sm rounded-md border border-border bg-surface-secondary/20 focus:outline-none focus:ring-1 focus:ring-accent-primary" />
+                                <input value={videoModel} onChange={(event) => setVideoModel(event.target.value)} placeholder="视频模型（如 veo-2.0-generate-001）" className="px-3 py-2 text-sm rounded-md border border-border bg-surface-secondary/20 focus:outline-none focus:ring-1 focus:ring-accent-primary" />
+                                <select value={videoAspectRatio} onChange={(event) => setVideoAspectRatio(event.target.value as '16:9' | '9:16')} className="px-3 py-2 text-sm rounded-md border border-border bg-surface-secondary/20 focus:outline-none focus:ring-1 focus:ring-accent-primary">
+                                    {VIDEO_ASPECT_RATIO_OPTIONS.map((option) => (
+                                        <option key={option.value} value={option.value}>{option.label}</option>
+                                    ))}
+                                </select>
+                                <select value={videoResolution} onChange={(event) => setVideoResolution(event.target.value as '720p' | '1080p')} className="px-3 py-2 text-sm rounded-md border border-border bg-surface-secondary/20 focus:outline-none focus:ring-1 focus:ring-accent-primary">
+                                    <option value="720p">720p</option>
+                                    <option value="1080p">1080p</option>
+                                </select>
+                                <select value={videoDurationSeconds} onChange={(event) => setVideoDurationSeconds(Number(event.target.value))} className="px-3 py-2 text-sm rounded-md border border-border bg-surface-secondary/20 focus:outline-none focus:ring-1 focus:ring-accent-primary">
+                                    <option value={5}>5 秒</option>
+                                    <option value={8}>8 秒</option>
+                                    <option value={10}>10 秒</option>
+                                    <option value={12}>12 秒</option>
+                                </select>
+                            </div>
+
+                            <div className="flex items-center gap-2">
+                                <button
+                                    onClick={() => void handleGenerateVideo()}
+                                    disabled={isGeneratingVideo || !hasVideoConfig}
+                                    className="px-4 py-2 text-sm rounded-md bg-accent-primary text-white hover:bg-accent-primary/90 disabled:opacity-50"
+                                >
+                                    <span className="inline-flex items-center gap-1.5">
+                                        {isGeneratingVideo ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
+                                        {isGeneratingVideo ? '生成中...' : '开始生视频'}
+                                    </span>
+                                </button>
+                            </div>
+
+                            {videoGenError && <div className="text-xs text-status-error">{videoGenError}</div>}
+
+                            {generatedVideoAssets.length > 0 && (
+                                <div className="space-y-3 border-t border-border pt-4">
+                                    <div className="text-sm font-medium text-text-primary inline-flex items-center gap-2">
+                                        <Sparkles className="w-4 h-4 text-accent-primary" />
+                                        最新生视频结果（{generatedVideoAssets.length}）
+                                    </div>
+                                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                                        {generatedVideoAssets.map((asset) => (
+                                            <div key={asset.id} className="group border border-border rounded-xl bg-surface-primary overflow-hidden shadow-sm hover:shadow-md transition-shadow">
+                                                {asset.previewUrl && asset.exists ? (
+                                                    <video src={resolveAssetUrl(asset.previewUrl)} className="w-full aspect-[4/5] object-cover bg-black" controls preload="metadata" />
+                                                ) : (
+                                                    <div className="w-full aspect-[4/5] bg-surface-secondary flex items-center justify-center text-text-tertiary text-xs">无法预览</div>
+                                                )}
+                                                <div className="p-3 space-y-1.5">
+                                                    <div className="text-sm text-text-primary truncate">{asset.title || asset.id}</div>
+                                                    <div className="text-[11px] text-text-tertiary truncate">{asset.projectId || '(无项目ID)'}</div>
+                                                    <div className="text-[11px] text-text-tertiary truncate">{asset.model || ''} · {asset.aspectRatio || ''} · {asset.size || ''}</div>
+                                                    <button
+                                                        onClick={() => void window.ipcRenderer.invoke('media:open', { assetId: asset.id })}
+                                                        className="mt-1 px-2.5 py-1.5 text-xs rounded border border-border hover:bg-surface-secondary text-text-secondary"
+                                                    >
+                                                        <span className="inline-flex items-center gap-1">
+                                                            <ExternalLink className="w-3.5 h-3.5" />
+                                                            打开文件
+                                                        </span>
+                                                    </button>
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+                    </div>
+                </div>
+            )}
+
         </div>
     );
 }

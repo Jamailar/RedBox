@@ -902,7 +902,7 @@ const buildAttachmentPromptSuffix = (attachment: Record<string, unknown>): strin
   }
 
   if (kind === 'text') {
-    lines.push('请优先调用 read_file 工具读取该文件原文后再回答。');
+    lines.push('请优先使用 bash（例如 cat/sed/head）读取该文件原文后再回答。');
   } else {
     lines.push('若当前模型不支持该类型多模态理解，请明确提示“不支持该附件类型”。');
   }
@@ -6426,7 +6426,7 @@ const buildWanderDeepAgentPrompt = (params: {
     '工具调用要求（必须满足）：',
     '1) 至少发起 1 次工具调用；',
     '2) 优先使用 app_cli 读取素材目录或相关文档；',
-    '3) 如果 app_cli 不可用，可回退 read_file / grep；',
+    '3) 如果 app_cli 不可用，可回退 bash（cat/rg/find 等）；',
     '4) 未发生工具调用时，不允许直接输出最终结论。',
     '',
     outputRequirement,

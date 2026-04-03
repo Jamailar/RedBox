@@ -71,51 +71,18 @@ const ensureSandbox = async (): Promise<{
     };
 };
 
-const createRedClawProjectForTests = async () => {
-    const tool = createBuiltinTools({ pack: 'full' }).find((item) => item.name === 'redclaw_create_project');
-    if (!tool) {
-        throw new Error('redclaw_create_project tool unavailable');
-    }
-    const result = await tool.execute({
-        goal: `开发者工具测试 ${new Date().toISOString()}`,
-        targetAudience: '开发者',
-        tone: '直接',
-        successCriteria: '工具链正常',
-        tags: ['devtool', 'diagnostic'],
-    } as any, new AbortController().signal);
-    const structuredProjectId = (result.data as { projectId?: unknown } | undefined)?.projectId;
-    const projectId = String(structuredProjectId || '').trim();
-    if (!projectId) {
-        throw new Error(`unable to extract project id from structured result: ${JSON.stringify(result.data || null)}`);
-    }
-    return projectId;
-};
-
 const buildScenario = async (toolName: string): Promise<ToolTestScenario> => {
     const sandbox = await ensureSandbox();
 
     switch (toolName) {
-        case 'read_file':
+        case 'workspace':
             return {
-                directRequest: { callId: 'diag-read', name: toolName, params: { filePath: sandbox.sampleFilePath } },
-                aiPrompt: `请读取文件 ${sandbox.sampleFilePath} 的内容。`,
-            };
-        case 'write_file': {
-            const targetPath = path.join(sandbox.sandboxDir, 'written.txt');
-            return {
-                directRequest: { callId: 'diag-write', name: toolName, params: { path: targetPath, content: 'tool diagnostic write\n', overwrite: true, createDirectories: true } },
-                aiPrompt: `请创建文件 ${targetPath}，内容写入 "tool diagnostic write"。`,
-            };
-        }
-        case 'edit_file':
-            return {
-                directRequest: { callId: 'diag-edit', name: toolName, params: { filePath: sandbox.sampleFilePath, oldString: 'beta', newString: 'beta-edited' } },
-                aiPrompt: `请把文件 ${sandbox.sampleFilePath} 里的 beta 改成 beta-edited。`,
-            };
-        case 'grep':
-            return {
-                directRequest: { callId: 'diag-grep', name: toolName, params: { pattern: 'redclaw diagnostic keyword', path: sandbox.sandboxDir } },
-                aiPrompt: `请在目录 ${sandbox.sandboxDir} 中搜索 "redclaw diagnostic keyword"。`,
+                directRequest: {
+                    callId: 'diag-workspace-edit',
+                    name: toolName,
+                    params: { action: 'edit', filePath: sandbox.sampleFilePath, oldString: 'beta', newString: 'beta-edited' },
+                },
+                aiPrompt: `请使用 workspace 把文件 ${sandbox.sampleFilePath} 里的 beta 改成 beta-edited。`,
             };
         case 'web_search':
             return {
@@ -132,104 +99,15 @@ const buildScenario = async (toolName: string): Promise<ToolTestScenario> => {
                 directRequest: { callId: 'diag-app-cli', name: toolName, params: { command: 'spaces list' } },
                 aiPrompt: '请调用 app_cli 列出当前空间。',
             };
-        case 'list_dir':
-            return {
-                directRequest: { callId: 'diag-list-dir', name: toolName, params: { path: sandbox.sandboxDir, recursive: true } },
-                aiPrompt: `请列出目录 ${sandbox.sandboxDir} 的文件。`,
-            };
         case 'calculator':
             return {
                 directRequest: { callId: 'diag-calculator', name: toolName, params: { expression: '2 + 3 * 4' } },
                 aiPrompt: '请用 calculator 计算 2 + 3 * 4。',
             };
-        case 'save_memory':
-            return {
-                directRequest: { callId: 'diag-memory', name: toolName, params: { content: '开发者工具测试记忆', type: 'fact', tags: ['devtool', 'diagnostic'] } },
-                aiPrompt: '请保存一条长期记忆：“开发者工具测试记忆”。',
-            };
-        case 'redclaw_create_project':
-            return {
-                directRequest: { callId: 'diag-redclaw-create', name: toolName, params: { goal: '开发者工具测试项目', targetAudience: '开发者', tone: '直接', successCriteria: '工具调用成功', tags: ['devtool'] } },
-                aiPrompt: '请创建一个 RedClaw 测试项目，目标是“开发者工具测试项目”。',
-            };
-        case 'redclaw_save_copy_pack': {
-            const projectId = await createRedClawProjectForTests();
-            return {
-                directRequest: {
-                    callId: 'diag-redclaw-copy',
-                    name: toolName,
-                    params: {
-                        projectId,
-                        titleOptions: ['测试标题 A', '测试标题 B'],
-                        content: '这是一段用于开发者工具测试的文案。',
-                        hashtags: ['测试'],
-                        coverTexts: ['测试封面'],
-                    },
-                },
-                aiPrompt: `请为项目 ${projectId} 保存一个简单的文案包。`,
-            };
-        }
-        case 'redclaw_save_image_pack': {
-            const projectId = await createRedClawProjectForTests();
-            return {
-                directRequest: {
-                    callId: 'diag-redclaw-image',
-                    name: toolName,
-                    params: {
-                        projectId,
-                        coverPrompt: '测试封面提示词',
-                        images: [{ prompt: '一张测试图片', purpose: 'test', style: 'clean', ratio: '3:4' }],
-                    },
-                },
-                aiPrompt: `请为项目 ${projectId} 保存一个简单的配图包。`,
-            };
-        }
-        case 'redclaw_save_retrospective': {
-            const projectId = await createRedClawProjectForTests();
-            return {
-                directRequest: {
-                    callId: 'diag-redclaw-retro',
-                    name: toolName,
-                    params: {
-                        projectId,
-                        metrics: { views: 100, likes: 10 },
-                        whatWorked: '工具调用成功',
-                        whatFailed: '无',
-                        nextActions: ['继续测试'],
-                    },
-                },
-                aiPrompt: `请为项目 ${projectId} 保存一份简单复盘。`,
-            };
-        }
-        case 'redclaw_list_projects':
-            return {
-                directRequest: { callId: 'diag-redclaw-list', name: toolName, params: { limit: 5 } },
-                aiPrompt: '请列出最近的 RedClaw 项目。',
-            };
-        case 'redclaw_update_profile_doc':
-        case 'redclaw_update_creator_profile':
-            return {
-                skipReason: '该工具会直接修改长期核心文档，开发者诊断默认不自动执行。',
-            };
-        case 'explore_workspace':
-            return {
-                directRequest: { callId: 'diag-explore', name: toolName, params: { path: sandbox.sandboxDir } },
-                aiPrompt: `请分析目录 ${sandbox.sandboxDir}。`,
-            };
         case 'lsp':
             return {
                 directRequest: { callId: 'diag-lsp', name: toolName, params: { operation: 'workspaceSymbol', filePath: sandbox.sampleFilePath, query: 'Settings' } },
                 aiPrompt: '请使用 lsp 的 workspaceSymbol 查询 “Settings”。',
-            };
-        case 'todo_write':
-            return {
-                directRequest: { callId: 'diag-todo-write', name: toolName, params: { todos: [{ id: 'diag', content: '开发者工具测试', status: 'in_progress', priority: 'medium' }], merge: true } },
-                aiPrompt: '请写入一条 todo：开发者工具测试。',
-            };
-        case 'todo_read':
-            return {
-                directRequest: { callId: 'diag-todo-read', name: toolName, params: {} },
-                aiPrompt: '请读取当前 todo 列表。',
             };
         case 'plan_mode_enter':
             return {

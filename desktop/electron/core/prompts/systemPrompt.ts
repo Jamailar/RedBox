@@ -349,7 +349,7 @@ ${skillsXml}
 
 ## ⚠️ Skill Activation Rules
 1. Load a skill when the task clearly matches its description, workflow, or the user names it explicitly
-2. Prefer \`skill({ "skill": "skill-name" })\`; \`activate_skill\` is legacy compatibility only
+2. Prefer \`skill({ "skill": "skill-name" })\`
 3. Do not load multiple overlapping skills unless the task genuinely needs them
 4. Do not call the skill tool with empty parameters
 5. If a skill is loaded, follow its instructions for the current task until they conflict with newer user instructions`;

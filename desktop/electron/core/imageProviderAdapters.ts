@@ -51,9 +51,14 @@ export interface ImageProviderCapabilities {
     maxReferenceImages: number;
 }
 
-const OPENAI_LANDSCAPE_SIZE = '1536x1024';
-const OPENAI_PORTRAIT_SIZE = '1024x1536';
 const OPENAI_SQUARE_SIZE = '1024x1024';
+const DEFAULT_SIZE_BY_ASPECT: Record<Exclude<ImageAspectRatio, 'auto'>, string> = {
+    '1:1': '1024x1024',
+    '3:4': '1536x2048',
+    '4:3': '2048x1536',
+    '9:16': '1152x2048',
+    '16:9': '2048x1152',
+};
 const SEEDREAM_MIN_PIXELS = 3_686_400;
 const SIZE_STEP = 64;
 const IMAGE_PROVIDER_CAPABILITIES: Record<ImageProviderTemplate, ImageProviderCapabilities> = {
@@ -317,23 +322,48 @@ function buildGeminiContentParts(prompt: string, refs: string[]): Array<Record<s
     return parts;
 }
 
+function inferAspectRatioFromSize(size?: string): ImageAspectRatio | undefined {
+    const parsed = parseWxH(normalizeImageSize(size));
+    if (!parsed) return undefined;
+    const ratio = parsed.width / parsed.height;
+    const candidates: Array<{ aspect: ImageAspectRatio; value: number }> = [
+        { aspect: '1:1', value: 1 },
+        { aspect: '3:4', value: 3 / 4 },
+        { aspect: '4:3', value: 4 / 3 },
+        { aspect: '9:16', value: 9 / 16 },
+        { aspect: '16:9', value: 16 / 9 },
+    ];
+    let best: ImageAspectRatio | undefined;
+    let bestDelta = Number.POSITIVE_INFINITY;
+    for (const candidate of candidates) {
+        const delta = Math.abs(ratio - candidate.value);
+        if (delta < bestDelta) {
+            best = candidate.aspect;
+            bestDelta = delta;
+        }
+    }
+    return bestDelta <= 0.04 ? best : undefined;
+}
+
+function isSizeCompatibleWithAspectRatio(size: string | undefined, aspectRatio?: ImageAspectRatio): boolean {
+    if (!size) return false;
+    if (!aspectRatio || aspectRatio === 'auto') return true;
+    return inferAspectRatioFromSize(size) === aspectRatio;
+}
+
+function resolveDefaultSizeForAspectRatio(aspectRatio?: ImageAspectRatio): string {
+    if (!aspectRatio || aspectRatio === 'auto') {
+        return OPENAI_SQUARE_SIZE;
+    }
+    return DEFAULT_SIZE_BY_ASPECT[aspectRatio] || OPENAI_SQUARE_SIZE;
+}
+
 function mapAspectRatioToOpenAiSize(aspectRatio?: ImageAspectRatio, preferredSize?: string): string {
     const normalizedSize = normalizeImageSize(preferredSize);
-    if (normalizedSize) {
+    if (normalizedSize && isSizeCompatibleWithAspectRatio(normalizedSize, aspectRatio)) {
         return normalizedSize;
     }
-    switch (aspectRatio) {
-        case '3:4':
-        case '9:16':
-            return OPENAI_PORTRAIT_SIZE;
-        case '4:3':
-        case '16:9':
-            return OPENAI_LANDSCAPE_SIZE;
-        case '1:1':
-            return OPENAI_SQUARE_SIZE;
-        default:
-            return OPENAI_SQUARE_SIZE;
-    }
+    return resolveDefaultSizeForAspectRatio(aspectRatio);
 }
 
 function isSeedreamModel(model?: string): boolean {
@@ -443,16 +473,7 @@ function mapAspectRatioToGemini(aspectRatio?: ImageAspectRatio, preferredSize?: 
     if (aspectRatio && aspectRatio !== 'auto') {
         return aspectRatio;
     }
-    switch (normalizeImageSize(preferredSize)) {
-        case '1024x1536':
-            return '3:4';
-        case '1536x1024':
-            return '4:3';
-        case '1024x1024':
-            return '1:1';
-        default:
-            return '1:1';
-    }
+    return inferAspectRatioFromSize(preferredSize) || '1:1';
 }
 
 function mapAspectRatioToJimengRatio(aspectRatio?: ImageAspectRatio, preferredSize?: string): string {
@@ -490,40 +511,22 @@ function mapSizeToNativeTier(size?: string, quality?: string): '1K' | '2K' | '4K
 
 function mapSizeToDashScope(size?: string, aspectRatio?: ImageAspectRatio): string {
     const normalizedSize = normalizeImageSize(size);
-    if (normalizedSize) {
+    if (normalizedSize && isSizeCompatibleWithAspectRatio(normalizedSize, aspectRatio)) {
         return normalizedSize.replace('x', '*');
     }
     const normalized = String(size || '').trim().toLowerCase();
     if (normalized === '1k') return '1024*1024';
     if (normalized === '2k') return '2048*2048';
     if (normalized === '4k') return '4096*4096';
-    switch (aspectRatio) {
-        case '3:4':
-        case '9:16':
-            return '1024*1536';
-        case '4:3':
-        case '16:9':
-            return '1536*1024';
-        default:
-            return '1024*1024';
-    }
+    return resolveDefaultSizeForAspectRatio(aspectRatio).replace('x', '*');
 }
 
 function mapSizeToDashscopeWanInterleave(size?: string, aspectRatio?: ImageAspectRatio): string {
     const normalizedSize = normalizeImageSize(size);
-    if (normalizedSize) return normalizedSize.replace('x', '*');
-    switch (aspectRatio) {
-        case '3:4':
-            return '960*1280';
-        case '4:3':
-            return '1280*960';
-        case '9:16':
-            return '720*1280';
-        case '16:9':
-            return '1280*720';
-        default:
-            return '1280*1280';
+    if (normalizedSize && isSizeCompatibleWithAspectRatio(normalizedSize, aspectRatio)) {
+        return normalizedSize.replace('x', '*');
     }
+    return resolveDefaultSizeForAspectRatio(aspectRatio).replace('x', '*');
 }
 
 function toDashscopeImageValue(raw: string, mode: 'data-url' | 'raw-base64'): string {

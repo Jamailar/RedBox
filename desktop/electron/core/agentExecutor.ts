@@ -247,7 +247,7 @@ export class AgentExecutor {
     }
 
     private handleToolResult(toolName: string, response: ToolCallResponse['result']): void {
-        if (toolName !== 'activate_skill') {
+        if (toolName !== 'skill') {
             return;
         }
         const content = response.llmContent || response.display || '';

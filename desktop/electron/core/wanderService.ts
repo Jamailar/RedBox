@@ -153,7 +153,7 @@ function buildWanderDeepAgentPrompt(params: {
         '工具调用要求（必须满足）：',
         '1) 至少发起 1 次工具调用；',
         '2) 优先使用 app_cli 读取素材目录或相关文档；',
-        '3) 如果 app_cli 不可用，可回退 read_file / grep；',
+        '3) 如果 app_cli 不可用，可回退 bash（cat/rg/find 等）；',
         '4) 未发生工具调用时，不允许直接输出最终结论。',
         '',
         outputRequirement,

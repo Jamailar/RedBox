@@ -304,10 +304,23 @@ function normalizeRelativePath(input: string): string {
     return normalized;
 }
 
-function buildReferenceAwarePrompt(basePrompt: string, referenceLabels: string[]): string {
+function buildReferenceAwarePrompt(
+    basePrompt: string,
+    referenceLabels: string[],
+    generationMode?: 'text-to-image' | 'image-to-image' | 'reference-guided',
+): string {
     const normalizedPrompt = basePrompt.trim();
     if (!referenceLabels.length) {
         return normalizedPrompt;
+    }
+    if (generationMode === 'image-to-image') {
+        return [
+            normalizedPrompt,
+            '',
+            '改图约束：',
+            '- 以上内容仅描述需要修改或新增的部分。',
+            '- 除这些改动外，尽量保持参考图原有的构图、主体、配色、质感和整体风格不变。',
+        ].join('\n');
     }
     return [
         normalizedPrompt,
@@ -316,6 +329,22 @@ function buildReferenceAwarePrompt(basePrompt: string, referenceLabels: string[]
         ...referenceLabels.map((item, index) => `- 图${index + 1}：${item}`),
         '- 若存在参考图，必须优先保留参考图中的主体特征、款式、配色、材质、轮廓和关键视觉元素，不要退回纯文生图思路。',
     ].join('\n');
+}
+
+function inferVideoGenerationMode(
+    explicitMode: 'text-to-video' | 'reference-guided' | 'first-last-frame' | undefined,
+    referenceImages: string[],
+): 'text-to-video' | 'reference-guided' | 'first-last-frame' {
+    if (explicitMode) {
+        return explicitMode;
+    }
+    if (referenceImages.length >= 2) {
+        return 'first-last-frame';
+    }
+    if (referenceImages.length === 1) {
+        return 'reference-guided';
+    }
+    return 'text-to-video';
 }
 
 const APP_CLI_NAMESPACE_HELP: Record<string, { summary: string; actions: string[]; examples: string[] }> = {
@@ -372,7 +401,11 @@ const APP_CLI_NAMESPACE_HELP: Record<string, { summary: string; actions: string[
     video: {
         summary: 'Generate videos from text or reference images.',
         actions: ['generate'],
-        examples: ['video generate --prompt "海边日落镜头" --mode text-to-video --duration 8'],
+        examples: [
+            'video generate --prompt "海边日落镜头" --mode text-to-video --duration 8',
+            'video generate --prompt "让参考图里的女孩向前走近镜头" --mode reference-guided --reference-images "/abs/reference.png"',
+            'video generate --prompt "从清晨空房间过渡到夜晚亮灯房间" --mode first-last-frame --reference-images "/abs/first.png,/abs/last.png"',
+        ],
     },
     mcp: {
         summary: 'Discover, inspect, test, and call MCP servers/tools.',
@@ -419,6 +452,16 @@ function helpText(topic?: string): string {
             entry.summary,
             `Actions: ${entry.actions.join(', ')}`,
             '',
+            ...(normalizedTopic === 'video'
+                ? [
+                    'Mode rules:',
+                    '- text-to-video: 不传参考图；只根据文字生成视频。',
+                    '- reference-guided: 传 1 张参考图；在保留主体/风格的前提下生成动态视频。',
+                    '- first-last-frame: 传 2 张参考图，并按“首帧,尾帧”顺序传入；用于起止状态明确的过渡视频。',
+                    '- 若未显式传 mode，app_cli 会按参考图数量自动推断：0 张=文生视频，1 张=参考图视频，2 张=首尾帧视频。',
+                    '',
+                ]
+                : []),
             'Examples:',
             ...entry.examples.map((item) => `- ${item}`),
         ].join('\n');
@@ -1719,10 +1762,10 @@ export class AppCliTool extends DeclarativeTool<typeof AppCliParamsSchema> {
         }
         const prompt = requireString(readFlag(parsed.flags, 'prompt') || payload.prompt, 'prompt');
         const generationModeRaw = readFlag(parsed.flags, 'mode', 'generation-mode') || payload.generationMode;
-        let generationMode = (() => {
+        let generationMode: 'text-to-image' | 'image-to-image' | 'reference-guided' | undefined = (() => {
             const normalized = String(generationModeRaw || '').trim().toLowerCase();
             if (normalized === 'image-to-image' || normalized === 'reference-guided' || normalized === 'text-to-image') {
-                return normalized;
+                return normalized as 'text-to-image' | 'image-to-image' | 'reference-guided';
             }
             return undefined;
         })();
@@ -1769,7 +1812,7 @@ export class AppCliTool extends DeclarativeTool<typeof AppCliParamsSchema> {
         if (!generationMode && referenceImages.length > 0) {
             generationMode = 'reference-guided';
         }
-        const effectivePrompt = buildReferenceAwarePrompt(prompt, referenceLabels);
+        const effectivePrompt = buildReferenceAwarePrompt(prompt, referenceLabels, generationMode);
         const result = await generateImagesToMediaLibrary({
             prompt: effectivePrompt,
             projectId: readFlag(parsed.flags, 'project-id') || (payload.projectId as string | undefined),
@@ -1832,11 +1875,12 @@ export class AppCliTool extends DeclarativeTool<typeof AppCliParamsSchema> {
                 .map((item) => item.trim())
                 .filter(Boolean)
                 .slice(0, 2);
+        const effectiveGenerationMode = inferVideoGenerationMode(generationMode, directReferenceImages);
         const result = await generateVideosToMediaLibrary({
             prompt,
             projectId: readFlag(parsed.flags, 'project-id') || (payload.projectId as string | undefined),
             title: readFlag(parsed.flags, 'title') || (payload.title as string | undefined),
-            generationMode,
+            generationMode: effectiveGenerationMode,
             referenceImages: directReferenceImages,
             count: parseNumber(readFlag(parsed.flags, 'count') || payload.count),
             model: readFlag(parsed.flags, 'model') || (payload.model as string | undefined),
@@ -1848,7 +1892,7 @@ export class AppCliTool extends DeclarativeTool<typeof AppCliParamsSchema> {
         return {
             provider: result.provider,
             model: result.model,
-            generationMode,
+            generationMode: effectiveGenerationMode,
             referenceImageCount: directReferenceImages.length,
             aspectRatio: result.aspectRatio,
             resolution: result.resolution,

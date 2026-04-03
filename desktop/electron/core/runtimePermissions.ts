@@ -23,21 +23,8 @@ export interface RuntimePermissionDecision {
     source: 'descriptor' | 'runtime-policy' | 'tool';
 }
 
-const TRUSTED_MUTATOR_TOOLS = new Set([
-    'save_memory',
-    'redclaw_update_profile_doc',
-    'redclaw_update_creator_profile',
-    'redclaw_create_project',
-    'redclaw_save_copy_pack',
-    'redclaw_save_image_pack',
-    'redclaw_save_retrospective',
-]);
-
 const BACKGROUND_MUTATOR_ALLOWLIST = new Set([
     'app_cli',
-    'save_memory',
-    'redclaw_update_profile_doc',
-    'redclaw_update_creator_profile',
 ]);
 
 const DIAGNOSTIC_ONLY_PACKS = new Set(['diagnostics', 'full']);
@@ -190,14 +177,6 @@ export const evaluateRuntimeToolPermission = (params: {
         return {
             outcome: 'deny',
             reason: `后台维护模式禁止直接执行 ${toolName} 这类变更型工具。`,
-            source: 'runtime-policy',
-        };
-    }
-
-    if (TRUSTED_MUTATOR_TOOLS.has(toolName)) {
-        return {
-            outcome: 'allow',
-            reason: `工具 ${toolName} 属于受信任的业务写入工具。`,
             source: 'runtime-policy',
         };
     }

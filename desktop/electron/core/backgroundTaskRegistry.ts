@@ -2,6 +2,7 @@ import { EventEmitter } from 'events';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { getWorkspacePaths } from '../db';
+import { getWorkItemStore } from './workItemStore';
 
 export type BackgroundTaskKind =
   | 'redclaw-project'
@@ -36,6 +37,7 @@ export interface BackgroundTaskRecord {
   id: string;
   kind: BackgroundTaskKind;
   title: string;
+  workItemId?: string;
   status: BackgroundTaskStatus;
   phase: BackgroundTaskPhase;
   sessionId?: string;
@@ -147,6 +149,7 @@ export class BackgroundTaskRegistry extends EventEmitter {
     title: string;
     contextId?: string;
     sessionId?: string;
+    workItemId?: string;
   }): Promise<BackgroundTaskRecord> {
     await this.ensureLoaded();
     const now = nowIso();
@@ -154,6 +157,7 @@ export class BackgroundTaskRegistry extends EventEmitter {
       id: input.id || nextId('bg_task'),
       kind: input.kind,
       title: input.title,
+      workItemId: input.workItemId,
       status: 'running',
       phase: 'starting',
       contextId: input.contextId,
@@ -167,6 +171,16 @@ export class BackgroundTaskRegistry extends EventEmitter {
     };
     this.tasks.set(task.id, task);
     await this.persist();
+    if (task.workItemId) {
+      await getWorkItemStore().attachRefs(task.workItemId, {
+        backgroundTaskIds: [task.id],
+        sessionIds: task.sessionId ? [task.sessionId] : [],
+      });
+      await getWorkItemStore().updateWorkItem(task.workItemId, {
+        status: 'active',
+        summary: `后台任务已启动：${task.title}`,
+      });
+    }
     this.emitUpdate(task);
     return task;
   }
@@ -186,6 +200,11 @@ export class BackgroundTaskRegistry extends EventEmitter {
     task.sessionId = sessionId;
     task.updatedAt = nowIso();
     await this.persist();
+    if (task.workItemId) {
+      await getWorkItemStore().attachRefs(task.workItemId, {
+        sessionIds: [sessionId],
+      });
+    }
     this.emitUpdate(task);
   }
 
@@ -303,6 +322,12 @@ export class BackgroundTaskRegistry extends EventEmitter {
     }
     this.cancelHandles.delete(taskId);
     await this.persist();
+    if (task.workItemId) {
+      await getWorkItemStore().updateWorkItem(task.workItemId, {
+        status: 'done',
+        summary: summary || task.summary || '后台任务已完成。',
+      });
+    }
     this.emitUpdate(task);
   }
 
@@ -324,6 +349,12 @@ export class BackgroundTaskRegistry extends EventEmitter {
     }
     this.cancelHandles.delete(taskId);
     await this.persist();
+    if (task.workItemId) {
+      await getWorkItemStore().updateWorkItem(task.workItemId, {
+        status: 'waiting',
+        summary: `后台任务失败：${error}`,
+      });
+    }
     this.emitUpdate(task);
   }
 
@@ -366,6 +397,12 @@ export class BackgroundTaskRegistry extends EventEmitter {
     task.completedAt = now;
     this.cancelHandles.delete(taskId);
     await this.persist();
+    if (task.workItemId) {
+      await getWorkItemStore().updateWorkItem(task.workItemId, {
+        status: 'cancelled',
+        summary: '后台任务已取消。',
+      });
+    }
     this.emitUpdate(task);
     return task;
   }

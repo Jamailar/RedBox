@@ -22,9 +22,12 @@ const READ_ONLY_APP_ACTIONS = new Set([
   'oauth-status',
   'tools',
   'test',
+  'random',
+  'ready',
 ]);
 
 const TRUSTED_INTERACTIVE_APP_ACTIONS = new Map<string, Set<string>>([
+  ['work', new Set(['create', 'update', 'link', 'dep-add', 'dep-remove', 'promote-redclaw', 'schedule-add', 'schedule-update', 'cycle-add', 'cycle-update', 'run-now'])],
   ['manuscripts', new Set(['write', 'create', 'rename', 'move'])],
   ['memory', new Set(['add', 'update', 'delete'])],
   ['redclaw', new Set([
@@ -52,10 +55,11 @@ const TRUSTED_INTERACTIVE_APP_ACTIONS = new Map<string, Set<string>>([
   ['subjects', new Set(['create', 'update', 'delete'])],
   ['image', new Set(['generate'])],
   ['archives', new Set(['create-profile', 'update-profile', 'delete-profile', 'create-sample', 'update-sample', 'delete-sample'])],
-  ['wander', new Set(['save', 'delete'])],
+  ['wander', new Set(['save', 'delete', 'run', 'brainstorm'])],
 ]);
 
 const TRUSTED_BACKGROUND_APP_ACTIONS = new Map<string, Set<string>>([
+  ['work', new Set(['update', 'link', 'run-now'])],
   ['manuscripts', new Set(['write', 'create', 'rename', 'move'])],
   ['memory', new Set(['add', 'update'])],
   ['redclaw', new Set([
@@ -80,7 +84,7 @@ const TRUSTED_BACKGROUND_APP_ACTIONS = new Map<string, Set<string>>([
   ])],
   ['media', new Set(['bind', 'update'])],
   ['image', new Set(['generate'])],
-  ['wander', new Set(['save'])],
+  ['wander', new Set(['save', 'run', 'brainstorm'])],
 ]);
 
 const tokenize = (input: string): string[] => {

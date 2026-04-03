@@ -10,6 +10,7 @@ export { ReadFileTool } from './readFileTool';
 export { GrepTool } from './grepTool';
 export { BashTool } from './bashTool';
 export { AppCliTool } from './appCliTool';
+export { WorkspaceTool } from './workspaceTool';
 // 辅助工具
 export { CalculatorTool } from './calculatorTool';
 export { ListDirTool } from './listDirTool'; // Legacy list
@@ -56,6 +57,7 @@ import { ReadFileTool } from './readFileTool';
 import { GrepTool } from './grepTool';
 import { BashTool } from './bashTool';
 import { AppCliTool } from './appCliTool';
+import { WorkspaceTool } from './workspaceTool';
 import {
     createBuiltinToolInstances,
     type BuiltinToolPack,
@@ -78,12 +80,27 @@ const ensureBuiltinToolDescriptorsRegistered = (): void => {
     };
 
     registerBuiltinToolDescriptor({
+        name: 'workspace',
+        displayName: 'Workspace',
+        description: 'Unified workspace tool for listing directories, reading files, searching text, writing files, and editing files.',
+        kind: ToolKind.Other,
+        contexts: publicAllContexts,
+        visibility: 'public',
+        requiresContext: null,
+        preconditions: ['all paths must stay inside workspace', 'write/edit actions may require confirmation'],
+        successSignal: 'workspace action completed',
+        failureSignal: 'workspace action failed or was blocked',
+        artifactOutput: ['file', 'search-result', 'directory-list'],
+        retryPolicy: 'manual',
+        create: () => new WorkspaceTool(),
+    });
+    registerBuiltinToolDescriptor({
         name: 'write_file',
         displayName: 'Write File',
         description: 'Write content to a file. Creates the file if it does not exist.',
         kind: ToolKind.Edit,
-        contexts: publicAllContexts,
-        visibility: 'public',
+        contexts: developerOnlyContexts,
+        visibility: 'developer',
         requiresContext: null,
         preconditions: ['path must be inside workspace'],
         successSignal: 'file written successfully',
@@ -97,8 +114,8 @@ const ensureBuiltinToolDescriptorsRegistered = (): void => {
         displayName: 'Edit File',
         description: 'Edit a file by replacing a specific string with a new string.',
         kind: ToolKind.Edit,
-        contexts: publicAllContexts,
-        visibility: 'public',
+        contexts: developerOnlyContexts,
+        visibility: 'developer',
         requiresContext: null,
         preconditions: ['target file must be inside workspace'],
         successSignal: 'replacement applied',
@@ -112,8 +129,8 @@ const ensureBuiltinToolDescriptorsRegistered = (): void => {
         displayName: 'Read File',
         description: 'Read the contents of a file, with chunking for large files.',
         kind: ToolKind.Read,
-        contexts: publicAllContexts,
-        visibility: 'public',
+        contexts: developerOnlyContexts,
+        visibility: 'developer',
         requiresContext: null,
         preconditions: ['path must be inside workspace'],
         successSignal: 'file content returned',
@@ -127,8 +144,8 @@ const ensureBuiltinToolDescriptorsRegistered = (): void => {
         displayName: 'Grep Search',
         description: 'Search for patterns in files using ripgrep or grep.',
         kind: ToolKind.Read,
-        contexts: publicAllContexts,
-        visibility: 'public',
+        contexts: developerOnlyContexts,
+        visibility: 'developer',
         requiresContext: null,
         preconditions: ['search path must be inside workspace'],
         successSignal: 'matching files returned',
@@ -172,8 +189,8 @@ const ensureBuiltinToolDescriptorsRegistered = (): void => {
         displayName: 'List Directory',
         description: 'List files and directories in a given path.',
         kind: ToolKind.Read,
-        contexts: ['diagnostics'],
-        visibility: 'public',
+        contexts: developerOnlyContexts,
+        visibility: 'developer',
         requiresContext: null,
         create: () => new ListDirTool(),
     });
@@ -407,6 +424,7 @@ export function getRegisteredBuiltinTools() {
  * 内置工具名称列表
  */
 export const BUILTIN_TOOL_NAMES = [
+    'workspace',
     'write_file',
     'edit_file',
     'read_file',

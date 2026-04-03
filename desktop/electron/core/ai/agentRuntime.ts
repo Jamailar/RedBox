@@ -119,15 +119,32 @@ const normalizeIntentHint = (value: unknown): IntentName | null => {
   return null;
 };
 
+const normalizeRoleHint = (value: unknown): RoleId | null => {
+  const normalized = String(value || '').trim() as RoleId;
+  if (!normalized) return null;
+  try {
+    return getRoleSpec(normalized).roleId;
+  } catch {
+    return null;
+  }
+};
+
 const extractHints = (context: RuntimeContext) => {
   const metadata = (context.metadata && typeof context.metadata === 'object')
     ? context.metadata as Record<string, unknown>
     : {};
+  const subagentRoles = Array.isArray(metadata.subagentRoles)
+    ? metadata.subagentRoles
+      .map((item) => String(item || '').trim())
+      .filter(Boolean)
+    : [];
   return {
     metadata,
     forcedIntent: normalizeIntentHint(metadata.intent),
+    preferredRole: normalizeRoleHint(metadata.preferredRole),
     forceMultiAgent: Boolean(metadata.forceMultiAgent),
     forceLongRunningTask: Boolean(metadata.forceLongRunningTask),
+    subagentRoles,
   };
 };
 
@@ -177,6 +194,15 @@ const inferRoleForIntent = (runtimeMode: RuntimeMode, intent: IntentName): RoleI
   }
 };
 
+const resolveRecommendedRole = (
+  runtimeMode: RuntimeMode,
+  intent: IntentName,
+  hints: ReturnType<typeof extractHints>,
+): RoleId => {
+  if (hints.preferredRole) return hints.preferredRole;
+  return inferRoleForIntent(runtimeMode, intent);
+};
+
 const isBundledRedclawRequest = (normalizedInput: string): boolean => {
   const bundledDeliverables = countMatches(normalizedInput, BUNDLED_DELIVERABLE_PARTS);
   if (containsAny(normalizedInput, END_TO_END_TRIGGER_PARTS) && bundledDeliverables >= 2) {
@@ -217,7 +243,7 @@ const buildDirectRoute = (context: RuntimeContext): IntentRoute => {
   const runtimeMode = context.runtimeMode;
   const hints = extractHints(context);
   const intent = inferIntent(runtimeMode, normalizedInput, hints);
-  const recommendedRole = inferRoleForIntent(runtimeMode, intent);
+  const recommendedRole = resolveRecommendedRole(runtimeMode, intent, hints);
   const requiresMultiAgent = shouldTriggerMultiAgent({
     runtimeMode,
     normalizedInput,
@@ -303,6 +329,7 @@ export class AgentRuntime {
   }): Promise<PreparedRuntimeExecution> {
     const analysis = this.analyzeRuntimeContext({ runtimeContext: params.runtimeContext });
     const { route, role, thinkingBudget, orchestrationEnabled } = analysis;
+    const hints = extractHints(params.runtimeContext);
     const runtime = getTaskGraphRuntime();
     const task = runtime.createInteractiveTask({
       runtimeMode: params.runtimeContext.runtimeMode,
@@ -343,6 +370,9 @@ export class AgentRuntime {
           runtimeMode: params.runtimeContext.runtimeMode,
           taskId: task.id,
           userInput: params.runtimeContext.userInput,
+          roleSequenceOverride: route.requiresMultiAgent && hints.subagentRoles.length > 0
+            ? hints.subagentRoles as RoleId[]
+            : undefined,
         });
         if (orchestrationResult) {
           orchestrationSection = orchestrationResult.promptSection;

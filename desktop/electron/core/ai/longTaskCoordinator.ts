@@ -238,6 +238,12 @@ const buildExecutionPrompt = (task: AgentTaskSnapshot, outputs: SubagentOutput[]
 
 
 const buildSubagentUserInput = (task: AgentTaskSnapshot, route: NonNullable<AgentTaskSnapshot['route']>, roleId: RoleId, priorOutputs: SubagentOutput[], input: BatchSubagentInput): string => {
+  const truncate = (value: string, limit: number): string => {
+    const text = String(value || '').trim();
+    if (!text) return '';
+    if (text.length <= limit) return text;
+    return `${text.slice(0, limit)}...<truncated>`;
+  };
   const sections = [
     `Current task intent: ${task.intent || task.taskType}`,
     `Current role: ${roleId}`,
@@ -246,21 +252,7 @@ const buildSubagentUserInput = (task: AgentTaskSnapshot, route: NonNullable<Agen
   ];
 
   if (input.sourceContext.trim()) {
-    sections.push('', input.sourceContext.trim());
-  }
-
-  if (priorOutputs.length > 0) {
-    sections.push('', '## Prior Subagent Outputs');
-    sections.push(...priorOutputs.map((output) => {
-      const lines = [
-        `### ${output.roleId}`,
-        `- summary: ${output.summary}`,
-      ];
-      if (output.artifact) lines.push(`- artifact: ${output.artifact}`);
-      if (output.handoff) lines.push(`- handoff: ${output.handoff}`);
-      if (output.risks?.length) lines.push(`- risks: ${output.risks.join('；')}`);
-      return lines.join('\n');
-    }));
+    sections.push('', truncate(input.sourceContext.trim(), 3500));
   }
 
   sections.push(
@@ -269,6 +261,7 @@ const buildSubagentUserInput = (task: AgentTaskSnapshot, route: NonNullable<Agen
     '- You must reason over the original user request and attached file/folder references, not only the short goal line.',
     '- If explicit file or folder paths are present, treat them as mandatory evidence to read in the later execution chain.',
     '- Do not claim files are already read or saved unless the later execution agent can prove it via tool results.',
+    priorOutputs.length > 0 ? `- Prior subagent context has already been summarized into the system prompt; reuse it instead of repeating it.` : '',
   );
 
   return sections.filter(Boolean).join('\n');

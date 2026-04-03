@@ -4,6 +4,22 @@ function normalizeBaseUrl(baseUrl) {
   return text.replace(/\/+$/, '');
 }
 
+async function configureProxyDispatcher() {
+  const proxyUrl = String(
+    process.env.HTTPS_PROXY
+    || process.env.https_proxy
+    || process.env.HTTP_PROXY
+    || process.env.http_proxy
+    || '',
+  ).trim();
+  const undici = await import('undici');
+  if (proxyUrl) {
+    undici.setGlobalDispatcher(new undici.EnvHttpProxyAgent());
+    return;
+  }
+  undici.setGlobalDispatcher(new undici.Agent());
+}
+
 function joinUrl(baseUrl, pathname) {
   return `${normalizeBaseUrl(baseUrl)}${pathname.startsWith('/') ? pathname : `/${pathname}`}`;
 }
@@ -122,4 +138,5 @@ process.on('message', async (message) => {
   }
 });
 
+await configureProxyDispatcher();
 process.send?.({ type: 'ready', pid: process.pid });

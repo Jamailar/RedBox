@@ -1,5 +1,5 @@
 import { ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { MessageSquare, MessageSquarePlus, Settings as SettingsIcon, FolderOpen, FileEdit, Dices, Plus, Pencil, ChevronDown, Bot, Image, Users, ImagePlus, Sun, Moon, X, Download, Package } from 'lucide-react';
+import { MessageSquare, MessageSquarePlus, Settings as SettingsIcon, FolderOpen, FileEdit, Dices, Plus, Pencil, ChevronDown, Bot, Image, Users, ImagePlus, Sun, Moon, X, Download, Package, ListTodo } from 'lucide-react';
 import { clsx } from 'clsx';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -20,6 +20,7 @@ const NAV_ITEMS: { id: ViewType; label: string; icon: typeof MessageSquare; grou
   { id: 'wander', label: '漫步', icon: Dices },
   { id: 'manuscripts', label: '稿件', icon: FileEdit },
   { id: 'redclaw', label: 'RedClaw', icon: Bot },
+  { id: 'workboard', label: '任务', icon: ListTodo },
   { id: 'subjects', label: '主体', icon: Package },
   { id: 'creative-chat', label: '聊天室', icon: MessageSquarePlus },
   { id: 'advisors', label: '智囊团', icon: Users },

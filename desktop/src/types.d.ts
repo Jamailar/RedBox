@@ -142,6 +142,89 @@ export interface SessionToolResultItem {
   updatedAt: number;
 }
 
+export interface SessionBridgeSessionSummary {
+  id: string;
+  title: string;
+  updatedAt: number;
+  createdAt: number;
+  contextType: string;
+  runtimeMode: string;
+  isBackgroundSession: boolean;
+  ownerTaskCount: number;
+  backgroundTaskCount: number;
+}
+
+export interface SessionBridgeStatus {
+  enabled: boolean;
+  listening: boolean;
+  host: string;
+  port: number;
+  authToken: string;
+  websocketUrl: string;
+  httpBaseUrl: string;
+  subscriberCount: number;
+  lastError: string | null;
+}
+
+export interface SessionBridgeSnapshot {
+  session: SessionBridgeSessionSummary & {
+    metadata?: Record<string, unknown>;
+  };
+  transcript: SessionRuntimeRecord[];
+  checkpoints: SessionCheckpointRecord[];
+  toolResults: SessionToolResultItem[];
+  tasks: AgentTaskSnapshot[];
+  backgroundTasks: Array<{
+    id: string;
+    kind: string;
+    title: string;
+    status: string;
+    phase: string;
+    sessionId?: string;
+    contextId?: string;
+    error?: string;
+    summary?: string;
+    latestText?: string;
+    attemptCount: number;
+    workerState: string;
+    workerMode?: string;
+    workerPid?: number;
+    workerLabel?: string;
+    workerLastHeartbeatAt?: string;
+    cancelReason?: string;
+    rollbackState: string;
+    rollbackError?: string;
+    createdAt: string;
+    updatedAt: string;
+    completedAt?: string;
+    turns: Array<{
+      id: string;
+      at: string;
+      text: string;
+      source: 'thought' | 'tool' | 'response' | 'system';
+    }>;
+  }>;
+  permissionRequests: SessionBridgePermissionRequest[];
+}
+
+export interface SessionBridgePermissionRequest {
+  id: string;
+  sessionId: string;
+  callId: string;
+  toolName: string;
+  params: Record<string, unknown>;
+  details: {
+    type: 'edit' | 'exec' | 'info';
+    title: string;
+    description: string;
+    impact?: string;
+  };
+  createdAt: number;
+  resolvedAt?: number;
+  status: 'pending' | 'approved_once' | 'approved_always' | 'cancelled';
+  decision?: 'proceed_once' | 'proceed_always' | 'cancel';
+}
+
 export interface RoleSpec {
   roleId: string;
   purpose: string;
@@ -198,8 +281,8 @@ declare global {
 
   interface Window {
     ipcRenderer: {
-      saveSettings: (settings: { api_endpoint: string; api_key: string; model_name: string; model_name_wander?: string; model_name_chatroom?: string; model_name_knowledge?: string; model_name_redclaw?: string; search_provider?: string; search_endpoint?: string; search_api_key?: string; workspace_dir?: string; active_space_id?: string; role_mapping?: Record<string, string> | string; transcription_model?: string; transcription_endpoint?: string; transcription_key?: string; embedding_endpoint?: string; embedding_key?: string; embedding_model?: string; ai_sources_json?: string; default_ai_source_id?: string; image_provider?: string; image_endpoint?: string; image_api_key?: string; image_model?: string; video_endpoint?: string; video_api_key?: string; video_model?: string; image_provider_template?: string; image_aspect_ratio?: string; image_size?: string; image_quality?: string; mcp_servers_json?: string; redclaw_compact_target_tokens?: number; wander_deep_think_enabled?: boolean; debug_log_enabled?: boolean; developer_mode_enabled?: boolean; developer_mode_unlocked_at?: string | null; chat_max_tokens_default?: number; chat_max_tokens_deepseek?: number }) => Promise<unknown>;
-      getSettings: () => Promise<{ api_endpoint: string; api_key: string; model_name: string; model_name_wander?: string; model_name_chatroom?: string; model_name_knowledge?: string; model_name_redclaw?: string; search_provider?: string; search_endpoint?: string; search_api_key?: string; workspace_dir?: string; active_space_id?: string; role_mapping?: string; transcription_model?: string; transcription_endpoint?: string; transcription_key?: string; embedding_endpoint?: string; embedding_key?: string; embedding_model?: string; ai_sources_json?: string; default_ai_source_id?: string; image_provider?: string; image_endpoint?: string; image_api_key?: string; image_model?: string; video_endpoint?: string; video_api_key?: string; video_model?: string; image_provider_template?: string; image_aspect_ratio?: string; image_size?: string; image_quality?: string; mcp_servers_json?: string; redclaw_compact_target_tokens?: number; wander_deep_think_enabled?: boolean; debug_log_enabled?: boolean; developer_mode_enabled?: boolean; developer_mode_unlocked_at?: string | null; chat_max_tokens_default?: number; chat_max_tokens_deepseek?: number } | undefined>;
+      saveSettings: (settings: { api_endpoint: string; api_key: string; model_name: string; model_name_wander?: string; model_name_chatroom?: string; model_name_knowledge?: string; model_name_redclaw?: string; search_provider?: string; search_endpoint?: string; search_api_key?: string; proxy_enabled?: boolean; proxy_url?: string; proxy_bypass?: string; workspace_dir?: string; active_space_id?: string; role_mapping?: Record<string, string> | string; transcription_model?: string; transcription_endpoint?: string; transcription_key?: string; embedding_endpoint?: string; embedding_key?: string; embedding_model?: string; ai_sources_json?: string; default_ai_source_id?: string; image_provider?: string; image_endpoint?: string; image_api_key?: string; image_model?: string; video_endpoint?: string; video_api_key?: string; video_model?: string; image_provider_template?: string; image_aspect_ratio?: string; image_size?: string; image_quality?: string; mcp_servers_json?: string; redclaw_compact_target_tokens?: number; wander_deep_think_enabled?: boolean; debug_log_enabled?: boolean; developer_mode_enabled?: boolean; developer_mode_unlocked_at?: string | null; chat_max_tokens_default?: number; chat_max_tokens_deepseek?: number }) => Promise<unknown>;
+      getSettings: () => Promise<{ api_endpoint: string; api_key: string; model_name: string; model_name_wander?: string; model_name_chatroom?: string; model_name_knowledge?: string; model_name_redclaw?: string; search_provider?: string; search_endpoint?: string; search_api_key?: string; proxy_enabled?: boolean; proxy_url?: string; proxy_bypass?: string; workspace_dir?: string; active_space_id?: string; role_mapping?: string; transcription_model?: string; transcription_endpoint?: string; transcription_key?: string; embedding_endpoint?: string; embedding_key?: string; embedding_model?: string; ai_sources_json?: string; default_ai_source_id?: string; image_provider?: string; image_endpoint?: string; image_api_key?: string; image_model?: string; video_endpoint?: string; video_api_key?: string; video_model?: string; image_provider_template?: string; image_aspect_ratio?: string; image_size?: string; image_quality?: string; mcp_servers_json?: string; redclaw_compact_target_tokens?: number; wander_deep_think_enabled?: boolean; debug_log_enabled?: boolean; developer_mode_enabled?: boolean; developer_mode_unlocked_at?: string | null; chat_max_tokens_default?: number; chat_max_tokens_deepseek?: number } | undefined>;
       debug: {
         getStatus: () => Promise<{ enabled: boolean; logDirectory: string }>;
         getRecent: (limit?: number) => Promise<{ lines: string[] }>;
@@ -225,6 +308,20 @@ declare global {
         fork: (sessionId: string) => Promise<{ success: boolean; session?: { id: string; transcriptCount: number; checkpointCount: number }; error?: string }>;
         getTranscript: (sessionId: string, limit?: number) => Promise<SessionRuntimeRecord[]>;
         getToolResults: (sessionId: string, limit?: number) => Promise<SessionToolResultItem[]>;
+      };
+      sessionBridge: {
+        getStatus: () => Promise<SessionBridgeStatus>;
+        listSessions: () => Promise<SessionBridgeSessionSummary[]>;
+        getSession: (sessionId: string) => Promise<SessionBridgeSnapshot | null>;
+        listPermissions: (payload?: { sessionId?: string }) => Promise<SessionBridgePermissionRequest[]>;
+        createSession: (payload?: {
+          title?: string;
+          contextType?: string;
+          runtimeMode?: string;
+          metadata?: Record<string, unknown>;
+        }) => Promise<SessionBridgeSessionSummary>;
+        sendMessage: (payload: { sessionId: string; message: string }) => Promise<{ accepted: boolean; sessionId?: string; error?: string }>;
+        resolvePermission: (payload: { requestId: string; outcome: 'proceed_once' | 'proceed_always' | 'cancel' }) => Promise<{ success: boolean; request?: SessionBridgePermissionRequest; error?: string }>;
       };
       runtime: {
         query: (payload: { sessionId?: string; message: string; modelConfig?: unknown }) => Promise<{ success: boolean; sessionId: string; response?: string; error?: string }>;
@@ -364,6 +461,167 @@ declare global {
         resume: (payload: { taskId: string }) => Promise<AgentTaskSnapshot | null>;
         cancel: (payload: { taskId: string }) => Promise<AgentTaskSnapshot | null>;
         trace: (payload: { taskId: string; limit?: number }) => Promise<AgentTaskTrace[]>;
+      };
+      work: {
+        list: (payload?: { status?: string; type?: string; limit?: number; tag?: string }) => Promise<Array<{
+          id: string;
+          title: string;
+          description?: string;
+          type: string;
+          status: string;
+          effectiveStatus: string;
+          priority: number;
+          tags: string[];
+          dependsOn: string[];
+          parentId?: string;
+          summary?: string;
+          blockedBy: string[];
+          ready: boolean;
+          refs: {
+            projectIds: string[];
+            sessionIds: string[];
+            taskIds: string[];
+            backgroundTaskIds: string[];
+            filePaths: string[];
+          };
+          schedule?: {
+            mode: string;
+            enabled?: boolean;
+            intervalMinutes?: number;
+            time?: string;
+            weekdays?: number[];
+            runAt?: string;
+            totalRounds?: number;
+            completedRounds?: number;
+            nextRunAt?: string;
+            lastRunAt?: string;
+          };
+          metadata?: Record<string, unknown>;
+          createdAt: string;
+          updatedAt: string;
+          completedAt?: string;
+        }>>;
+        update: (payload: {
+          id: string;
+          title?: string;
+          description?: string | null;
+          status?: 'pending' | 'active' | 'waiting' | 'done' | 'cancelled';
+          priority?: number;
+          summary?: string | null;
+        }) => Promise<{
+          id: string;
+          title: string;
+          description?: string;
+          type: string;
+          status: string;
+          effectiveStatus: string;
+          priority: number;
+          tags: string[];
+          dependsOn: string[];
+          parentId?: string;
+          summary?: string;
+          blockedBy: string[];
+          ready: boolean;
+          refs: {
+            projectIds: string[];
+            sessionIds: string[];
+            taskIds: string[];
+            backgroundTaskIds: string[];
+            filePaths: string[];
+          };
+          schedule?: {
+            mode: string;
+            enabled?: boolean;
+            intervalMinutes?: number;
+            time?: string;
+            weekdays?: number[];
+            runAt?: string;
+            totalRounds?: number;
+            completedRounds?: number;
+            nextRunAt?: string;
+            lastRunAt?: string;
+          };
+          metadata?: Record<string, unknown>;
+          createdAt: string;
+          updatedAt: string;
+          completedAt?: string;
+        }>;
+        get: (payload: { id: string }) => Promise<{
+          id: string;
+          title: string;
+          description?: string;
+          type: string;
+          status: string;
+          effectiveStatus: string;
+          priority: number;
+          tags: string[];
+          dependsOn: string[];
+          parentId?: string;
+          summary?: string;
+          blockedBy: string[];
+          ready: boolean;
+          refs: {
+            projectIds: string[];
+            sessionIds: string[];
+            taskIds: string[];
+            backgroundTaskIds: string[];
+            filePaths: string[];
+          };
+          schedule?: {
+            mode: string;
+            enabled?: boolean;
+            intervalMinutes?: number;
+            time?: string;
+            weekdays?: number[];
+            runAt?: string;
+            totalRounds?: number;
+            completedRounds?: number;
+            nextRunAt?: string;
+            lastRunAt?: string;
+          };
+          metadata?: Record<string, unknown>;
+          createdAt: string;
+          updatedAt: string;
+          completedAt?: string;
+        } | null>;
+        ready: (payload?: { limit?: number }) => Promise<Array<{
+          id: string;
+          title: string;
+          description?: string;
+          type: string;
+          status: string;
+          effectiveStatus: string;
+          priority: number;
+          tags: string[];
+          dependsOn: string[];
+          parentId?: string;
+          summary?: string;
+          blockedBy: string[];
+          ready: boolean;
+          refs: {
+            projectIds: string[];
+            sessionIds: string[];
+            taskIds: string[];
+            backgroundTaskIds: string[];
+            filePaths: string[];
+          };
+          schedule?: {
+            mode: string;
+            enabled?: boolean;
+            intervalMinutes?: number;
+            time?: string;
+            weekdays?: number[];
+            runAt?: string;
+            totalRounds?: number;
+            completedRounds?: number;
+            nextRunAt?: string;
+            lastRunAt?: string;
+          };
+          metadata?: Record<string, unknown>;
+          createdAt: string;
+          updatedAt: string;
+          completedAt?: string;
+        }>>;
       };
       subjects: {
         list: (payload?: { limit?: number }) => Promise<{ success?: boolean; error?: string; subjects?: SubjectRecord[] }>;
@@ -678,6 +936,7 @@ declare global {
             enabled: boolean;
             endpointPath: string;
             authToken?: string;
+            accountId?: string;
             autoStartSidecar: boolean;
             cursorFile?: string;
             sidecarCommand?: string;
@@ -687,6 +946,10 @@ declare global {
             webhookUrl: string;
             sidecarRunning: boolean;
             sidecarPid?: number;
+            connected: boolean;
+            userId?: string;
+            stateDir: string;
+            availableAccountIds: string[];
           };
         }>;
         start: (payload?: {
@@ -714,6 +977,7 @@ declare global {
             enabled?: boolean;
             endpointPath?: string;
             authToken?: string;
+            accountId?: string;
             autoStartSidecar?: boolean;
             cursorFile?: string;
             sidecarCommand?: string;
@@ -748,6 +1012,7 @@ declare global {
             enabled?: boolean;
             endpointPath?: string;
             authToken?: string;
+            accountId?: string;
             autoStartSidecar?: boolean;
             cursorFile?: string;
             sidecarCommand?: string;
@@ -756,6 +1021,26 @@ declare global {
             sidecarEnv?: Record<string, string>;
           };
         }) => Promise<unknown>;
+        startWeixinLogin: (payload?: {
+          accountId?: string;
+          force?: boolean;
+        }) => Promise<{
+          success: boolean;
+          sessionKey?: string;
+          qrcodeUrl?: string;
+          message: string;
+          stateDir: string;
+        }>;
+        waitForWeixinLogin: (payload?: {
+          sessionKey?: string;
+          timeoutMs?: number;
+        }) => Promise<{
+          success: boolean;
+          connected: boolean;
+          message: string;
+          accountId?: string;
+          userId?: string;
+        }>;
       };
       mcp: {
         list: () => Promise<{ success: boolean; servers: Array<{

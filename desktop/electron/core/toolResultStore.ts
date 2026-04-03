@@ -1,3 +1,4 @@
+import { EventEmitter } from 'events';
 import {
   addSessionToolResult,
   listSessionToolResults,
@@ -48,6 +49,7 @@ const extractResultText = (result: ToolResult): string => {
 };
 
 export class ToolResultStore {
+  private readonly emitter = new EventEmitter();
   add(params: {
     sessionId: string;
     callId: string;
@@ -75,7 +77,9 @@ export class ToolResultStore {
         ...(params.payload || {}),
       }),
     });
-    return this.toPublic(record);
+    const payload = this.toPublic(record);
+    this.emitter.emit('tool-result-added', payload);
+    return payload;
   }
 
   applyBudget(params: {
@@ -92,7 +96,11 @@ export class ToolResultStore {
       prompt_chars: params.promptChars,
       truncated: params.truncated ? 1 : 0,
     });
-    return updated ? this.toPublic(updated) : null;
+    const payload = updated ? this.toPublic(updated) : null;
+    if (payload) {
+      this.emitter.emit('tool-result-updated', payload);
+    }
+    return payload;
   }
 
   list(sessionId: string, limit?: number): PersistedToolResult[] {
@@ -132,6 +140,16 @@ export class ToolResultStore {
       payload: parsePayload(record.payload_json),
       createdAt: record.created_at,
       updatedAt: record.updated_at,
+    };
+  }
+
+  on(
+    event: 'tool-result-added' | 'tool-result-updated',
+    listener: (payload: PersistedToolResult) => void,
+  ): () => void {
+    this.emitter.on(event, listener);
+    return () => {
+      this.emitter.off(event, listener);
     };
   }
 }

@@ -10,6 +10,7 @@ const accountId = process.env.WEIXIN_CLAW_ACCOUNT_ID || '';
 const pollTimeoutMs = Math.max(5_000, Number(process.env.WEIXIN_CLAW_POLL_TIMEOUT_MS || 35_000));
 const retryDelayMs = Math.max(1_000, Number(process.env.WEIXIN_CLAW_RETRY_DELAY_MS || 3_000));
 const cursorFile = process.env.WEIXIN_CLAW_CURSOR_FILE || '';
+const outboxDir = process.env.WEIXIN_OUTBOX_DIR || '';
 
 async function loadCursorState() {
   if (!cursorFile) return { syncCursor: '' };
@@ -42,9 +43,9 @@ const textFromItems = (items) => {
 async function loadWeixinRuntime() {
   try {
     const [{ getUpdates }, { resolveWeixinAccount }, { sendMessageWeixin }] = await Promise.all([
-      import('@weixin-claw/core/api/api.js'),
-      import('@weixin-claw/core/auth/accounts.js'),
-      import('@weixin-claw/core/messaging/send.js'),
+      import('@weixin-claw/core/api/api'),
+      import('@weixin-claw/core/auth/accounts'),
+      import('@weixin-claw/core/messaging/send'),
     ]);
     return { getUpdates, resolveWeixinAccount, sendMessageWeixin };
   } catch (error) {
@@ -54,6 +55,11 @@ async function loadWeixinRuntime() {
 }
 
 async function postToRelay(payload) {
+  console.log('[weixin-claw-relay] posting message to relay', {
+    peerId: payload.peerId,
+    messageId: payload.messageId,
+    preview: String(payload.text || '').slice(0, 120),
+  });
   const response = await fetch(relayUrl, {
     method: 'POST',
     headers: {
@@ -69,7 +75,93 @@ async function postToRelay(payload) {
   if (!response.ok || body?.success === false) {
     throw new Error(`Relay request failed: ${body?.error || response.statusText || 'unknown error'}`);
   }
-  return String(body?.response || '').trim();
+  console.log('[weixin-claw-relay] relay accepted', {
+    peerId: payload.peerId,
+    messageId: payload.messageId,
+    taskId: body?.taskId,
+    sessionId: body?.sessionId,
+    responsePreview: String(body?.response || '').slice(0, 120),
+  });
+  return {
+    taskId: body?.taskId,
+    sessionId: body?.sessionId,
+    response: String(body?.response || '').trim(),
+  };
+}
+
+async function listPendingOutboundFiles() {
+  if (!outboxDir) return [];
+  try {
+    const entries = await fs.readdir(outboxDir);
+    return entries
+      .filter((name) => name.endsWith('.json'))
+      .sort()
+      .map((name) => path.join(outboxDir, name));
+  } catch {
+    return [];
+  }
+}
+
+async function claimOutboundFile(filePath) {
+  const claimedPath = `${filePath}.sending`;
+  try {
+    await fs.rename(filePath, claimedPath);
+    return claimedPath;
+  } catch {
+    return null;
+  }
+}
+
+async function releaseOutboundFile(claimedPath) {
+  try {
+    if (claimedPath.endsWith('.sending')) {
+      await fs.rename(claimedPath, claimedPath.slice(0, -'.sending'.length));
+    }
+  } catch {
+    // ignore
+  }
+}
+
+async function flushOutboundMessages(sendMessageWeixin, resolved) {
+  const files = await listPendingOutboundFiles();
+  for (const filePath of files) {
+    const claimedPath = await claimOutboundFile(filePath);
+    if (!claimedPath) continue;
+    try {
+      const raw = await fs.readFile(claimedPath, 'utf-8');
+      const parsed = JSON.parse(raw);
+      if (parsed?.accountId && parsed.accountId !== resolved.accountId) {
+        await fs.unlink(claimedPath).catch(() => {});
+        continue;
+      }
+      const peerId = String(parsed?.peerId || '').trim();
+      const text = String(parsed?.text || '').trim();
+      if (!peerId || !text) {
+        await fs.unlink(claimedPath).catch(() => {});
+        continue;
+      }
+      console.log('[weixin-claw-relay] sending queued outbound message', {
+        peerId,
+        kind: parsed?.kind,
+        taskId: parsed?.taskId,
+        preview: text.slice(0, 120),
+      });
+      await sendMessageWeixin({
+        to: peerId,
+        text,
+        opts: {
+          baseUrl: resolved.baseUrl,
+          token: resolved.token,
+          contextToken: String(parsed?.contextToken || '').trim() || undefined,
+        },
+      });
+      await fs.unlink(claimedPath).catch(() => {});
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error('[weixin-claw-relay] failed to flush outbound message:', message);
+      await releaseOutboundFile(claimedPath);
+    }
+  }
 }
 
 async function main() {
@@ -84,6 +176,7 @@ async function main() {
     accountId: resolved.accountId,
     baseUrl: resolved.baseUrl,
     cursorFile: cursorFile || '(memory-only)',
+    outboxDir: outboxDir || '(disabled)',
   });
 
   const cursorState = await loadCursorState();
@@ -101,13 +194,24 @@ async function main() {
         await saveCursorState(syncCursor);
       }
       const messages = Array.isArray(updates?.msgs) ? updates.msgs : [];
+      if (messages.length) {
+        console.log('[weixin-claw-relay] updates received', {
+          count: messages.length,
+          cursor: syncCursor,
+        });
+      }
       for (const message of messages) {
         if (Number(message?.message_type) !== 1) continue;
         const text = textFromItems(message?.item_list);
         const peerId = String(message?.from_user_id || '').trim();
         if (!peerId || !text) continue;
+        console.log('[weixin-claw-relay] inbound text message', {
+          peerId,
+          messageId: String(message?.message_id || '').trim(),
+          preview: text.slice(0, 120),
+        });
 
-        const reply = await postToRelay({
+        const accepted = await postToRelay({
           provider: 'weixin',
           accountId: resolved.accountId,
           peerId,
@@ -119,18 +223,29 @@ async function main() {
             sessionId: String(message?.session_id || '').trim(),
           },
         });
-        if (!reply) continue;
-
+        const kickoffText = String(accepted?.response || '').trim()
+          || '收到，RedClaw正在思考';
+        console.log('[weixin-claw-relay] sending immediate kickoff reply to weixin', {
+          peerId,
+          messageId: String(message?.message_id || '').trim(),
+          taskId: accepted?.taskId,
+          preview: kickoffText.slice(0, 120),
+        });
         await sendMessageWeixin({
           to: peerId,
-          text: reply,
+          text: kickoffText,
           opts: {
             baseUrl: resolved.baseUrl,
             token: resolved.token,
             contextToken: String(message?.context_token || '').trim() || undefined,
           },
         });
+        console.log('[weixin-claw-relay] immediate kickoff reply sent', {
+          peerId,
+          messageId: String(message?.message_id || '').trim(),
+        });
       }
+      await flushOutboundMessages(sendMessageWeixin, resolved);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.error('[weixin-claw-relay] loop error:', message);

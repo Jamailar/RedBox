@@ -15,6 +15,21 @@ export type { SkillDefinition, SkillSourceScope } from './skillLoader';
 
 const SKILL_FILE_SAMPLE_LIMIT = 10;
 const SKILL_FILE_IGNORES = new Set(['skill.md']);
+const SKILL_DISCOVERY_CACHE_TTL_MS = 15_000;
+
+const skillDiscoveryCache = new Map<string, {
+    expiresAt: number;
+    skills: SkillDefinition[];
+}>();
+
+function cloneSkillDefinition(skill: SkillDefinition): SkillDefinition {
+    return {
+        ...skill,
+        aliases: Array.isArray(skill.aliases) ? [...skill.aliases] : [],
+        allowedTools: Array.isArray(skill.allowedTools) ? [...skill.allowedTools] : undefined,
+        paths: Array.isArray(skill.paths) ? [...skill.paths] : undefined,
+    };
+}
 
 export class SkillManager {
     private skills: SkillDefinition[] = [];
@@ -29,6 +44,17 @@ export class SkillManager {
     }
 
     async discoverSkills(projectRoot?: string): Promise<void> {
+        const cacheKey = path.resolve(projectRoot || '__global__');
+        const cached = skillDiscoveryCache.get(cacheKey);
+        if (cached && cached.expiresAt > Date.now()) {
+            this.skills = cached.skills.map(cloneSkillDefinition);
+            await this.loadDisabledState();
+            for (const skill of this.skills) {
+                skill.disabled = this.disabledSkillNames.has(skillNameToKey(skill.name));
+            }
+            return;
+        }
+
         this.skills = [];
 
         const builtinSkills = await this.discoverBuiltinSkills();
@@ -56,6 +82,11 @@ export class SkillManager {
         for (const skill of this.skills) {
             skill.disabled = this.disabledSkillNames.has(skillNameToKey(skill.name));
         }
+
+        skillDiscoveryCache.set(cacheKey, {
+            expiresAt: Date.now() + SKILL_DISCOVERY_CACHE_TTL_MS,
+            skills: this.skills.map(cloneSkillDefinition),
+        });
     }
 
     private async discoverBuiltinSkills(): Promise<SkillDefinition[]> {

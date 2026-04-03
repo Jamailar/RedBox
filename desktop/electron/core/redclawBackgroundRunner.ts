@@ -24,6 +24,7 @@ import {
   releaseBackgroundRuntimeLock,
   tryAcquireBackgroundRuntimeLock,
 } from './backgroundRuntimeLock';
+import { getWorkItemStore } from './workItemStore';
 
 type RunResult = 'success' | 'error' | 'skipped';
 type ScheduleMode = 'interval' | 'daily' | 'weekly' | 'once';
@@ -45,6 +46,8 @@ export interface RedClawScheduledTask {
   mode: ScheduleMode;
   prompt: string;
   projectId?: string;
+  workItemId?: string;
+  subagentRoles?: RoleId[];
   intervalMinutes?: number;
   time?: string;
   weekdays?: number[];
@@ -65,6 +68,8 @@ export interface RedClawLongCycleTask {
   objective: string;
   stepPrompt: string;
   projectId?: string;
+  workItemId?: string;
+  subagentRoles?: RoleId[];
   intervalMinutes: number;
   totalRounds: number;
   completedRounds: number;
@@ -275,6 +280,10 @@ function normalizeScheduledTask(
     mode,
     prompt,
     projectId: typeof raw?.projectId === 'string' && raw.projectId.trim() ? raw.projectId.trim() : undefined,
+    workItemId: typeof raw?.workItemId === 'string' && raw.workItemId.trim() ? raw.workItemId.trim() : undefined,
+    subagentRoles: Array.isArray(raw?.subagentRoles)
+      ? raw.subagentRoles.map((item) => String(item || '').trim()).filter(Boolean) as RoleId[]
+      : undefined,
     intervalMinutes: mode === 'interval' ? intervalMinutes : undefined,
     time: mode === 'daily' || mode === 'weekly' ? time : undefined,
     weekdays: mode === 'weekly' ? (weekdays.length > 0 ? weekdays : [1]) : undefined,
@@ -319,6 +328,10 @@ function normalizeLongCycleTask(
     objective,
     stepPrompt,
     projectId: typeof raw?.projectId === 'string' && raw.projectId.trim() ? raw.projectId.trim() : undefined,
+    workItemId: typeof raw?.workItemId === 'string' && raw.workItemId.trim() ? raw.workItemId.trim() : undefined,
+    subagentRoles: Array.isArray(raw?.subagentRoles)
+      ? raw.subagentRoles.map((item) => String(item || '').trim()).filter(Boolean) as RoleId[]
+      : undefined,
     intervalMinutes: sanitizeIntervalMinutes(Number(raw?.intervalMinutes || 30)),
     totalRounds,
     completedRounds,
@@ -988,6 +1001,63 @@ export class RedClawBackgroundRunner extends EventEmitter {
     return this.getStatus();
   }
 
+  private async syncScheduledTaskWorkItem(task: RedClawScheduledTask): Promise<void> {
+    if (!task.workItemId) return;
+    const store = getWorkItemStore();
+    await store.attachRefs(task.workItemId, {
+      projectIds: task.projectId ? [task.projectId] : [],
+    });
+    await store.updateWorkItem(task.workItemId, {
+      type: 'automation',
+      status: task.enabled ? 'waiting' : 'pending',
+      summary: `定时任务 ${task.name} 已登记，下一次执行 ${task.nextRunAt || '待计算'}`,
+      schedule: {
+        mode: task.mode,
+        enabled: task.enabled,
+        intervalMinutes: task.intervalMinutes,
+        time: task.time,
+        weekdays: task.weekdays,
+        runAt: task.runAt,
+        nextRunAt: task.nextRunAt,
+        lastRunAt: task.lastRunAt,
+      },
+      metadata: {
+        automationKind: 'scheduled',
+        scheduledTaskId: task.id,
+        projectId: task.projectId || null,
+        subagentRoles: task.subagentRoles || [],
+      },
+    });
+  }
+
+  private async syncLongCycleTaskWorkItem(task: RedClawLongCycleTask): Promise<void> {
+    if (!task.workItemId) return;
+    const store = getWorkItemStore();
+    await store.attachRefs(task.workItemId, {
+      projectIds: task.projectId ? [task.projectId] : [],
+    });
+    await store.updateWorkItem(task.workItemId, {
+      type: 'automation',
+      status: task.status === 'completed' ? 'done' : (task.enabled ? 'active' : 'waiting'),
+      summary: `长周期任务 ${task.name} 进度 ${task.completedRounds}/${task.totalRounds}`,
+      schedule: {
+        mode: 'long-cycle',
+        enabled: task.enabled,
+        intervalMinutes: task.intervalMinutes,
+        totalRounds: task.totalRounds,
+        completedRounds: task.completedRounds,
+        nextRunAt: task.nextRunAt,
+        lastRunAt: task.lastRunAt,
+      },
+      metadata: {
+        automationKind: 'long-cycle',
+        longCycleTaskId: task.id,
+        projectId: task.projectId || null,
+        subagentRoles: task.subagentRoles || [],
+      },
+    });
+  }
+
   listScheduledTasks(): RedClawScheduledTask[] {
     const nowMs = Date.now();
     const tasks = Object.values(this.config.scheduledTasks).map((task) => {
@@ -1007,6 +1077,8 @@ export class RedClawBackgroundRunner extends EventEmitter {
     mode: ScheduleMode;
     prompt: string;
     projectId?: string;
+    workItemId?: string;
+    subagentRoles?: RoleId[];
     intervalMinutes?: number;
     time?: string;
     weekdays?: number[];
@@ -1032,6 +1104,8 @@ export class RedClawBackgroundRunner extends EventEmitter {
       mode,
       prompt,
       projectId: typeof input.projectId === 'string' && input.projectId.trim() ? input.projectId.trim() : undefined,
+      workItemId: typeof input.workItemId === 'string' && input.workItemId.trim() ? input.workItemId.trim() : undefined,
+      subagentRoles: Array.isArray(input.subagentRoles) ? input.subagentRoles : undefined,
       intervalMinutes: mode === 'interval' ? sanitizeIntervalMinutes(input.intervalMinutes || 60) : undefined,
       time: mode === 'daily' || mode === 'weekly' ? sanitizeTimeHHmm(input.time) : undefined,
       weekdays: mode === 'weekly' ? sanitizeWeekdays(input.weekdays) : undefined,
@@ -1062,6 +1136,7 @@ export class RedClawBackgroundRunner extends EventEmitter {
     this.config.scheduledTasks[task.id] = task;
     this.normalizeSchedules(Date.now());
     await this.persistConfig();
+    await this.syncScheduledTaskWorkItem(task);
     this.emitStatus();
     return task;
   }
@@ -1071,6 +1146,8 @@ export class RedClawBackgroundRunner extends EventEmitter {
     mode?: ScheduleMode;
     prompt?: string;
     projectId?: string | null;
+    workItemId?: string | null;
+    subagentRoles?: RoleId[];
     intervalMinutes?: number;
     time?: string;
     weekdays?: number[];
@@ -1130,6 +1207,12 @@ export class RedClawBackgroundRunner extends EventEmitter {
     current.mode = mode;
     current.prompt = prompt;
     current.projectId = projectId;
+    current.workItemId = input.workItemId !== undefined
+      ? (typeof input.workItemId === 'string' && input.workItemId.trim() ? input.workItemId.trim() : undefined)
+      : current.workItemId;
+    current.subagentRoles = input.subagentRoles !== undefined
+      ? (Array.isArray(input.subagentRoles) ? input.subagentRoles.filter(Boolean) : undefined)
+      : current.subagentRoles;
     current.intervalMinutes = intervalMinutes;
     current.time = time;
     current.weekdays = weekdays;
@@ -1149,6 +1232,7 @@ export class RedClawBackgroundRunner extends EventEmitter {
     this.normalizeSchedules(Date.now());
 
     await this.persistConfig();
+    await this.syncScheduledTaskWorkItem(current);
     this.emitStatus();
     return current;
   }
@@ -1204,6 +1288,8 @@ export class RedClawBackgroundRunner extends EventEmitter {
     objective: string;
     stepPrompt: string;
     projectId?: string;
+    workItemId?: string;
+    subagentRoles?: RoleId[];
     intervalMinutes?: number;
     totalRounds?: number;
     enabled?: boolean;
@@ -1223,6 +1309,8 @@ export class RedClawBackgroundRunner extends EventEmitter {
       objective,
       stepPrompt,
       projectId: typeof input.projectId === 'string' && input.projectId.trim() ? input.projectId.trim() : undefined,
+      workItemId: typeof input.workItemId === 'string' && input.workItemId.trim() ? input.workItemId.trim() : undefined,
+      subagentRoles: Array.isArray(input.subagentRoles) ? input.subagentRoles : undefined,
       intervalMinutes: sanitizeIntervalMinutes(input.intervalMinutes || this.config.intervalMinutes),
       totalRounds: sanitizeLongCycleRounds(input.totalRounds || 8),
       completedRounds: 0,
@@ -1234,6 +1322,7 @@ export class RedClawBackgroundRunner extends EventEmitter {
     this.config.longCycleTasks[task.id] = task;
     this.normalizeSchedules(Date.now());
     await this.persistConfig();
+    await this.syncLongCycleTaskWorkItem(task);
     this.emitStatus();
     return task;
   }
@@ -1243,6 +1332,8 @@ export class RedClawBackgroundRunner extends EventEmitter {
     objective?: string;
     stepPrompt?: string;
     projectId?: string | null;
+    workItemId?: string | null;
+    subagentRoles?: RoleId[];
     intervalMinutes?: number;
     totalRounds?: number;
     enabled?: boolean;
@@ -1271,6 +1362,16 @@ export class RedClawBackgroundRunner extends EventEmitter {
         ? input.projectId.trim()
         : undefined;
     }
+    if (input.workItemId !== undefined) {
+      current.workItemId = typeof input.workItemId === 'string' && input.workItemId.trim()
+        ? input.workItemId.trim()
+        : undefined;
+    }
+    if (input.subagentRoles !== undefined) {
+      current.subagentRoles = Array.isArray(input.subagentRoles)
+        ? input.subagentRoles.filter(Boolean)
+        : undefined;
+    }
     if (typeof input.intervalMinutes === 'number') {
       current.intervalMinutes = sanitizeIntervalMinutes(input.intervalMinutes);
       current.nextRunAt = undefined;
@@ -1297,6 +1398,7 @@ export class RedClawBackgroundRunner extends EventEmitter {
     this.normalizeSchedules(Date.now());
 
     await this.persistConfig();
+    await this.syncLongCycleTaskWorkItem(current);
     this.emitStatus();
     return current;
   }
@@ -1444,6 +1546,8 @@ export class RedClawBackgroundRunner extends EventEmitter {
   private async runAgentPrompt(params: {
     taskId?: string;
     taskKind?: 'redclaw-project' | 'scheduled-task' | 'long-cycle' | 'heartbeat';
+    workItemId?: string;
+    metadata?: Record<string, unknown>;
     contextId: string;
     title: string;
     prompt: string;
@@ -1456,6 +1560,7 @@ export class RedClawBackgroundRunner extends EventEmitter {
           kind: params.taskKind || 'headless-runtime',
           title: params.title,
           contextId: params.contextId,
+          workItemId: params.workItemId,
         });
     const taskId = params.taskId || registeredTask?.id;
 
@@ -1480,6 +1585,10 @@ export class RedClawBackgroundRunner extends EventEmitter {
           contextContent: params.contextContent,
           prompt: params.prompt,
           displayContent: params.displayContent || '[后台自动任务]',
+          metadata: {
+            ...(params.metadata || {}),
+            workItemId: params.workItemId || undefined,
+          },
           service,
           attemptSignal: signal,
         }),
@@ -1702,6 +1811,7 @@ export class RedClawBackgroundRunner extends EventEmitter {
       const result = await this.runAgentPrompt({
         contextId: `redclaw-schedule-${task.id}`,
         title: `RedClaw Schedule ${task.name}`,
+        workItemId: task.workItemId,
         contextContent: [
           `定时任务ID: ${task.id}`,
           `名称: ${task.name}`,
@@ -1709,6 +1819,13 @@ export class RedClawBackgroundRunner extends EventEmitter {
         ].join('\n'),
         prompt: this.buildScheduledTaskPrompt(task),
         displayContent: `[定时任务:${task.name}]`,
+        metadata: {
+          automationKind: 'scheduled',
+          scheduledTaskId: task.id,
+          projectId: task.projectId || null,
+          subagentRoles: task.subagentRoles || [],
+          forceMultiAgent: Array.isArray(task.subagentRoles) && task.subagentRoles.length > 0,
+        },
       });
       this.mirrorLatestAssistantToMainSession(result.sessionId, `[定时任务结果:${task.name}]`);
       runtime.addCheckpoint(runtimeTaskId, 'execute_tools', '定时任务会话完成', {
@@ -1730,6 +1847,7 @@ export class RedClawBackgroundRunner extends EventEmitter {
       task.updatedAt = nowIso();
       runtime.completeNode(runtimeTaskId, 'execute_tools', '定时任务执行完成');
       runtime.completeTask(runtimeTaskId, `scheduled:${task.id}:success`);
+      await this.syncScheduledTaskWorkItem(task);
       this.pendingCatchUpTaskIds.delete(task.id);
       this.emit('log', { level: 'info', message: `Scheduled task completed: ${task.id}`, reason, at: nowIso() });
     } catch (error) {
@@ -1744,6 +1862,7 @@ export class RedClawBackgroundRunner extends EventEmitter {
       this.lastError = message;
       this.pendingCatchUpTaskIds.delete(task.id);
       runtime.failTask(runtimeTaskId, message, 'execute_tools');
+      await this.syncScheduledTaskWorkItem(task);
       this.emit('log', { level: 'error', message: `Scheduled task failed: ${task.id}: ${message}`, reason, at: nowIso() });
     } finally {
       this.scheduledTaskScheduler.markSettled(task, Date.now());
@@ -1809,6 +1928,7 @@ export class RedClawBackgroundRunner extends EventEmitter {
       const result = await this.runAgentPrompt({
         contextId: `redclaw-long-${task.id}`,
         title: `RedClaw Long ${task.name}`,
+        workItemId: task.workItemId,
         contextContent: [
           `长周期任务ID: ${task.id}`,
           `名称: ${task.name}`,
@@ -1816,6 +1936,13 @@ export class RedClawBackgroundRunner extends EventEmitter {
         ].join('\n'),
         prompt: this.buildLongCyclePrompt(task),
         displayContent: `[长周期任务:${task.name}]`,
+        metadata: {
+          automationKind: 'long-cycle',
+          longCycleTaskId: task.id,
+          projectId: task.projectId || null,
+          subagentRoles: task.subagentRoles || ['planner', 'ops-coordinator', 'reviewer'],
+          forceMultiAgent: true,
+        },
       });
       this.mirrorLatestAssistantToMainSession(result.sessionId, `[长周期任务结果:${task.name}]`);
       runtime.addCheckpoint(runtimeTaskId, 'execute_tools', '长周期任务会话完成', {
@@ -1838,6 +1965,7 @@ export class RedClawBackgroundRunner extends EventEmitter {
       task.updatedAt = nowIso();
       runtime.completeNode(runtimeTaskId, 'execute_tools', `长周期推进完成 ${task.completedRounds}/${task.totalRounds}`);
       runtime.completeTask(runtimeTaskId, `long-cycle:${task.id}:${task.completedRounds}/${task.totalRounds}`);
+      await this.syncLongCycleTaskWorkItem(task);
       this.emit('log', { level: 'info', message: `Long-cycle task progressed: ${task.id} (${task.completedRounds}/${task.totalRounds})`, reason, at: nowIso() });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -1848,6 +1976,7 @@ export class RedClawBackgroundRunner extends EventEmitter {
       task.updatedAt = nowIso();
       this.lastError = message;
       runtime.failTask(runtimeTaskId, message, 'execute_tools');
+      await this.syncLongCycleTaskWorkItem(task);
       this.emit('log', { level: 'error', message: `Long-cycle task failed: ${task.id}: ${message}`, reason, at: nowIso() });
     } finally {
       this.longCycleTaskScheduler.markSettled({

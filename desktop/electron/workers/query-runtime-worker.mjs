@@ -2,6 +2,22 @@ const pendingToolBatches = new Map();
 let currentAbortController = null;
 let currentRunId = null;
 
+async function configureProxyDispatcher() {
+  const proxyUrl = String(
+    process.env.HTTPS_PROXY
+    || process.env.https_proxy
+    || process.env.HTTP_PROXY
+    || process.env.http_proxy
+    || '',
+  ).trim();
+  const undici = await import('undici');
+  if (proxyUrl) {
+    undici.setGlobalDispatcher(new undici.EnvHttpProxyAgent());
+    return;
+  }
+  undici.setGlobalDispatcher(new undici.Agent());
+}
+
 function now() {
   return Date.now();
 }
@@ -255,4 +271,5 @@ setInterval(() => {
   });
 }, 3000);
 
+await configureProxyDispatcher();
 process.send?.({ type: 'ready', pid: process.pid });

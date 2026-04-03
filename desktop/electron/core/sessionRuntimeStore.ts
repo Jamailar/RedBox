@@ -1,3 +1,4 @@
+import { EventEmitter } from 'events';
 import {
   addSessionCheckpoint,
   addSessionTranscriptRecord,
@@ -22,6 +23,7 @@ const toPayloadJson = (value: Record<string, unknown> | undefined): string | nul
 };
 
 export class SessionRuntimeStore {
+  private readonly emitter = new EventEmitter();
   private readonly toolResults = getToolResultStore();
 
   appendTranscript(params: {
@@ -31,7 +33,7 @@ export class SessionRuntimeStore {
     content?: string;
     payload?: RuntimeTranscriptEnvelope | Record<string, unknown>;
   }) {
-    return addSessionTranscriptRecord({
+    const record = addSessionTranscriptRecord({
       id: nextId('transcript'),
       session_id: params.sessionId,
       record_type: params.recordType,
@@ -39,6 +41,17 @@ export class SessionRuntimeStore {
       content: params.content,
       payload_json: params.payload ? JSON.stringify(params.payload) : undefined,
     });
+    const payload = {
+      id: record.id,
+      sessionId: record.session_id,
+      recordType: record.record_type,
+      role: record.role,
+      content: record.content,
+      payload: record.payload_json ? JSON.parse(record.payload_json) : null,
+      createdAt: record.created_at,
+    };
+    this.emitter.emit('transcript-appended', payload);
+    return record;
   }
 
   addCheckpoint(params: {
@@ -54,7 +67,7 @@ export class SessionRuntimeStore {
       summary: params.summary,
       payload_json: toPayloadJson(params.payload) ?? undefined,
     });
-    return {
+    const payload = {
       id: record.id,
       sessionId: record.session_id,
       checkpointType: record.checkpoint_type,
@@ -62,6 +75,8 @@ export class SessionRuntimeStore {
       payload: record.payload_json ? JSON.parse(record.payload_json) as Record<string, unknown> : undefined,
       createdAt: record.created_at,
     };
+    this.emitter.emit('checkpoint-added', payload);
+    return payload;
   }
 
   listTranscript(sessionId: string, limit?: number) {
@@ -116,6 +131,16 @@ export class SessionRuntimeStore {
 
   listToolResults(sessionId: string, limit?: number) {
     return this.toolResults.list(sessionId, limit);
+  }
+
+  on(
+    event: 'transcript-appended' | 'checkpoint-added',
+    listener: (payload: unknown) => void,
+  ): () => void {
+    this.emitter.on(event, listener);
+    return () => {
+      this.emitter.off(event, listener);
+    };
   }
 }
 

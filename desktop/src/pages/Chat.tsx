@@ -45,6 +45,9 @@ interface ChatProps {
   welcomeSubtitle?: string;
   contentLayout?: 'default' | 'center-2-3' | 'wide';
   allowFileUpload?: boolean;
+  messageWorkflowPlacement?: 'top' | 'bottom';
+  messageWorkflowVariant?: 'default' | 'compact';
+  messageWorkflowEmphasis?: 'default' | 'thoughts-first';
 }
 
 interface UploadedFileAttachment {
@@ -310,6 +313,9 @@ export function Chat({
   welcomeSubtitle = '我可以帮您阅读和编辑稿件、分析内容、提供创作建议',
   contentLayout = 'default',
   allowFileUpload = true,
+  messageWorkflowPlacement = 'bottom',
+  messageWorkflowVariant = 'compact',
+  messageWorkflowEmphasis = 'default',
 }: ChatProps) {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
@@ -1983,7 +1989,14 @@ export function Chat({
               <div className={clsx('mx-auto min-w-0 space-y-5 md:space-y-6', contentMaxWidthClass, contentWidthClass)}>
                 {messages.map((msg) => (
                   <ErrorBoundary key={msg.id} name={`MessageItem-${msg.id}`}>
-                    <MessageItem msg={msg} copiedMessageId={copiedMessageId} onCopyMessage={handleCopyMessage} workflowPlacement="bottom" workflowVariant="compact" />
+                    <MessageItem
+                      msg={msg}
+                      copiedMessageId={copiedMessageId}
+                      onCopyMessage={handleCopyMessage}
+                      workflowPlacement={messageWorkflowPlacement}
+                      workflowVariant={messageWorkflowVariant}
+                      workflowEmphasis={messageWorkflowEmphasis}
+                    />
                   </ErrorBoundary>
                 ))}
                 <div ref={messagesEndRef} />

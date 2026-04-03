@@ -81,7 +81,14 @@ export default defineConfig({
               // Keep native/optional-node deps external.
               // `ws` has optional deps (`bufferutil` / `utf-8-validate`) that should be resolved at runtime
               // instead of being force-bundled by Rollup.
-              external: ['better-sqlite3', 'bufferutil', 'utf-8-validate'],
+              external: (id) => (
+                id === 'better-sqlite3'
+                || id === 'bufferutil'
+                || id === 'utf-8-validate'
+                || id === 'undici'
+                || id === '@weixin-claw/core'
+                || id.startsWith('@weixin-claw/core/')
+              ),
             },
           },
         },

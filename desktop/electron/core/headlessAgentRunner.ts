@@ -43,19 +43,23 @@ export class HeadlessAgentRunner {
     contextContent: string;
     prompt: string;
     displayContent?: string;
+    historyUserContent?: string;
     runtimeMode?: HeadlessRuntimeMode;
+    contextType?: string;
+    metadata?: Record<string, unknown>;
     service?: PiChatService;
     rollback?: () => Promise<void> | void;
     attemptSignal?: AbortSignal;
   }): Promise<{ sessionId: string; response: string }> {
     const session = getBackgroundSessionStore().ensureSession({
       contextId: input.contextId,
-      contextType: 'redclaw',
+      contextType: input.contextType || 'redclaw',
       title: input.title,
       contextContent: input.contextContent,
       runtimeMode: input.runtimeMode || 'redclaw',
       metadata: {
         headless: true,
+        ...(input.metadata || {}),
       },
     });
     const registry = getBackgroundTaskRegistry();
@@ -65,7 +69,7 @@ export class HeadlessAgentRunner {
       id: `msg_bg_user_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
       session_id: session.id,
       role: 'user',
-      content: input.prompt,
+      content: String(input.historyUserContent || input.prompt || '').trim() || input.prompt,
       display_content: input.displayContent || '[后台任务]',
     });
 

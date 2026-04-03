@@ -31,6 +31,7 @@ import {
   type ToolCallRequest,
   type ToolCallResponse,
   ToolConfirmationOutcome,
+  type ToolConfirmationDetails,
   type ToolResult,
 } from '../core/toolRegistry';
 import { createBuiltinTools } from '../core/tools';
@@ -38,6 +39,7 @@ import { createCompressionService } from '../core/compressionService';
 import { QueryRuntime } from '../core/queryRuntime';
 import { getLongTermMemoryPrompt } from '../core/fileMemoryStore';
 import { getRedClawProjectContextPrompt } from '../core/redclawStore';
+import { getWorkItemStore } from '../core/workItemStore';
 import { buildMcpPromptSection } from '../core/mcpPromptSummary';
 import {
   ensureRedClawOnboardingCompletedWithDefaults,
@@ -64,6 +66,7 @@ interface SessionMetadata {
   compactBaseMessageCount?: number;
   compactRounds?: number;
   compactUpdatedAt?: string;
+  workItemId?: string;
 }
 
 interface AgentTextContent {
@@ -118,6 +121,15 @@ interface ToolMarkupCleanupResult {
   hasLeakedToolMarkup: boolean;
   cleanedText: string;
   leakedToolNames: string[];
+}
+
+interface PiChatServiceOptions {
+  onToolConfirmationRequest?: (
+    callId: string,
+    tool: { name: string; displayName?: string },
+    params: unknown,
+    details: ToolConfirmationDetails,
+  ) => Promise<ToolConfirmationOutcome>;
 }
 
 interface TextualToolCall {
@@ -200,13 +212,14 @@ export class PiChatService {
   private toolRegistry: ToolRegistry;
   private toolExecutor: ToolExecutor;
   private activeRuntimeExecution: PreparedRuntimeExecution | null = null;
+  private discoveredWorkspaceForSkills: string | null = null;
   private runtimeState: SessionRuntimeState = {
     isProcessing: false,
     partialResponse: '',
     updatedAt: 0,
   };
 
-  constructor() {
+  constructor(options: PiChatServiceOptions = {}) {
     this.sessionId = `session_${Date.now()}`;
     this.skillManager = new SkillManager();
     this.toolRegistry = new ToolRegistry();
@@ -220,7 +233,7 @@ export class PiChatService {
     this.toolRegistry.registerTools(tools);
     this.toolExecutor = new ToolExecutor(
       this.toolRegistry,
-      async () => ToolConfirmationOutcome.ProceedOnce,
+      options.onToolConfirmationRequest || (async () => ToolConfirmationOutcome.ProceedOnce),
     );
   }
 
@@ -1043,7 +1056,7 @@ export class PiChatService {
             callId: event.toolCallId,
             name: event.toolName,
             args: event.args,
-          }, event.toolName === 'read_file' || event.toolName === 'grep' || event.toolName === 'web_search' ? 'retrieve' : 'execute_tools');
+          }, event.toolName === 'workspace' || event.toolName === 'web_search' ? 'retrieve' : 'execute_tools');
           this.sendToUI('chat:tool-start', {
             callId: event.toolCallId,
             name: event.toolName,
@@ -1106,7 +1119,7 @@ export class PiChatService {
             success: output.success,
             command,
             outputPreview: output.content.slice(0, 400),
-          }, event.toolName === 'read_file' || event.toolName === 'grep' || event.toolName === 'web_search' ? 'retrieve' : 'execute_tools');
+          }, event.toolName === 'workspace' || event.toolName === 'web_search' ? 'retrieve' : 'execute_tools');
           this.sendToUI('chat:tool-end', {
             callId: event.toolCallId,
             name: event.toolName,
@@ -1375,7 +1388,7 @@ export class PiChatService {
       names: agentTools.map((tool) => tool.name),
       thinkingLevel,
     });
-    const requiredTools = ['read_file', 'app_cli'];
+    const requiredTools = ['workspace', 'app_cli'];
     const missingTools = requiredTools.filter((name) => !agentTools.some((tool) => tool.name === name));
     if (!agentTools.length || missingTools.length > 0) {
       this.emitDebugLog('error', 'agent:tools:pack-invalid', {
@@ -1395,6 +1408,7 @@ export class PiChatService {
   private resolveRuntimeMode(metadata: SessionMetadata): RuntimeMode {
     const contextType = String(metadata.contextType || '').trim().toLowerCase();
     if (contextType === 'redclaw') return 'redclaw';
+    if (contextType === 'weixin') return 'redclaw';
     if (contextType === 'chatroom') return 'chatroom';
     if (contextType === 'advisor' || contextType === 'discussion') return 'advisor-discussion';
     if (contextType === 'note' || contextType === 'knowledge' || contextType === 'video') return 'knowledge';
@@ -1484,10 +1498,7 @@ export class PiChatService {
     const isWindowsRedClaw = process.platform === 'win32' && metadata?.contextType === 'redclaw';
     const blockedTools = new Set<string>([
       'bash',
-      'read_file',
-      'grep',
-      'write_file',
-      'edit_file',
+      'workspace',
     ]);
 
     return {
@@ -1507,9 +1518,7 @@ export class PiChatService {
 
     return new Set([
       ...registryNames,
-      'read_file',
-      'write_file',
-      'grep',
+      'workspace',
       'bash',
       'app_cli',
       'skill',
@@ -1957,7 +1966,12 @@ export class PiChatService {
   }
 
   private async ensureSkillsDiscovered(workspace: string): Promise<void> {
+    const normalizedWorkspace = path.resolve(workspace);
+    if (this.discoveredWorkspaceForSkills === normalizedWorkspace) {
+      return;
+    }
     await this.skillManager.discoverSkills(workspace);
+    this.discoveredWorkspaceForSkills = normalizedWorkspace;
   }
 
   private createModelWithBaseUrl(modelName: string, baseURL: string, settings?: Record<string, unknown>): Model<any> {
@@ -2233,9 +2247,7 @@ export class PiChatService {
       this.toolRegistry.getAllTools().map((tool) => String(tool.name || '').trim().toLowerCase()).filter(Boolean)
     );
     const explicitToolLikeTags = new Set([
-      'read_file',
-      'write_file',
-      'grep',
+      'workspace',
       'bash',
       'app_cli',
       'skill',
@@ -2536,7 +2548,7 @@ export class PiChatService {
           callId: event.callId,
           name: event.name,
           args: event.params,
-        }, event.name === 'read_file' || event.name === 'grep' || event.name === 'web_search' ? 'retrieve' : 'execute_tools');
+        }, event.name === 'workspace' || event.name === 'web_search' ? 'retrieve' : 'execute_tools');
         break;
       case 'tool_output':
         this.sendToUI('chat:tool-update', {
@@ -2572,7 +2584,7 @@ export class PiChatService {
           name: event.name,
           success: event.result.success,
           outputPreview: String(event.result.llmContent || '').slice(0, 400),
-        }, event.name === 'read_file' || event.name === 'grep' || event.name === 'web_search' ? 'retrieve' : 'execute_tools');
+        }, event.name === 'workspace' || event.name === 'web_search' ? 'retrieve' : 'execute_tools');
         break;
       case 'compact_start':
         this.sendToUI('chat:thought-delta', { content: `上下文整理中（${event.strategy}）...` });
@@ -2649,40 +2661,34 @@ export class PiChatService {
   }
 
   private buildAvailableToolsSummary(): string {
-    const tools = this.toolRegistry.getAllTools().slice().sort((a, b) => {
-      const priority = (name: string) => {
-        switch (name) {
-          case 'app_cli':
-            return 0;
-          case 'read_file':
-            return 1;
-          case 'grep':
-            return 2;
-          case 'edit_file':
-            return 3;
-          case 'write_file':
-            return 4;
-          case 'web_search':
-            return 5;
-          case 'redclaw_update_profile_doc':
-            return 6;
-          case 'redclaw_update_creator_profile':
-            return 7;
-          case 'bash':
-            return 8;
-          default:
-            return 99;
-        }
-      };
-      return priority(String(a.name || '')) - priority(String(b.name || ''));
-    });
-    if (!tools.length) {
+    const toolNames = new Set(this.toolRegistry.getAllTools().map((tool) => String(tool.name || '').trim()));
+    if (!toolNames.size) {
       return '- (no tools registered)';
     }
-    return tools
-      .slice(0, 120)
-      .map((tool) => `- ${tool.name}: ${String(tool.description || '').trim() || 'No description'}`)
-      .join('\n');
+
+    const lines: string[] = [];
+    if (toolNames.has('app_cli')) {
+      lines.push('- `app_cli`: app-managed data and business actions');
+    }
+    if (toolNames.has('workspace')) {
+      lines.push('- `workspace`: unified workspace file tool (`list` / `read` / `search` / `write` / `edit`)');
+    }
+    if (toolNames.has('bash')) {
+      lines.push('- `bash`: shell fallback for inspection or simple commands');
+    }
+    if (toolNames.has('web_search')) {
+      lines.push('- `web_search`: current external information');
+    }
+    if (toolNames.has('skill')) {
+      lines.push('- `skill`: load specialized workflows only when clearly relevant');
+    }
+
+    const remaining = Array.from(toolNames).filter((name) => !['app_cli', 'workspace', 'bash', 'web_search', 'skill'].includes(name));
+    if (remaining.length) {
+      lines.push(`- other_tools: ${remaining.join(', ')}`);
+    }
+
+    return lines.join('\n');
   }
 
   private buildPiDocumentationSection(
@@ -2703,7 +2709,7 @@ export class PiChatService {
     return [
       `- Main documentation: app_cli tool usage (${appCliPath})`,
       `- Additional docs: prompt library (${promptsLibraryPath})`,
-      '- Examples: use `app_cli(command="...")` with concrete subcommands',
+      '- Discovery-first: use `app_cli(command="help")` or `app_cli(command="help <namespace>")` before niche commands',
       `- Memory document: ${memoryPath}`,
       `- Agent document: ${agentPath}`,
       `- Soul document: ${soulPath}`,
@@ -2857,7 +2863,11 @@ export class PiChatService {
   private async loadRedClawProjectContext(metadata: SessionMetadata): Promise<string> {
     if (metadata.contextType !== 'redclaw') return '';
     try {
-      return await getRedClawProjectContextPrompt(10);
+      const [projectsPrompt, workboardPrompt] = await Promise.all([
+        getRedClawProjectContextPrompt(10),
+        getWorkItemStore().buildContextPrompt(10),
+      ]);
+      return [workboardPrompt, projectsPrompt].filter(Boolean).join('\n');
     } catch (error) {
       console.warn('[PiChatService] Failed to load RedClaw projects context:', error);
       return '';
@@ -2948,7 +2958,7 @@ export class PiChatService {
         '- user.md：用户稳定画像与长期事实，例如目标、受众、内容赛道、发布节奏、成功指标。用户明确给出新的长期事实时更新。',
         '- CreatorProfile.md：用户长期自媒体定位与策略主档案，包括定位、目标群体、内容风格、商业目标、运营边界。用户明确给出这类长期变化时更新。',
         '- 如果只是一次性任务要求、单篇稿件偏好或临时实验，不要改这些长期文档；优先体现在当前任务执行里，必要时写入普通长期记忆。',
-        '- 更新这些文档时，优先先读目标 Markdown 文件，再使用 `edit_file` 或 `write_file` 做精确修改。',
+        '- 更新这些文档时，优先先读目标 Markdown 文件，再使用 `workspace(action="edit" ...)` 或 `workspace(action="write" ...)` 做精确修改。',
       );
 
       if (!redClawProfileBundle.onboardingState.completedAt && redClawProfileBundle.files.bootstrap) {
@@ -2992,8 +3002,12 @@ export class PiChatService {
         '',
         '## RedClaw 执行模式（小红书创作自动化）',
         '- 你要以“目标->策略->文案->配图->发布计划->复盘”的流程推进，不要只给泛泛建议。',
-        '- 处理 RedClaw 业务时，统一优先使用 `app_cli`，不要假设存在单独的 `redclaw_*` 业务工具。',
-        '- 每次开始新目标时，先调用 `app_cli(command="redclaw create --goal ...")` 建立项目，并在后续步骤持续复用 projectId。',
+        '- 处理 RedClaw 业务时，统一优先使用 `app_cli`，不要假设存在单独的 `redclaw_*` 业务工具。若不确定动作名，先 `app_cli(command="help redclaw")`。',
+        '- RedClaw 的默认起手式不再是直接建项目；先查看或创建工作项：`app_cli(command="work ready")`、`app_cli(command="work create --title ... --type redclaw-note")`。',
+        '- 只有满足以下任一条件时，才把工作项升级成 RedClaw 项目：需要持续多轮跟进、需要配图包/复盘闭环、需要后台自动化、用户明确要求建项目。升级时用 `app_cli(command="work promote-redclaw --id ...")`。',
+        '- 工作推进过程中，要持续更新工作项状态与关联：例如 `work update --id ... --status active`、`work link --id ... --file-path ... --project-id ...`。',
+        '- 当用户要求定时执行、周期巡检、长期跟进、每天/每周推进时，不要只回答计划；要用 `work schedule-add` 或 `work cycle-add` 创建自动化工作项，并为复杂任务配置 `subagentRoles`。',
+        '- 对复杂长周期任务，主代理负责调度和汇报，实际执行优先交给子角色链路，例如 `planner -> researcher -> copywriter -> reviewer` 或 `planner -> ops-coordinator -> reviewer`。',
         '- 若当前任务已经绑定了 RedClaw 项目，产出文案后必须调用 `app_cli(command="redclaw save-copy ...")` 保存标题候选、正文、标签、封面文案、发布计划。',
         '- 若当前任务已经绑定了 RedClaw 项目，产出配图策略后必须调用 `app_cli(command="redclaw save-image ...")` 保存封面图和多张配图提示词。',
         '- 若用户给出发布后数据，必须调用 `app_cli(command="redclaw save-retro ...")` 形成复盘并给出下一轮假设与动作。',
@@ -3001,7 +3015,7 @@ export class PiChatService {
         '- 不能只在聊天里展示最终文案；完整内容产出后必须保存，并在回复中明确回显工具返回的真实保存路径。',
         '- 未收到工具成功返回前，禁止声称“已保存”“已写入稿件”“文件路径是 ...”。若保存失败或尚未执行，必须明确说明未保存。',
         '- 在继续历史任务前，可先调用 `app_cli(command="redclaw list")` 或 `app_cli(command="redclaw get --project-id ...")` 确认项目状态。',
-        '- 当用户提到具体人物、商品、场景、道具、品牌款式时，先查询主体库：`app_cli(command="subjects search --query ...")`，命中后再 `subjects get --id ...` 读取属性和图片路径。',
+        '- 当用户提到具体人物、商品、场景、道具、品牌款式时，先查询主体库：不确定命令时先 `app_cli(command="help subjects")`；通常先 `subjects search`，命中后再 `subjects get --id ...`。',
         '- 如果主体库没有结果，必须明确说未找到，不要自行臆测主体长相、服饰、商品款式或细节。',
         '- 当生图任务存在用户上传参考图、主体库图片、模板图、人物图、商品图时，必须优先使用 `app_cli(command="image generate ...")` 的参考图模式，不要退回纯文生图。',
         '- 当用户要求生成短视频、动态镜头、运镜片段、首尾帧过渡时，必须优先使用 `app_cli(command="video generate ...")`，不要把视频需求错误降级成静态图片。',
@@ -3013,7 +3027,7 @@ export class PiChatService {
         '### RedClaw 自动化能力（强约束）',
         '- 你具备后台自动化能力：可以创建/修改/删除/执行 定时任务、长周期任务、心跳与后台轮询。',
         '- 当用户提出“在某时间提醒/报时/定时执行”这类请求时，禁止回答“我无法定时/无法主动发送消息”。必须通过 `app_cli` 配置自动化任务。',
-        '- 标准流程：先 `app_cli(command="redclaw runner-status")` 检查后台状态；若未开启则 `app_cli(command="redclaw runner-start --interval 20")`；然后用 `redclaw schedule-add`/`schedule-update` 完成任务。',
+        '- 标准流程：先 `app_cli(command="redclaw runner-status")` 检查后台状态；若未开启则 `app_cli(command="redclaw runner-start --interval 20")`；不确定自动化动作名时先 `app_cli(command="help redclaw")`，再用 `schedule-add`/`schedule-update` 完成任务。',
         '- 配置完成后必须回显：任务名、模式、时间（或间隔）、enabled 状态、nextRunAt（若工具有返回）。',
         '- 若任务实际回执可能写入任务会话，仍需在当前会话明确说明结果同步策略，避免用户误判“未执行”。',
       );

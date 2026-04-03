@@ -92,6 +92,8 @@ import { getMemoryMaintenanceService } from './core/memoryMaintenanceService';
 import { getBackgroundTaskRegistry } from './core/backgroundTaskRegistry';
 import { getHeadlessWorkerProcessManager } from './core/headlessWorkerProcessManager';
 import { getAssistantDaemonService } from './core/assistantDaemonService';
+import { applyGlobalNetworkProxy } from './core/networkProxy';
+import { getSessionBridgeService } from './core/sessionBridgeService';
 import { generateAdvisorPersonaDocument } from './core/advisorPersonaGenerator';
 import {
   getDebugLogDirectory,
@@ -108,6 +110,7 @@ import {
 import { getAgentRuntime, getLongTaskCoordinator, getTaskGraphRuntime, listRoleSpecs, type RuntimeMode } from './core/ai';
 import { getSessionRuntimeStore } from './core/sessionRuntimeStore';
 import { listRuntimeHooks, registerRuntimeHook, unregisterRuntimeHook } from './core/runtimeHooks';
+import { getWorkItemStore } from './core/workItemStore';
 
 if (typeof (globalThis as any).Blob === 'undefined' && typeof NodeBlob !== 'undefined') {
   (globalThis as any).Blob = NodeBlob;
@@ -403,6 +406,15 @@ const normalizeSettingsInput = (settings: Record<string, unknown>) => {
   if (Object.prototype.hasOwnProperty.call(settings, 'search_api_key')) {
     normalized.search_api_key = String(settings.search_api_key || '').trim();
   }
+  if (Object.prototype.hasOwnProperty.call(settings, 'proxy_enabled')) {
+    normalized.proxy_enabled = Boolean(settings.proxy_enabled);
+  }
+  if (Object.prototype.hasOwnProperty.call(settings, 'proxy_url')) {
+    normalized.proxy_url = String(settings.proxy_url || '').trim();
+  }
+  if (Object.prototype.hasOwnProperty.call(settings, 'proxy_bypass')) {
+    normalized.proxy_bypass = String(settings.proxy_bypass || '').trim();
+  }
 
   return normalized;
 };
@@ -612,7 +624,7 @@ function createWindow() {
 
   if (process.platform === 'darwin') {
     const dockIcon = nativeImage.createFromPath(resolvedIconPath);
-    if (!dockIcon.isEmpty()) {
+    if (!dockIcon.isEmpty() && app.dock) {
       app.dock.setIcon(dockIcon);
     }
   }
@@ -646,6 +658,7 @@ app.on('window-all-closed', async () => {
 app.on('before-quit', () => {
   void getHeadlessWorkerProcessManager().dispose();
   void getAssistantDaemonService().dispose();
+  void getSessionBridgeService().stop();
 });
 
 app.on('activate', () => {
@@ -1086,7 +1099,17 @@ async function initializeAssistantDaemon() {
   await daemon.init();
 }
 
+async function initializeSessionBridge() {
+  await getSessionBridgeService().start();
+}
+
 app.whenReady().then(async () => {
+  try {
+    await applyGlobalNetworkProxy((getSettings() || {}) as Record<string, unknown>);
+  } catch (error) {
+    console.error('[NetworkProxy] Failed to apply startup proxy settings:', error);
+  }
+
   const officialFeatureModule = await loadOfficialFeatureModule();
   if (officialFeatureModule?.registerOfficialFeatures) {
     await officialFeatureModule.registerOfficialFeatures({
@@ -1154,6 +1177,12 @@ app.whenReady().then(async () => {
       await initializeAssistantDaemon();
     } catch (e) {
       console.error('[AssistantDaemon] Init failed:', e);
+    }
+
+    try {
+      await initializeSessionBridge();
+    } catch (e) {
+      console.error('[SessionBridge] Init failed:', e);
     }
 
     try {
@@ -1248,10 +1277,11 @@ function initializeTaskQueueWithExecutors() {
 // --------- IPC Handlers ---------
 
 // Database
-ipcMain.handle('db:save-settings', (_, settings) => {
+ipcMain.handle('db:save-settings', async (_, settings) => {
   const normalized = normalizeSettingsInput((settings || {}) as Record<string, unknown>) as Parameters<typeof saveSettings>[0];
   const result = saveSettings(normalized);
   setDebugLoggingEnabled(Boolean(normalized.debug_log_enabled));
+  await applyGlobalNetworkProxy((getSettings() || {}) as Record<string, unknown>);
   return result;
 })
 
@@ -1496,6 +1526,46 @@ ipcMain.handle('tasks:get', async (_event, payload?: { taskId?: string }) => {
   const taskId = String(payload?.taskId || '').trim();
   if (!taskId) return null;
   return getTaskGraphRuntime().getTask(taskId);
+});
+
+ipcMain.handle('work:list', async (_event, payload?: { status?: string; type?: string; limit?: number; tag?: string }) => {
+  return getWorkItemStore().listWorkItems({
+    status: payload?.status as any,
+    type: payload?.type as any,
+    limit: payload?.limit,
+    tag: payload?.tag,
+  });
+});
+
+ipcMain.handle('work:get', async (_event, payload?: { id?: string }) => {
+  const id = String(payload?.id || '').trim();
+  if (!id) return null;
+  return getWorkItemStore().getWorkItem(id);
+});
+
+ipcMain.handle('work:ready', async (_event, payload?: { limit?: number }) => {
+  return getWorkItemStore().listReadyWorkItems(payload?.limit || 20);
+});
+
+ipcMain.handle('work:update', async (_event, payload?: {
+  id?: string;
+  title?: string;
+  description?: string | null;
+  status?: 'pending' | 'active' | 'waiting' | 'done' | 'cancelled';
+  priority?: number;
+  summary?: string | null;
+}) => {
+  const id = String(payload?.id || '').trim();
+  if (!id) {
+    throw new Error('work item id is required');
+  }
+  return getWorkItemStore().updateWorkItem(id, {
+    title: payload?.title,
+    description: payload?.description === null ? '' : payload?.description,
+    status: payload?.status,
+    priority: payload?.priority,
+    summary: payload?.summary === null ? null : payload?.summary,
+  });
 });
 
 ipcMain.handle('tasks:resume', async (_event, payload?: { taskId?: string }) => {
@@ -1747,6 +1817,7 @@ ipcMain.handle('assistant:daemon-start', async (_, payload: {
     enabled?: boolean;
     endpointPath?: string;
     authToken?: string;
+    accountId?: string;
     autoStartSidecar?: boolean;
     cursorFile?: string;
     sidecarCommand?: string;
@@ -1795,6 +1866,7 @@ ipcMain.handle('assistant:daemon-set-config', async (_, payload: {
     enabled?: boolean;
     endpointPath?: string;
     authToken?: string;
+    accountId?: string;
     autoStartSidecar?: boolean;
     cursorFile?: string;
     sidecarCommand?: string;
@@ -1808,6 +1880,96 @@ ipcMain.handle('assistant:daemon-set-config', async (_, payload: {
   } catch (error) {
     return { success: false, error: String(error) };
   }
+});
+
+ipcMain.handle('assistant:daemon-weixin-login-start', async (_, payload: {
+  accountId?: string;
+  force?: boolean;
+} = {}) => {
+  try {
+    return await getAssistantDaemonService().startWeixinLogin(payload);
+  } catch (error) {
+    return {
+      success: false,
+      message: String(error),
+      stateDir: '',
+    };
+  }
+});
+
+ipcMain.handle('assistant:daemon-weixin-login-wait', async (_, payload: {
+  sessionKey?: string;
+  timeoutMs?: number;
+} = {}) => {
+  try {
+    return await getAssistantDaemonService().waitForWeixinLogin(payload);
+  } catch (error) {
+    return {
+      success: false,
+      connected: false,
+      message: String(error),
+    };
+  }
+});
+
+ipcMain.handle('session-bridge:status', async () => {
+  return getSessionBridgeService().getStatus();
+});
+
+ipcMain.handle('session-bridge:list-sessions', async () => {
+  return getSessionBridgeService().listSessions();
+});
+
+ipcMain.handle('session-bridge:get-session', async (_, payload?: { sessionId?: string }) => {
+  const sessionId = String(payload?.sessionId || '').trim();
+  if (!sessionId) return null;
+  return getSessionBridgeService().getSessionSnapshot(sessionId);
+});
+
+ipcMain.handle('session-bridge:create-session', async (_, payload?: {
+  title?: string;
+  contextType?: string;
+  runtimeMode?: string;
+  metadata?: Record<string, unknown>;
+}) => {
+  return getSessionBridgeService().createSession(payload);
+});
+
+ipcMain.handle('session-bridge:send-message', async (_, payload?: {
+  sessionId?: string;
+  message?: string;
+}) => {
+  const sessionId = String(payload?.sessionId || '').trim();
+  const message = String(payload?.message || '').trim();
+  if (!sessionId || !message) {
+    return { accepted: false, error: 'sessionId and message are required' };
+  }
+  return getSessionBridgeService().sendSessionMessage(sessionId, message);
+});
+
+ipcMain.handle('session-bridge:list-permissions', async (_, payload?: { sessionId?: string }) => {
+  const sessionId = String(payload?.sessionId || '').trim();
+  return getSessionBridgeService().listPermissionRequests(sessionId || undefined);
+});
+
+ipcMain.handle('session-bridge:resolve-permission', async (_, payload?: {
+  requestId?: string;
+  outcome?: 'proceed_once' | 'proceed_always' | 'cancel';
+}) => {
+  const requestId = String(payload?.requestId || '').trim();
+  const outcome = String(payload?.outcome || '').trim();
+  if (!requestId) {
+    return { success: false, error: 'requestId is required' };
+  }
+  const { ToolConfirmationOutcome } = require('./core/toolRegistry');
+  return getSessionBridgeService().resolvePermissionRequest(
+    requestId,
+    outcome === ToolConfirmationOutcome.ProceedAlways
+      ? ToolConfirmationOutcome.ProceedAlways
+      : outcome === ToolConfirmationOutcome.Cancel
+        ? ToolConfirmationOutcome.Cancel
+        : ToolConfirmationOutcome.ProceedOnce,
+  );
 });
 
 ipcMain.handle('memory:add', async (_, { content, type, tags }) => {

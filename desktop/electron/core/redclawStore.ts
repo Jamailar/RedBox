@@ -3,11 +3,13 @@ import * as path from 'path';
 import matter from 'gray-matter';
 import { getWorkspacePaths } from '../db';
 import { ensurePlannedMediaAssetsForProject } from './mediaLibraryStore';
+import { getWorkItemStore } from './workItemStore';
 
 type RedClawProjectStatus = 'planning' | 'drafted' | 'reviewed';
 
 export interface RedClawProject {
   id: string;
+  workItemId?: string;
   goal: string;
   targetAudience?: string;
   tone?: string;
@@ -99,8 +101,28 @@ export async function createRedClawProject(input: {
   tone?: string;
   successCriteria?: string;
   tags?: string[];
+  workItemId?: string;
 }): Promise<{ project: RedClawProject; projectDir: string }> {
   await ensureDirStructure();
+
+  const workItemStore = getWorkItemStore();
+  const linkedWorkItem = input.workItemId
+    ? await workItemStore.getWorkItem(input.workItemId)
+    : await workItemStore.createWorkItem({
+      title: input.goal.trim(),
+      description: input.successCriteria?.trim() || undefined,
+      type: 'redclaw-project',
+      status: 'active',
+      tags: input.tags || [],
+      metadata: {
+        targetAudience: input.targetAudience?.trim() || undefined,
+        tone: input.tone?.trim() || undefined,
+      },
+      summary: '已升级为 RedClaw 项目，进入持续创作/复盘链路。',
+    });
+  if (input.workItemId && !linkedWorkItem) {
+    throw new Error(`Work item not found: ${input.workItemId}`);
+  }
 
   const projectId = buildProjectId(input.goal);
   const projectDir = resolveProjectDir(projectId);
@@ -108,6 +130,7 @@ export async function createRedClawProject(input: {
 
   const project: RedClawProject = {
     id: projectId,
+    workItemId: linkedWorkItem?.id,
     goal: input.goal.trim(),
     targetAudience: input.targetAudience?.trim() || undefined,
     tone: input.tone?.trim() || undefined,
@@ -119,11 +142,22 @@ export async function createRedClawProject(input: {
   };
 
   await writeJson(resolveProjectJsonPath(projectId), project);
+  if (linkedWorkItem?.id) {
+    await workItemStore.attachRefs(linkedWorkItem.id, {
+      projectIds: [project.id],
+    });
+    await workItemStore.updateWorkItem(linkedWorkItem.id, {
+      type: 'redclaw-project',
+      status: 'active',
+      summary: `已创建 RedClaw 项目 ${project.id}`,
+    });
+  }
 
   const overview = [
     '# RedClaw Project',
     '',
     `- Project ID: ${project.id}`,
+    `- Work Item ID: ${project.workItemId || '(未绑定)'}`,
     `- Goal: ${project.goal}`,
     `- Audience: ${project.targetAudience || '(未设置)'}`,
     `- Tone: ${project.tone || '(未设置)'}`,
@@ -303,6 +337,15 @@ export async function saveRedClawCopyPack(input: {
   await fs.writeFile(manuscriptAbsolutePath, matter.stringify(manuscriptBody, manuscriptMetadata), 'utf-8');
 
   const nextProject = await updateProjectStatus(normalizedProjectId, 'drafted');
+  if (project.workItemId) {
+    await getWorkItemStore().attachRefs(project.workItemId, {
+      filePaths: [manuscriptPath],
+    });
+    await getWorkItemStore().updateWorkItem(project.workItemId, {
+      status: 'active',
+      summary: `文案包已保存，稿件路径 ${manuscriptPath}`,
+    });
+  }
   return { project: nextProject, filePath: jsonPath, manuscriptPath };
 }
 
@@ -363,6 +406,12 @@ export async function saveRedClawImagePack(input: {
   });
 
   const nextProject = await updateProjectStatus(normalizedProjectId, 'drafted');
+  if (nextProject.workItemId) {
+    await getWorkItemStore().updateWorkItem(nextProject.workItemId, {
+      status: 'active',
+      summary: `配图包已保存，规划了 ${created.length} 个媒体资产。`,
+    });
+  }
   return { project: nextProject, filePath: jsonPath, plannedAssetCount: created.length };
 }
 
@@ -442,6 +491,12 @@ export async function saveRedClawRetrospective(input: {
   await fs.writeFile(path.join(projectDir, 'retrospective.md'), markdown, 'utf-8');
 
   const nextProject = await updateProjectStatus(normalizedProjectId, 'reviewed');
+  if (nextProject.workItemId) {
+    await getWorkItemStore().updateWorkItem(nextProject.workItemId, {
+      status: 'done',
+      summary: '项目已完成复盘，本轮闭环结束。',
+    });
+  }
   return { project: nextProject, filePath: jsonPath };
 }
 
@@ -452,7 +507,7 @@ export async function getRedClawProjectContextPrompt(limit = 8): Promise<string>
   const lines: string[] = [];
   for (const project of projects) {
     lines.push(
-      `- [${project.id}] status=${project.status}; goal=${project.goal}; audience=${project.targetAudience || '-'}; updatedAt=${project.updatedAt}`
+      `- [${project.id}] status=${project.status}; workItemId=${project.workItemId || '-'}; goal=${project.goal}; audience=${project.targetAudience || '-'}; updatedAt=${project.updatedAt}`
     );
   }
   return lines.join('\n');

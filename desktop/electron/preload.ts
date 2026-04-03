@@ -52,6 +52,20 @@ contextBridge.exposeInMainWorld('ipcRenderer', {
     getTranscript: (sessionId: string, limit?: number) => ipcRenderer.invoke('sessions:get-transcript', { sessionId, limit }),
     getToolResults: (sessionId: string, limit?: number) => ipcRenderer.invoke('sessions:get-tool-results', { sessionId, limit }),
   },
+  sessionBridge: {
+    getStatus: () => ipcRenderer.invoke('session-bridge:status'),
+    listSessions: () => ipcRenderer.invoke('session-bridge:list-sessions'),
+    getSession: (sessionId: string) => ipcRenderer.invoke('session-bridge:get-session', { sessionId }),
+    listPermissions: (payload?: { sessionId?: string }) => ipcRenderer.invoke('session-bridge:list-permissions', payload || {}),
+    createSession: (payload?: {
+      title?: string;
+      contextType?: string;
+      runtimeMode?: string;
+      metadata?: Record<string, unknown>;
+    }) => ipcRenderer.invoke('session-bridge:create-session', payload || {}),
+    sendMessage: (payload: { sessionId: string; message: string }) => ipcRenderer.invoke('session-bridge:send-message', payload),
+    resolvePermission: (payload: { requestId: string; outcome: 'proceed_once' | 'proceed_always' | 'cancel' }) => ipcRenderer.invoke('session-bridge:resolve-permission', payload),
+  },
   runtime: {
     query: (payload: { sessionId?: string; message: string; modelConfig?: unknown }) => ipcRenderer.invoke('runtime:query', payload),
     resume: (payload: { sessionId: string }) => ipcRenderer.invoke('runtime:resume', payload),
@@ -80,6 +94,19 @@ contextBridge.exposeInMainWorld('ipcRenderer', {
     resume: (payload: { taskId: string }) => ipcRenderer.invoke('tasks:resume', payload),
     cancel: (payload: { taskId: string }) => ipcRenderer.invoke('tasks:cancel', payload),
     trace: (payload: { taskId: string; limit?: number }) => ipcRenderer.invoke('tasks:trace', payload),
+  },
+  work: {
+    list: (payload?: { status?: string; type?: string; limit?: number; tag?: string }) => ipcRenderer.invoke('work:list', payload || {}),
+    get: (payload: { id: string }) => ipcRenderer.invoke('work:get', payload),
+    ready: (payload?: { limit?: number }) => ipcRenderer.invoke('work:ready', payload || {}),
+    update: (payload: {
+      id: string;
+      title?: string;
+      description?: string | null;
+      status?: 'pending' | 'active' | 'waiting' | 'done' | 'cancelled';
+      priority?: number;
+      summary?: string | null;
+    }) => ipcRenderer.invoke('work:update', payload),
   },
   subjects: {
     list: (payload?: { limit?: number }) => ipcRenderer.invoke('subjects:list', payload || {}),
@@ -212,6 +239,7 @@ contextBridge.exposeInMainWorld('ipcRenderer', {
         enabled?: boolean;
         endpointPath?: string;
         authToken?: string;
+        accountId?: string;
         autoStartSidecar?: boolean;
         cursorFile?: string;
         sidecarCommand?: string;
@@ -246,6 +274,7 @@ contextBridge.exposeInMainWorld('ipcRenderer', {
         enabled?: boolean;
         endpointPath?: string;
         authToken?: string;
+        accountId?: string;
         autoStartSidecar?: boolean;
         cursorFile?: string;
         sidecarCommand?: string;
@@ -254,6 +283,8 @@ contextBridge.exposeInMainWorld('ipcRenderer', {
         sidecarEnv?: Record<string, string>;
       };
     }) => ipcRenderer.invoke('assistant:daemon-set-config', payload || {}),
+    startWeixinLogin: (payload?: { accountId?: string; force?: boolean }) => ipcRenderer.invoke('assistant:daemon-weixin-login-start', payload || {}),
+    waitForWeixinLogin: (payload?: { sessionKey?: string; timeoutMs?: number }) => ipcRenderer.invoke('assistant:daemon-weixin-login-wait', payload || {}),
   },
 
   // Skills

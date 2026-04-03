@@ -1,4 +1,4 @@
-import type { Dispatch, SetStateAction } from 'react';
+import { memo, useMemo, type Dispatch, type SetStateAction } from 'react';
 import { Activity, AlertCircle, Database, Download, FolderOpen, Info, RefreshCw, Save, Search, Square, Trash2 } from 'lucide-react';
 import clsx from 'clsx';
 import { PasswordInput } from './shared';
@@ -24,6 +24,9 @@ type SettingsFormData = {
     search_provider: string;
     search_endpoint: string;
     search_api_key: string;
+    proxy_enabled: boolean;
+    proxy_url: string;
+    proxy_bypass: string;
 };
 
 type YtdlpStatus = {
@@ -82,6 +85,7 @@ type AssistantDaemonStatus = {
         enabled: boolean;
         endpointPath: string;
         authToken?: string;
+        accountId?: string;
         autoStartSidecar: boolean;
         cursorFile?: string;
         sidecarCommand?: string;
@@ -91,6 +95,10 @@ type AssistantDaemonStatus = {
         webhookUrl: string;
         sidecarRunning: boolean;
         sidecarPid?: number;
+        connected: boolean;
+        userId?: string;
+        stateDir: string;
+        availableAccountIds: string[];
     };
 };
 
@@ -119,6 +127,7 @@ type AssistantDaemonDraft = {
         enabled: boolean;
         endpointPath: string;
         authToken: string;
+        accountId: string;
         autoStartSidecar: boolean;
         cursorFile: string;
         sidecarCommand: string;
@@ -126,6 +135,17 @@ type AssistantDaemonDraft = {
         sidecarCwd: string;
         sidecarEnvText: string;
     };
+};
+
+type AssistantDaemonWeixinLoginState = {
+    sessionKey?: string;
+    qrcodeUrl?: string;
+    qrcodeImageUrl?: string;
+    message: string;
+    accountId?: string;
+    userId?: string;
+    connected: boolean;
+    stateDir?: string;
 };
 
 interface GeneralSettingsSectionProps {
@@ -142,13 +162,18 @@ interface GeneralSettingsSectionProps {
     setAssistantDaemonDraft: Dispatch<SetStateAction<AssistantDaemonDraft>>;
     assistantDaemonLogs: string[];
     assistantDaemonBusy: boolean;
+    assistantDaemonWeixinLogin: AssistantDaemonWeixinLoginState | null;
+    assistantDaemonWeixinLoginBusy: boolean;
     handleReloadAssistantDaemonStatus: () => Promise<void>;
     handleSaveAssistantDaemonConfig: () => Promise<void>;
     handleStartAssistantDaemon: () => Promise<void>;
     handleStopAssistantDaemon: () => Promise<void>;
+    handleStartAssistantDaemonWeixinLogin: () => Promise<void>;
+    handleCheckAssistantDaemonWeixinLogin: () => Promise<void>;
+    handleClearAssistantDaemonWeixinLogin: () => void;
 }
 
-export function GeneralSettingsSection({
+function GeneralSettingsSectionInner({
     appVersion,
     formData,
     setFormData,
@@ -162,11 +187,21 @@ export function GeneralSettingsSection({
     setAssistantDaemonDraft,
     assistantDaemonLogs,
     assistantDaemonBusy,
+    assistantDaemonWeixinLogin,
+    assistantDaemonWeixinLoginBusy,
     handleReloadAssistantDaemonStatus,
     handleSaveAssistantDaemonConfig,
     handleStartAssistantDaemon,
     handleStopAssistantDaemon,
+    handleStartAssistantDaemonWeixinLogin,
+    handleCheckAssistantDaemonWeixinLogin,
+    handleClearAssistantDaemonWeixinLogin,
 }: GeneralSettingsSectionProps) {
+    const assistantDaemonLogText = useMemo(
+        () => (assistantDaemonLogs.length ? assistantDaemonLogs.join('\n') : '暂无 daemon 日志。'),
+        [assistantDaemonLogs],
+    );
+
     return (
         <section className="space-y-6">
             <h2 className="text-lg font-medium text-text-primary mb-6">常规设置</h2>
@@ -282,6 +317,55 @@ export function GeneralSettingsSection({
 
                 <p className="text-[10px] text-text-tertiary">
                     `Tavily` 需要 API Key。`SearXNG` 至少需要服务地址，如你的实例启用了鉴权，也可以在上方填写 Key。
+                </p>
+            </div>
+
+            <div className="bg-surface-secondary/30 rounded-lg border border-border p-4 space-y-4">
+                <div>
+                    <h3 className="text-sm font-medium text-text-primary flex items-center gap-2">
+                        <Activity className="w-4 h-4" />
+                        全局网络代理
+                    </h3>
+                    <p className="text-xs text-text-tertiary mt-1">
+                        开启后，主进程的外网请求会统一走这里的代理，包括模型拉取、更新检查、飞书和微信扫码。
+                    </p>
+                </div>
+                <div className="flex items-center justify-between">
+                    <label className="text-xs font-medium text-text-secondary">启用全局代理</label>
+                    <button
+                        type="button"
+                        onClick={() => setFormData((prev: any) => ({ ...prev, proxy_enabled: !prev.proxy_enabled }))}
+                        className={clsx('relative inline-flex h-7 w-12 items-center rounded-full transition-colors', formData.proxy_enabled ? 'bg-[#34C759]' : 'bg-gray-300')}
+                    >
+                        <span className={clsx('inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform', formData.proxy_enabled ? 'translate-x-6' : 'translate-x-1')} />
+                    </button>
+                </div>
+                <div>
+                    <label className="block text-xs font-medium text-text-secondary mb-1.5">
+                        代理地址
+                    </label>
+                    <input
+                        type="text"
+                        value={formData.proxy_url}
+                        onChange={(e) => setFormData((prev: any) => ({ ...prev, proxy_url: e.target.value }))}
+                        placeholder="http://127.0.0.1:7890"
+                        className="w-full bg-surface-secondary/30 rounded border border-border px-3 py-2 text-sm focus:outline-none focus:border-accent-primary transition-colors"
+                    />
+                </div>
+                <div>
+                    <label className="block text-xs font-medium text-text-secondary mb-1.5">
+                        直连白名单
+                    </label>
+                    <input
+                        type="text"
+                        value={formData.proxy_bypass}
+                        onChange={(e) => setFormData((prev: any) => ({ ...prev, proxy_bypass: e.target.value }))}
+                        placeholder="localhost,127.0.0.1,::1"
+                        className="w-full bg-surface-secondary/30 rounded border border-border px-3 py-2 text-sm focus:outline-none focus:border-accent-primary transition-colors"
+                    />
+                </div>
+                <p className="text-[10px] text-text-tertiary">
+                    保存后立即生效。默认会保留 `localhost`、`127.0.0.1` 和 `::1` 直连，避免本地 relay 与 daemon 回环请求走代理。
                 </p>
             </div>
 
@@ -435,13 +519,18 @@ export function GeneralSettingsSection({
                         <div className="text-xs text-text-secondary mt-1">
                             sidecar: {assistantDaemonStatus?.weixin.sidecarRunning ? `运行中 (pid ${assistantDaemonStatus.weixin.sidecarPid})` : '未运行'}
                         </div>
+                        <div className="text-xs text-text-secondary mt-1">
+                            账号: {assistantDaemonStatus?.weixin.connected ? `已登录${assistantDaemonStatus.weixin.accountId ? ` (${assistantDaemonStatus.weixin.accountId})` : ''}` : '未登录'}
+                        </div>
                     </div>
-                    <div className="rounded border border-border bg-surface-primary/60 p-3">
-                        <div className="text-[11px] text-text-tertiary mb-1">最近 daemon 日志</div>
-                        <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-all text-[11px] leading-5 text-text-secondary">
-                            {assistantDaemonLogs.length ? assistantDaemonLogs.join('\n') : '暂无 daemon 日志。'}
+                    <details className="rounded border border-border bg-surface-primary/60 p-3">
+                        <summary className="cursor-pointer list-none text-[11px] text-text-tertiary">
+                            最近 daemon 日志
+                        </summary>
+                        <pre className="mt-3 max-h-40 overflow-auto whitespace-pre-wrap break-all text-[11px] leading-5 text-text-secondary">
+                            {assistantDaemonLogText}
                         </pre>
-                    </div>
+                    </details>
                 </div>
 
                 <details className="rounded border border-border bg-surface-primary/60 p-4">
@@ -537,7 +626,7 @@ export function GeneralSettingsSection({
                         <div>
                             <h4 className="text-sm font-medium text-text-primary">微信 sidecar</h4>
                             <p className="text-[11px] text-text-tertiary mt-1">
-                                默认折叠。只在需要接入微信时再展开配置。
+                                默认折叠。正常情况下只需要扫码登录，其他参数都藏在高级设置里。
                             </p>
                         </div>
                         <span className="text-[11px] text-text-tertiary">
@@ -555,61 +644,55 @@ export function GeneralSettingsSection({
                                 <span className={clsx('inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform', assistantDaemonDraft.weixin.enabled ? 'translate-x-6' : 'translate-x-1')} />
                             </button>
                         </div>
-                        <div>
-                            <label className="block text-xs font-medium text-text-secondary mb-1.5">Relay 路径</label>
-                            <input
-                                type="text"
-                                value={assistantDaemonDraft.weixin.endpointPath}
-                                onChange={(e) => setAssistantDaemonDraft((prev) => ({ ...prev, weixin: { ...prev.weixin, endpointPath: e.target.value } }))}
-                                className="w-full bg-surface-secondary/30 rounded border border-border px-3 py-2 text-sm focus:outline-none focus:border-accent-primary"
-                            />
-                        </div>
-                        <div>
-                            <label className="block text-xs font-medium text-text-secondary mb-1.5">Relay Token</label>
-                            <PasswordInput
-                                value={assistantDaemonDraft.weixin.authToken}
-                                onChange={(e) => setAssistantDaemonDraft((prev) => ({ ...prev, weixin: { ...prev.weixin, authToken: e.target.value } }))}
-                                className="w-full bg-surface-secondary/30 rounded border border-border px-3 py-2 text-sm focus:outline-none focus:border-accent-primary"
-                            />
-                        </div>
-                        <div>
-                            <label className="block text-xs font-medium text-text-secondary mb-1.5">Cursor 文件</label>
-                            <input
-                                type="text"
-                                value={assistantDaemonDraft.weixin.cursorFile}
-                                onChange={(e) => setAssistantDaemonDraft((prev) => ({ ...prev, weixin: { ...prev.weixin, cursorFile: e.target.value } }))}
-                                placeholder="留空使用 redclaw/weixin-sidecar.cursor.json"
-                                className="w-full bg-surface-secondary/30 rounded border border-border px-3 py-2 text-sm focus:outline-none focus:border-accent-primary"
-                            />
-                        </div>
-                        <div>
-                            <label className="block text-xs font-medium text-text-secondary mb-1.5">启动命令</label>
-                            <input
-                                type="text"
-                                value={assistantDaemonDraft.weixin.sidecarCommand}
-                                onChange={(e) => setAssistantDaemonDraft((prev) => ({ ...prev, weixin: { ...prev.weixin, sidecarCommand: e.target.value } }))}
-                                placeholder="默认 node（再由 bootstrap 寻找 Node 22）"
-                                className="w-full bg-surface-secondary/30 rounded border border-border px-3 py-2 text-sm focus:outline-none focus:border-accent-primary"
-                            />
-                        </div>
-                        <div>
-                            <label className="block text-xs font-medium text-text-secondary mb-1.5">启动参数</label>
-                            <input
-                                type="text"
-                                value={assistantDaemonDraft.weixin.sidecarArgs}
-                                onChange={(e) => setAssistantDaemonDraft((prev) => ({ ...prev, weixin: { ...prev.weixin, sidecarArgs: e.target.value } }))}
-                                placeholder="留空使用内置 bootstrap"
-                                className="w-full bg-surface-secondary/30 rounded border border-border px-3 py-2 text-sm focus:outline-none focus:border-accent-primary"
-                            />
-                        </div>
-                        <div>
-                            <label className="block text-xs font-medium text-text-secondary mb-1.5">工作目录</label>
-                            <input
-                                type="text"
-                                value={assistantDaemonDraft.weixin.sidecarCwd}
-                                onChange={(e) => setAssistantDaemonDraft((prev) => ({ ...prev, weixin: { ...prev.weixin, sidecarCwd: e.target.value } }))}
-                                className="w-full bg-surface-secondary/30 rounded border border-border px-3 py-2 text-sm focus:outline-none focus:border-accent-primary"
-                            />
+                        <div className="rounded border border-border bg-surface-secondary/20 p-3 space-y-3">
+                            <div className="text-[11px] text-text-tertiary">
+                                连接方式：应用会调用 `@weixin-claw/core` 访问腾讯 iLink 网关拉取登录二维码。扫码成功后，本地会保存 bot token 和 accountId，后续由内置 sidecar 长连收发消息。
+                            </div>
+                            <div className="flex flex-wrap items-center gap-2">
+                                <button
+                                    type="button"
+                                    onClick={() => void handleStartAssistantDaemonWeixinLogin()}
+                                    disabled={assistantDaemonWeixinLoginBusy}
+                                    className="px-3 py-1.5 border border-border rounded text-xs hover:bg-surface-secondary transition-colors disabled:opacity-50"
+                                >
+                                    开始扫码
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => void handleCheckAssistantDaemonWeixinLogin()}
+                                    disabled={assistantDaemonWeixinLoginBusy || !assistantDaemonWeixinLogin?.sessionKey}
+                                    className="px-3 py-1.5 border border-border rounded text-xs hover:bg-surface-secondary transition-colors disabled:opacity-50"
+                                >
+                                    检查登录结果
+                                </button>
+                                {assistantDaemonWeixinLogin && (
+                                    <button
+                                        type="button"
+                                        onClick={handleClearAssistantDaemonWeixinLogin}
+                                        className="px-3 py-1.5 border border-border rounded text-xs hover:bg-surface-secondary transition-colors"
+                                    >
+                                        清空二维码
+                                    </button>
+                                )}
+                            </div>
+                            {assistantDaemonWeixinLogin?.message && (
+                                <p className="text-[11px] text-text-tertiary">{assistantDaemonWeixinLogin.message}</p>
+                            )}
+                            {!assistantDaemonWeixinLogin?.qrcodeUrl && (
+                                <p className="text-[10px] text-text-tertiary">
+                                    如果这里直接报 `fetch failed`，通常不是扫码逻辑问题，而是当前机器访问 `https://ilinkai.weixin.qq.com` 失败。先在上面的“全局网络代理”里配好代理，再保存设置后重试。
+                                </p>
+                            )}
+                            {assistantDaemonWeixinLogin?.qrcodeUrl && (
+                                <div className="space-y-2">
+                                    <img
+                                        src={assistantDaemonWeixinLogin.qrcodeImageUrl || assistantDaemonWeixinLogin.qrcodeUrl}
+                                        alt="微信登录二维码"
+                                        className="h-40 w-40 rounded border border-border bg-white object-contain"
+                                    />
+                                    <p className="text-[10px] text-text-tertiary break-all">{assistantDaemonWeixinLogin.qrcodeUrl}</p>
+                                </div>
+                            )}
                         </div>
                         <label className="flex items-center gap-2 text-xs text-text-secondary">
                             <input
@@ -620,18 +703,104 @@ export function GeneralSettingsSection({
                             />
                             daemon 启动时自动拉起微信 sidecar
                         </label>
-                        <div>
-                            <label className="block text-xs font-medium text-text-secondary mb-1.5">sidecar 环境变量（JSON）</label>
-                            <textarea
-                                value={assistantDaemonDraft.weixin.sidecarEnvText}
-                                onChange={(e) => setAssistantDaemonDraft((prev) => ({ ...prev, weixin: { ...prev.weixin, sidecarEnvText: e.target.value } }))}
-                                rows={4}
-                                placeholder='{"WEIXIN_CLAW_NODE":"/usr/local/bin/node22"}'
-                                className="w-full bg-surface-secondary/30 rounded border border-border px-3 py-2 text-xs font-mono focus:outline-none focus:border-accent-primary"
-                            />
+                        <div className="text-[10px] text-text-tertiary">
+                            当前登录：{assistantDaemonStatus?.weixin.connected ? '已连接' : '未连接'}
+                            {assistantDaemonStatus?.weixin.accountId ? ` / ${assistantDaemonStatus.weixin.accountId}` : ''}
+                            {assistantDaemonStatus?.weixin.userId ? ` / 用户 ${assistantDaemonStatus.weixin.userId}` : ''}
                         </div>
+                        <div className="text-[10px] text-text-tertiary">
+                            状态目录：<code className="bg-surface-secondary px-1 rounded">{assistantDaemonStatus?.weixin.stateDir || '未初始化'}</code>
+                        </div>
+                        {!!assistantDaemonStatus?.weixin.availableAccountIds?.length && (
+                            <div className="text-[10px] text-text-tertiary">
+                                已保存账号：{assistantDaemonStatus.weixin.availableAccountIds.join(', ')}
+                            </div>
+                        )}
+                        <details className="rounded border border-border bg-surface-primary/60 p-3">
+                            <summary className="cursor-pointer list-none text-[11px] text-text-tertiary">
+                                微信高级设置
+                            </summary>
+                            <div className="mt-3 space-y-3">
+                                <div>
+                                    <label className="block text-xs font-medium text-text-secondary mb-1.5">Relay 路径</label>
+                                    <input
+                                        type="text"
+                                        value={assistantDaemonDraft.weixin.endpointPath}
+                                        onChange={(e) => setAssistantDaemonDraft((prev) => ({ ...prev, weixin: { ...prev.weixin, endpointPath: e.target.value } }))}
+                                        className="w-full bg-surface-secondary/30 rounded border border-border px-3 py-2 text-sm focus:outline-none focus:border-accent-primary"
+                                    />
+                                </div>
+                                <div>
+                                    <label className="block text-xs font-medium text-text-secondary mb-1.5">Relay Token</label>
+                                    <PasswordInput
+                                        value={assistantDaemonDraft.weixin.authToken}
+                                        onChange={(e) => setAssistantDaemonDraft((prev) => ({ ...prev, weixin: { ...prev.weixin, authToken: e.target.value } }))}
+                                        className="w-full bg-surface-secondary/30 rounded border border-border px-3 py-2 text-sm focus:outline-none focus:border-accent-primary"
+                                    />
+                                </div>
+                                <div>
+                                    <label className="block text-xs font-medium text-text-secondary mb-1.5">微信账号 ID</label>
+                                    <input
+                                        type="text"
+                                        value={assistantDaemonDraft.weixin.accountId}
+                                        onChange={(e) => setAssistantDaemonDraft((prev) => ({ ...prev, weixin: { ...prev.weixin, accountId: e.target.value } }))}
+                                        placeholder="扫码成功后会自动写入，也可以手动指定"
+                                        className="w-full bg-surface-secondary/30 rounded border border-border px-3 py-2 text-sm focus:outline-none focus:border-accent-primary"
+                                    />
+                                </div>
+                                <div>
+                                    <label className="block text-xs font-medium text-text-secondary mb-1.5">Cursor 文件</label>
+                                    <input
+                                        type="text"
+                                        value={assistantDaemonDraft.weixin.cursorFile}
+                                        onChange={(e) => setAssistantDaemonDraft((prev) => ({ ...prev, weixin: { ...prev.weixin, cursorFile: e.target.value } }))}
+                                        placeholder="留空使用 redclaw/weixin-sidecar.cursor.json"
+                                        className="w-full bg-surface-secondary/30 rounded border border-border px-3 py-2 text-sm focus:outline-none focus:border-accent-primary"
+                                    />
+                                </div>
+                                <div>
+                                    <label className="block text-xs font-medium text-text-secondary mb-1.5">启动命令</label>
+                                    <input
+                                        type="text"
+                                        value={assistantDaemonDraft.weixin.sidecarCommand}
+                                        onChange={(e) => setAssistantDaemonDraft((prev) => ({ ...prev, weixin: { ...prev.weixin, sidecarCommand: e.target.value } }))}
+                                        placeholder="留空使用当前 Electron 运行时"
+                                        className="w-full bg-surface-secondary/30 rounded border border-border px-3 py-2 text-sm focus:outline-none focus:border-accent-primary"
+                                    />
+                                </div>
+                                <div>
+                                    <label className="block text-xs font-medium text-text-secondary mb-1.5">启动参数</label>
+                                    <input
+                                        type="text"
+                                        value={assistantDaemonDraft.weixin.sidecarArgs}
+                                        onChange={(e) => setAssistantDaemonDraft((prev) => ({ ...prev, weixin: { ...prev.weixin, sidecarArgs: e.target.value } }))}
+                                        placeholder="留空使用内置 bootstrap"
+                                        className="w-full bg-surface-secondary/30 rounded border border-border px-3 py-2 text-sm focus:outline-none focus:border-accent-primary"
+                                    />
+                                </div>
+                                <div>
+                                    <label className="block text-xs font-medium text-text-secondary mb-1.5">工作目录</label>
+                                    <input
+                                        type="text"
+                                        value={assistantDaemonDraft.weixin.sidecarCwd}
+                                        onChange={(e) => setAssistantDaemonDraft((prev) => ({ ...prev, weixin: { ...prev.weixin, sidecarCwd: e.target.value } }))}
+                                        className="w-full bg-surface-secondary/30 rounded border border-border px-3 py-2 text-sm focus:outline-none focus:border-accent-primary"
+                                    />
+                                </div>
+                                <div>
+                                    <label className="block text-xs font-medium text-text-secondary mb-1.5">sidecar 环境变量（JSON）</label>
+                                    <textarea
+                                        value={assistantDaemonDraft.weixin.sidecarEnvText}
+                                        onChange={(e) => setAssistantDaemonDraft((prev) => ({ ...prev, weixin: { ...prev.weixin, sidecarEnvText: e.target.value } }))}
+                                        rows={4}
+                                        placeholder='{"HTTP_PROXY":"http://127.0.0.1:7890"}'
+                                        className="w-full bg-surface-secondary/30 rounded border border-border px-3 py-2 text-xs font-mono focus:outline-none focus:border-accent-primary"
+                                    />
+                                </div>
+                            </div>
+                        </details>
                         <p className="text-[10px] text-text-tertiary">
-                            `@weixin-claw/core` 需要 Node 22+。默认 bootstrap 会优先读取 `WEIXIN_CLAW_NODE`，其次尝试 `node22` 和 `node`。
+                            已改为使用正式版 `@weixin-claw/core`。默认直接复用当前 Electron 39 / Node 22 运行时，不再要求单独安装 `node22`。
                         </p>
                     </div>
                 </details>
@@ -701,6 +870,8 @@ export function GeneralSettingsSection({
         </section>
     );
 }
+
+export const GeneralSettingsSection = memo(GeneralSettingsSectionInner);
 
 interface MemorySettingsSectionProps {
     newMemoryType: UserMemory['type'];

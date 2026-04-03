@@ -12,6 +12,7 @@ import {
   type AgentTaskNodeRecord,
 } from '../../db';
 import type { AgentTaskSnapshot, IntentRoute, RoleId, RuntimeMode } from './types';
+import { getWorkItemStore } from '../workItemStore';
 
 const now = () => Date.now();
 
@@ -113,6 +114,13 @@ const hydrateTask = (taskId: string): AgentTaskSnapshot | null => {
   };
 };
 
+const resolveWorkItemId = (task: AgentTaskSnapshot | null): string => {
+  const candidate = task?.metadata && typeof task.metadata === 'object'
+    ? (task.metadata as Record<string, unknown>).workItemId
+    : undefined;
+  return typeof candidate === 'string' ? candidate.trim() : '';
+};
+
 export class TaskGraphRuntime {
   createInteractiveTask(params: {
     runtimeMode: RuntimeMode;
@@ -158,6 +166,20 @@ export class TaskGraphRuntime {
         roleId: params.roleId,
       },
     });
+    const workItemId = typeof (params.metadata as Record<string, unknown> | undefined)?.workItemId === 'string'
+      ? String((params.metadata as Record<string, unknown>).workItemId || '').trim()
+      : '';
+    if (workItemId) {
+      void getWorkItemStore().attachRefs(workItemId, {
+        taskIds: [id],
+        sessionIds: [params.ownerSessionId],
+      }).then(() => getWorkItemStore().updateWorkItem(workItemId, {
+        status: 'active',
+        summary: `AI 任务已启动：${params.route.goal}`,
+      })).catch((error) => {
+        console.warn('[TaskGraphRuntime] failed to attach work item:', error);
+      });
+    }
     return hydrateTask(created.id)!;
   }
 
@@ -259,6 +281,15 @@ export class TaskGraphRuntime {
       completed_at: now(),
     });
     this.addTrace(taskId, 'task.failed', { error, nodeType }, nodeType);
+    const workItemId = resolveWorkItemId(task);
+    if (workItemId) {
+      void getWorkItemStore().updateWorkItem(workItemId, {
+        status: 'waiting',
+        summary: `AI 任务失败：${error}`,
+      }).catch((workItemError) => {
+        console.warn('[TaskGraphRuntime] failed to update failed work item:', workItemError);
+      });
+    }
     return this.getTask(taskId);
   }
 
@@ -274,6 +305,15 @@ export class TaskGraphRuntime {
       completed_at: now(),
     });
     this.addTrace(taskId, 'task.completed', { summary }, 'complete');
+    const workItemId = resolveWorkItemId(task);
+    if (workItemId) {
+      void getWorkItemStore().updateWorkItem(workItemId, {
+        status: 'done',
+        summary: summary || task.goal || 'AI 任务已完成。',
+      }).catch((workItemError) => {
+        console.warn('[TaskGraphRuntime] failed to update completed work item:', workItemError);
+      });
+    }
     return this.getTask(taskId);
   }
 
@@ -317,6 +357,15 @@ export class TaskGraphRuntime {
       completed_at: null,
     });
     this.addTrace(taskId, 'task.resumed');
+    const workItemId = resolveWorkItemId(task);
+    if (workItemId) {
+      void getWorkItemStore().updateWorkItem(workItemId, {
+        status: 'active',
+        summary: 'AI 任务已恢复执行。',
+      }).catch((workItemError) => {
+        console.warn('[TaskGraphRuntime] failed to update resumed work item:', workItemError);
+      });
+    }
     return this.getTask(taskId);
   }
 
@@ -328,6 +377,15 @@ export class TaskGraphRuntime {
       completed_at: now(),
     });
     this.addTrace(taskId, 'task.cancelled');
+    const workItemId = resolveWorkItemId(task);
+    if (workItemId) {
+      void getWorkItemStore().updateWorkItem(workItemId, {
+        status: 'cancelled',
+        summary: 'AI 任务已取消。',
+      }).catch((workItemError) => {
+        console.warn('[TaskGraphRuntime] failed to update cancelled work item:', workItemError);
+      });
+    }
     return this.getTask(taskId);
   }
 }

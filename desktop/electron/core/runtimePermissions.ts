@@ -66,6 +66,37 @@ export const evaluateRuntimeToolPermission = (params: {
     const interactive = context.interactive !== false;
     const runtimeMode = String(context.runtimeMode || '').trim();
 
+    if (toolName === 'workspace') {
+        const action = String(args.action || '').trim();
+        const isMutatingAction = action === 'write' || action === 'edit';
+        const reason = action
+            ? `workspace action=${action}`
+            : 'workspace action';
+
+        if (!isMutatingAction) {
+            return {
+                outcome: 'allow',
+                reason: `${reason} 属于工作区只读操作。`,
+                source: 'runtime-policy',
+            };
+        }
+
+        if (runtimeMode === 'background-maintenance') {
+            return {
+                outcome: 'deny',
+                reason: `后台维护模式禁止执行 ${reason} 这类工作区写入。`,
+                source: 'runtime-policy',
+            };
+        }
+
+        return {
+            outcome: interactive ? 'confirm' : 'deny',
+            reason: `${reason} 会修改工作区文件。`,
+            details: interactive ? buildGenericConfirmationDetails(tool, args, `${reason} 会修改工作区文件。`) : null,
+            source: 'runtime-policy',
+        };
+    }
+
     if (toolName === 'app_cli') {
         const analysis = analyzeAppCliCommand(String(args.command || ''), {
             interactive,

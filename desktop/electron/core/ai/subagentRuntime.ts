@@ -29,6 +29,11 @@ export type SubagentOrchestrationResult = {
 };
 
 const ORCHESTRATION_PROMPT_PATH = 'runtime/ai/subagent_orchestrator.txt';
+const MAX_PRIOR_OUTPUTS_IN_PROMPT = 3;
+const MAX_SUBAGENT_SUMMARY_CHARS = 320;
+const MAX_SUBAGENT_ARTIFACT_CHARS = 220;
+const MAX_SUBAGENT_HANDOFF_CHARS = 220;
+const MAX_SUBAGENT_USER_INPUT_CHARS = 6000;
 
 export const ROLE_SEQUENCE_BY_INTENT: Record<string, RoleId[]> = {
   manuscript_creation: ['planner', 'researcher', 'copywriter', 'reviewer'],
@@ -41,6 +46,31 @@ export const ROLE_SEQUENCE_BY_INTENT: Record<string, RoleId[]> = {
 };
 
 const DEFAULT_TIMEOUT_MS = 90000;
+
+function truncateText(value: unknown, limit: number): string {
+  const text = String(value || '').trim();
+  if (!text) return '';
+  if (text.length <= limit) return text;
+  return `${text.slice(0, limit)}...<truncated>`;
+}
+
+function compactPriorOutputs(priorOutputs: SubagentOutput[]): string {
+  if (!priorOutputs.length) {
+    return '[]';
+  }
+  return JSON.stringify(
+    priorOutputs.slice(-MAX_PRIOR_OUTPUTS_IN_PROMPT).map((output) => ({
+      roleId: output.roleId,
+      summary: truncateText(output.summary, MAX_SUBAGENT_SUMMARY_CHARS),
+      artifact: output.artifact ? truncateText(output.artifact, MAX_SUBAGENT_ARTIFACT_CHARS) : undefined,
+      handoff: output.handoff ? truncateText(output.handoff, MAX_SUBAGENT_HANDOFF_CHARS) : undefined,
+      risks: Array.isArray(output.risks) ? output.risks.slice(0, 4).map((item) => truncateText(item, 80)) : [],
+      approved: output.approved,
+    })),
+    null,
+    2,
+  );
+}
 
 function parseStructuredContent(raw: string): Record<string, unknown> {
   const text = String(raw || '').trim();
@@ -112,7 +142,7 @@ export async function runStructuredSubagent(input: {
     intent: input.route.intent,
     goal: input.route.goal,
     required_capabilities: input.route.requiredCapabilities.join(', '),
-    previous_outputs_json: JSON.stringify(input.priorOutputs, null, 2),
+    previous_outputs_json: compactPriorOutputs(input.priorOutputs),
   }, role.systemPrompt);
 
   const payload = {
@@ -124,7 +154,7 @@ export async function runStructuredSubagent(input: {
       {
         role: 'user',
         content: [
-          `用户请求：${input.userInput}`,
+          `用户请求：${truncateText(input.userInput, MAX_SUBAGENT_USER_INPUT_CHARS)}`,
           `任务目标：${input.route.goal}`,
           ROLE_OUTPUT_SCHEMA_HINT[input.roleId],
           '不要输出 markdown，不要输出解释，只输出一个合法 JSON 对象。',
@@ -191,8 +221,11 @@ export async function runSubagentOrchestration(input: {
   runtimeMode: RuntimeMode;
   taskId: string;
   userInput: string;
+  roleSequenceOverride?: RoleId[];
 }): Promise<SubagentOrchestrationResult | null> {
-  const roleSequence = ROLE_SEQUENCE_BY_INTENT[input.route.intent] || [];
+  const roleSequence = input.roleSequenceOverride?.length
+    ? input.roleSequenceOverride
+    : (ROLE_SEQUENCE_BY_INTENT[input.route.intent] || []);
   if (roleSequence.length === 0) {
     return null;
   }

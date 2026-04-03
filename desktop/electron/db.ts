@@ -92,6 +92,12 @@ const initDb = () => {
       model_name_chatroom TEXT,
       model_name_knowledge TEXT,
       model_name_redclaw TEXT,
+      search_provider TEXT,
+      search_endpoint TEXT,
+      search_api_key TEXT,
+      proxy_enabled INTEGER,
+      proxy_url TEXT,
+      proxy_bypass TEXT,
       role_mapping TEXT,
       workspace_dir TEXT,
       active_space_id TEXT,
@@ -419,9 +425,6 @@ const initDb = () => {
     db.exec(`ALTER TABLE settings ADD COLUMN model_name_knowledge TEXT;`);
   } catch { /* Column already exists */ }
   try {
-    db.exec(`ALTER TABLE settings ADD COLUMN model_name_redclaw TEXT;`);
-  } catch { /* Column already exists */ }
-  try {
     db.exec(`ALTER TABLE settings ADD COLUMN search_provider TEXT;`);
   } catch { /* Column already exists */ }
   try {
@@ -429,6 +432,18 @@ const initDb = () => {
   } catch { /* Column already exists */ }
   try {
     db.exec(`ALTER TABLE settings ADD COLUMN search_api_key TEXT;`);
+  } catch { /* Column already exists */ }
+  try {
+    db.exec(`ALTER TABLE settings ADD COLUMN proxy_enabled INTEGER;`);
+  } catch { /* Column already exists */ }
+  try {
+    db.exec(`ALTER TABLE settings ADD COLUMN proxy_url TEXT;`);
+  } catch { /* Column already exists */ }
+  try {
+    db.exec(`ALTER TABLE settings ADD COLUMN proxy_bypass TEXT;`);
+  } catch { /* Column already exists */ }
+  try {
+    db.exec(`ALTER TABLE settings ADD COLUMN model_name_redclaw TEXT;`);
   } catch { /* Column already exists */ }
 
   try {
@@ -519,6 +534,9 @@ export const saveSettings = (settings: {
     search_provider?: string;
     search_endpoint?: string;
     search_api_key?: string;
+    proxy_enabled?: boolean;
+    proxy_url?: string;
+    proxy_bypass?: string;
     role_mapping?: string;
   workspace_dir?: string;
   active_space_id?: string;
@@ -551,8 +569,8 @@ export const saveSettings = (settings: {
   chat_max_tokens_deepseek?: number;
 }) => {
   const stmt = db.prepare(`
-    INSERT INTO settings (id, api_endpoint, api_key, model_name, model_name_wander, model_name_chatroom, model_name_knowledge, model_name_redclaw, role_mapping, workspace_dir, active_space_id, transcription_model, transcription_endpoint, transcription_key, embedding_endpoint, embedding_key, embedding_model, ai_sources_json, default_ai_source_id, image_provider, image_endpoint, image_api_key, image_model, video_endpoint, video_api_key, video_model, image_provider_template, image_aspect_ratio, image_size, image_quality, mcp_servers_json, redclaw_compact_target_tokens, wander_deep_think_enabled, debug_log_enabled, developer_mode_enabled, developer_mode_unlocked_at, chat_max_tokens_default, chat_max_tokens_deepseek)
-    VALUES (1, @api_endpoint, @api_key, @model_name, @model_name_wander, @model_name_chatroom, @model_name_knowledge, @model_name_redclaw, @role_mapping, @workspace_dir, @active_space_id, @transcription_model, @transcription_endpoint, @transcription_key, @embedding_endpoint, @embedding_key, @embedding_model, @ai_sources_json, @default_ai_source_id, @image_provider, @image_endpoint, @image_api_key, @image_model, @video_endpoint, @video_api_key, @video_model, @image_provider_template, @image_aspect_ratio, @image_size, @image_quality, @mcp_servers_json, @redclaw_compact_target_tokens, @wander_deep_think_enabled, @debug_log_enabled, @developer_mode_enabled, @developer_mode_unlocked_at, @chat_max_tokens_default, @chat_max_tokens_deepseek)
+    INSERT INTO settings (id, api_endpoint, api_key, model_name, model_name_wander, model_name_chatroom, model_name_knowledge, model_name_redclaw, search_provider, search_endpoint, search_api_key, proxy_enabled, proxy_url, proxy_bypass, role_mapping, workspace_dir, active_space_id, transcription_model, transcription_endpoint, transcription_key, embedding_endpoint, embedding_key, embedding_model, ai_sources_json, default_ai_source_id, image_provider, image_endpoint, image_api_key, image_model, video_endpoint, video_api_key, video_model, image_provider_template, image_aspect_ratio, image_size, image_quality, mcp_servers_json, redclaw_compact_target_tokens, wander_deep_think_enabled, debug_log_enabled, developer_mode_enabled, developer_mode_unlocked_at, chat_max_tokens_default, chat_max_tokens_deepseek)
+    VALUES (1, @api_endpoint, @api_key, @model_name, @model_name_wander, @model_name_chatroom, @model_name_knowledge, @model_name_redclaw, @search_provider, @search_endpoint, @search_api_key, @proxy_enabled, @proxy_url, @proxy_bypass, @role_mapping, @workspace_dir, @active_space_id, @transcription_model, @transcription_endpoint, @transcription_key, @embedding_endpoint, @embedding_key, @embedding_model, @ai_sources_json, @default_ai_source_id, @image_provider, @image_endpoint, @image_api_key, @image_model, @video_endpoint, @video_api_key, @video_model, @image_provider_template, @image_aspect_ratio, @image_size, @image_quality, @mcp_servers_json, @redclaw_compact_target_tokens, @wander_deep_think_enabled, @debug_log_enabled, @developer_mode_enabled, @developer_mode_unlocked_at, @chat_max_tokens_default, @chat_max_tokens_deepseek)
     ON CONFLICT(id) DO UPDATE SET
       api_endpoint = @api_endpoint,
       api_key = @api_key,
@@ -561,6 +579,12 @@ export const saveSettings = (settings: {
       model_name_chatroom = @model_name_chatroom,
       model_name_knowledge = @model_name_knowledge,
       model_name_redclaw = @model_name_redclaw,
+      search_provider = @search_provider,
+      search_endpoint = @search_endpoint,
+      search_api_key = @search_api_key,
+      proxy_enabled = @proxy_enabled,
+      proxy_url = @proxy_url,
+      proxy_bypass = @proxy_bypass,
       role_mapping = @role_mapping,
       workspace_dir = @workspace_dir,
       active_space_id = @active_space_id,
@@ -603,6 +627,9 @@ export const saveSettings = (settings: {
     search_provider?: string;
     search_endpoint?: string;
     search_api_key?: string;
+    proxy_enabled?: boolean;
+    proxy_url?: string;
+    proxy_bypass?: string;
     role_mapping?: string;
     workspace_dir?: string;
     active_space_id?: string;
@@ -652,6 +679,11 @@ export const saveSettings = (settings: {
     search_provider: String(settings.search_provider ?? current?.search_provider ?? 'duckduckgo').trim() || 'duckduckgo',
     search_endpoint: String(settings.search_endpoint ?? current?.search_endpoint ?? '').trim(),
     search_api_key: String(settings.search_api_key ?? current?.search_api_key ?? '').trim(),
+    proxy_enabled: settings.proxy_enabled === undefined
+      ? (current?.proxy_enabled ? 1 : 0)
+      : (settings.proxy_enabled ? 1 : 0),
+    proxy_url: String(settings.proxy_url ?? current?.proxy_url ?? '').trim(),
+    proxy_bypass: String(settings.proxy_bypass ?? current?.proxy_bypass ?? '').trim(),
     role_mapping: settings.role_mapping === undefined
       ? (current?.role_mapping || '{}')
       : typeof settings.role_mapping === 'object'
@@ -720,6 +752,9 @@ export const getSettings = () => {
     search_provider?: string;
     search_endpoint?: string;
     search_api_key?: string;
+    proxy_enabled?: number;
+    proxy_url?: string;
+    proxy_bypass?: string;
     role_mapping?: string;
     workspace_dir?: string;
     active_space_id?: string;
@@ -759,6 +794,9 @@ export const getSettings = () => {
   if (result && !result.search_provider) {
     result.search_provider = 'duckduckgo';
   }
+  if (result && !result.proxy_bypass) {
+    result.proxy_bypass = 'localhost,127.0.0.1,::1';
+  }
   if (result?.workspace_dir) {
     result.workspace_dir = normalizeWorkspaceDir(result.workspace_dir);
   }
@@ -797,6 +835,7 @@ export const getSettings = () => {
     (result as { wander_deep_think_enabled?: boolean }).wander_deep_think_enabled = Boolean(result.wander_deep_think_enabled);
     (result as { debug_log_enabled?: boolean }).debug_log_enabled = Boolean(result.debug_log_enabled);
     (result as { developer_mode_enabled?: boolean }).developer_mode_enabled = Boolean(result.developer_mode_enabled);
+    (result as { proxy_enabled?: boolean }).proxy_enabled = Boolean(result.proxy_enabled);
   }
   return result;
 };

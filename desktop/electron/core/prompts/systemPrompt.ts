@@ -158,11 +158,10 @@ function getWorkspaceContext(paths: { base: string; skills: string; knowledge: s
         ``,
         `## How to Explore`,
         ``,
-        `Use a compact tool set to explore and search:`,
-        `- \`app_cli\` - List app data such as spaces/manuscripts/knowledge/advisors/subjects/memory/settings`,
-        `- \`read_file\` - Read file content`,
-        `- \`grep\` - Search for keywords in files`,
-        `- \`bash\` - For shell-style inspection like \`pwd\`, \`ls\`, \`rg\`, \`git status\``,
+        `Use a compact tool set to explore and act:`,
+        `- \`app_cli\` - List and operate app-managed data such as spaces/manuscripts/knowledge/advisors/subjects/memory/settings`,
+        `- \`workspace\` - List/read/search/edit/write files inside the workspace`,
+        `- \`bash\` - For shell-style inspection like \`pwd\`, \`ls\`, \`rg\`, \`git status\` when simpler`,
         ``,
         `## 🔍 Knowledge Base (知识库)`,
         ``,
@@ -183,9 +182,9 @@ function getWorkspaceContext(paths: { base: string; skills: string; knowledge: s
         ``,
         `### How to Search Knowledge Base`,
         `1. **List knowledge items**: \`app_cli({ "command": "knowledge list --source redbook" })\` or \`app_cli({ "command": "knowledge list --source youtube" })\``,
-        `2. **Search keywords**: \`app_cli({ "command": "knowledge search --query \\"关键词\\"" })\` or \`grep\` under \`${paths.base}/knowledge\``,
-        `3. **Read details**: \`read_file("${paths.base}/knowledge/youtube/youtube_xxx/meta.json")\``,
-        `4. **Read subtitle**: \`read_file("${paths.base}/knowledge/youtube/youtube_xxx/{videoId}.txt")\``,
+        `2. **Search keywords**: \`app_cli({ "command": "knowledge search --query \\"关键词\\"" })\` or \`workspace({ "action": "search", "pattern": "关键词", "path": "${paths.base}/knowledge" })\``,
+        `3. **Read details**: \`workspace({ "action": "read", "filePath": "${paths.base}/knowledge/youtube/youtube_xxx/meta.json" })\``,
+        `4. **Read subtitle**: \`workspace({ "action": "read", "filePath": "${paths.base}/knowledge/youtube/youtube_xxx/{videoId}.txt" })\``,
         ``,
         `### When to Search`,
         `- User mentions "我的笔记", "我保存的", "知识库", "我收藏的"`,
@@ -222,7 +221,7 @@ function getPlanModeInstructions(): string {
 You are currently in Plan Mode. This mode is for researching and planning complex tasks before implementation.
 
 ## Objectives
-1.  **Research:** Use compact primitives like \`app_cli\`, \`read_file\`, \`grep\`, \`bash\`, and \`web_search\` to gather context.
+1.  **Research:** Use compact primitives like \`app_cli\`, \`workspace\`, \`bash\`, and \`web_search\` to gather context.
 2.  **Design:** Analyze the requirements and existing codebase to design a solution.
 3.  **Plan:** Update the plan file (usually \`.opencode/PLAN.md\`) with your findings and detailed implementation steps.
 4.  **Exit:** When the plan is solid and you are ready to code, call \`plan_mode_exit\`.
@@ -270,44 +269,57 @@ function getCoreMandates(interactive: boolean, hasSkills: boolean): string {
 function getToolUsageGuide(tools: ToolDefinition<unknown, ToolResult>[]): string {
     const toolNames = tools.map(t => t.name);
     const hasTool = (name: string) => toolNames.includes(name);
-    const examples: string[] = [];
+    const categories: string[] = [];
 
     if (hasTool('app_cli')) {
-        examples.push('- List manuscripts: `app_cli({ "command": "manuscripts list" })`');
-        examples.push('- Search knowledge: `app_cli({ "command": "knowledge search --query \\"AI\\"" })`');
-        examples.push('- Add memory: `app_cli({ "command": "memory add --content \\"用户偏好短句风格\\" --type preference" })`');
+        categories.push('- `app_cli`: app-managed command router; use `help` / `help <namespace>` to discover actions on demand');
     }
-    if (hasTool('read_file')) {
-        examples.push('- Read file: `read_file({ "filePath": "/absolute/path/to/file" })`');
-    }
-    if (hasTool('edit_file')) {
-        examples.push('- Edit existing file after reading it first');
-    }
-    if (hasTool('write_file')) {
-        examples.push('- Create or overwrite a file when you already know the target content');
+    if (hasTool('workspace')) {
+        categories.push('- `workspace`: unified workspace file tool for `list`, `read`, `search`, `write`, `edit`');
     }
     if (hasTool('bash')) {
-        examples.push('- Use `bash` for shell inspection like `pwd`, `ls`, `rg`, `git status`');
+        categories.push('- `bash`: shell fallback for native inspection or commands simpler than tool composition');
     }
     if (hasTool('web_search')) {
-        examples.push('- Use `web_search` only for genuinely current or external information');
+        categories.push('- `web_search`: current external information only');
+    }
+    if (hasTool('skill')) {
+        categories.push('- `skill`: load specialized workflow instructions only when the task clearly matches');
+    }
+
+    const examples: string[] = [];
+    if (hasTool('app_cli')) {
+        examples.push('- `app_cli({ "command": "help" })`');
+        examples.push('- `app_cli({ "command": "help manuscripts" })`');
+    }
+    if (hasTool('workspace')) {
+        examples.push('- `workspace({ "action": "read", "filePath": "/absolute/path/to/file" })`');
+        examples.push('- `workspace({ "action": "search", "pattern": "TODO", "path": "." })`');
+        examples.push('- `workspace({ "action": "edit", "filePath": "/absolute/path.ts", "oldString": "...", "newString": "..." })`');
+    }
+    if (hasTool('bash')) {
+        examples.push('- `bash({ "command": "git status" })`');
     }
 
     return `# Tool Usage
 
-You have access to these tools: ${toolNames.join(', ')}.
+You have access to a compressed tool surface with ${toolNames.length} tools.
+
+## Core Tool Categories
+${categories.join('\n')}
 
 ## Selection Order
-- Prefer \`app_cli\` for built-in app data and actions: spaces, manuscripts, knowledge, advisors, memory, media, subjects, redclaw, settings, skills, archives, wander, MCP.
-- Use \`read_file\`, \`grep\`, \`write_file\`, and \`edit_file\` for direct repository or workspace file operations.
-- Use \`bash\` for shell-native inspection or commands that are simpler than building a file-tool sequence.
+- Prefer \`app_cli\` for app-managed data and business actions.
+- Prefer \`workspace\` for direct file inspection and file edits inside the workspace.
+- Use \`bash\` only when shell-native inspection is simpler than \`workspace\` or \`app_cli\`.
 - Use \`web_search\` only when the information is external and likely current.
+- Load \`skill\` only when a specialized workflow is clearly relevant.
 
-## Rules
-- Keep tool choice minimal. Do not chain multiple overlapping tools when one tool already covers the task.
+## Compression Rules
+- Keep tool choice minimal. One general tool is better than chaining multiple overlapping tools.
+- Do not switch from \`app_cli\` to \`workspace\` if \`app_cli\` already covers the operation.
+- Do not switch from \`workspace\` to \`bash\` unless shell usage is clearly simpler.
 - Never call a tool with empty required arguments.
-- If a tool reports missing arguments, retry the same tool with the required fields filled.
-- For app-managed data, do not invent direct filesystem layouts when \`app_cli\` already exposes the operation.
 
 ## Quick Examples
 ${examples.join('\n')}`;

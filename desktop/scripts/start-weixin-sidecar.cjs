@@ -31,6 +31,7 @@ if (!fs.existsSync(scriptPath)) {
 }
 
 const candidates = [
+  process.execPath,
   process.env.WEIXIN_CLAW_NODE,
   'node22',
   'node',
@@ -52,7 +53,10 @@ if (!selected) {
 
 const child = spawn(selected.command, [scriptPath], {
   cwd: process.cwd(),
-  env: process.env,
+  env: {
+    ...process.env,
+    ...(process.versions.electron ? { ELECTRON_RUN_AS_NODE: '1' } : {}),
+  },
   stdio: 'inherit',
 });
 
@@ -63,4 +67,3 @@ child.once('exit', (code, signal) => {
   }
   process.exit(code ?? 0);
 });
-

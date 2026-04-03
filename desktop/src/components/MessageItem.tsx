@@ -175,6 +175,7 @@ interface MessageItemProps {
   onCopyMessage: (id: string, content: string) => void;
   workflowPlacement?: 'top' | 'bottom';
   workflowVariant?: 'default' | 'compact';
+  workflowEmphasis?: 'default' | 'thoughts-first';
 }
 
 interface ImageContextMenuState {
@@ -251,6 +252,7 @@ export const MessageItem = memo(({
   onCopyMessage,
   workflowPlacement = 'top',
   workflowVariant = 'default',
+  workflowEmphasis = 'default',
 }: MessageItemProps) => {
   const isUser = msg.role === 'user';
   const aiContentRef = useRef<HTMLDivElement | null>(null);
@@ -271,11 +273,22 @@ export const MessageItem = memo(({
         .reverse()
         .find((item) => item.type === 'thought' && String(item.content || '').trim())
     : undefined;
+  const timelineThoughtItems = !isUser
+    ? (msg.timeline || []).filter((item) => item.type === 'thought' && String(item.content || '').trim())
+    : [];
   const thoughtBubbleContent = !isUser
     ? (latestTimelineThought?.content || msg.thinking || '')
     : '';
   const showThoughtBubble = !isUser && Boolean(thoughtBubbleContent);
   const showWorkflowOnTop = workflowPlacement === 'top';
+  const shouldRenderThoughtStream =
+    !isUser &&
+    workflowEmphasis === 'thoughts-first' &&
+    workflowVariant === 'default' &&
+    timelineThoughtItems.length > 0;
+  const visibleThoughtItems = shouldRenderThoughtStream
+    ? timelineThoughtItems.slice(-4)
+    : [];
 
   useEffect(() => {
     if (!imageMenu.visible) return;
@@ -472,7 +485,19 @@ export const MessageItem = memo(({
       )}
 
       {/* AI 工作流可视化 (新版 Timeline) */}
-      {showWorkflowOnTop && showThoughtBubble && (
+      {showWorkflowOnTop && shouldRenderThoughtStream && (
+        <div className="mb-3 w-full max-w-3xl space-y-2.5">
+          {visibleThoughtItems.map((item, index) => (
+            <ThinkingBubble
+              key={item.id}
+              content={String(item.content || '')}
+              isActive={Boolean(msg.isStreaming && item.status === 'running' && index === visibleThoughtItems.length - 1)}
+            />
+          ))}
+        </div>
+      )}
+
+      {showWorkflowOnTop && !shouldRenderThoughtStream && showThoughtBubble && (
         <div className="mb-3 w-full max-w-3xl">
           <ThinkingBubble
             content={thoughtBubbleContent}
@@ -602,7 +627,19 @@ export const MessageItem = memo(({
         <ProcessTimeline items={msg.timeline} isStreaming={!!msg.isStreaming} variant={workflowVariant} />
       )}
 
-      {!showWorkflowOnTop && showThoughtBubble && (
+      {!showWorkflowOnTop && shouldRenderThoughtStream && (
+        <div className="mt-3 w-full max-w-3xl space-y-2.5">
+          {visibleThoughtItems.map((item, index) => (
+            <ThinkingBubble
+              key={item.id}
+              content={String(item.content || '')}
+              isActive={Boolean(msg.isStreaming && item.status === 'running' && index === visibleThoughtItems.length - 1)}
+            />
+          ))}
+        </div>
+      )}
+
+      {!showWorkflowOnTop && !shouldRenderThoughtStream && showThoughtBubble && (
         <div className="mt-3 w-full max-w-3xl">
           <ThinkingBubble
             content={thoughtBubbleContent}
@@ -696,7 +733,8 @@ export const MessageItem = memo(({
     (prevProps.copiedMessageId === prevProps.msg.id) !== (nextProps.copiedMessageId === nextProps.msg.id);
   const workflowStyleChanged =
     prevProps.workflowPlacement !== nextProps.workflowPlacement ||
-    prevProps.workflowVariant !== nextProps.workflowVariant;
+    prevProps.workflowVariant !== nextProps.workflowVariant ||
+    prevProps.workflowEmphasis !== nextProps.workflowEmphasis;
 
   return !msgChanged && !copyStatusChanged && !workflowStyleChanged;
 });

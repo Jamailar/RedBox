@@ -7,6 +7,7 @@ import { buildMcpPromptSection } from '../mcpPromptSummary';
 import { SkillManager } from '../skillManager';
 import { createBuiltinTools } from '../tools';
 import type { BuiltinToolPack } from '../tools/catalog';
+import { getWorkItemStore } from '../workItemStore';
 import { getCoreSystemPrompt, type SystemPromptOptions } from './systemPrompt';
 
 const execFileAsync = promisify(execFile);
@@ -14,6 +15,13 @@ const CONTEXT_FILE_NAMES = ['AGENTS.md', 'CLAUDE.md', 'GEMINI.md'] as const;
 const MAX_CONTEXT_FILE_CHARS = 8_000;
 const MAX_MEMORY_CHARS = 6_000;
 const MAX_GIT_STATUS_CHARS = 2_000;
+const PROJECT_CONTEXT_CACHE_TTL_MS = 8_000;
+const GIT_SNAPSHOT_CACHE_TTL_MS = 5_000;
+const RUNTIME_BASE_PROMPT_CACHE_TTL_MS = 8_000;
+
+const projectContextCache = new Map<string, { expiresAt: number; value: string }>();
+const gitSnapshotCache = new Map<string, { expiresAt: number; value: string }>();
+const runtimeBasePromptCache = new Map<string, { expiresAt: number; value: string }>();
 
 type WorkspacePaths = ReturnType<typeof getWorkspacePaths>;
 
@@ -80,6 +88,12 @@ const readIfExists = async (filePath: string, maxChars: number): Promise<string>
 export async function buildProjectContextContent(
   workspacePaths: WorkspacePaths = getWorkspacePaths(),
 ): Promise<string> {
+  const cacheKey = `${path.resolve(workspacePaths.base)}::${path.resolve(workspacePaths.workspaceRoot)}`;
+  const cached = projectContextCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.value;
+  }
+
   const sections: string[] = [];
   const seenFiles = new Set<string>();
 
@@ -110,6 +124,15 @@ export async function buildProjectContextContent(
     sections.push(`## ${normalizeDisplayPath(memoryPath, workspacePaths)}\n${memoryContent}`);
   }
 
+  try {
+    const workboardPrompt = await getWorkItemStore().buildContextPrompt(10);
+    if (workboardPrompt) {
+      sections.push(workboardPrompt);
+    }
+  } catch {
+    // ignore workboard context failures so prompt building remains resilient
+  }
+
   const mcpPromptSection = buildMcpPromptSection({
     maxVisibleServers: 4,
     maxChars: 1200,
@@ -123,7 +146,12 @@ export async function buildProjectContextContent(
     return '';
   }
 
-  return sections.join('\n\n');
+  const value = sections.join('\n\n');
+  projectContextCache.set(cacheKey, {
+    expiresAt: Date.now() + PROJECT_CONTEXT_CACHE_TTL_MS,
+    value,
+  });
+  return value;
 }
 
 async function runGit(args: string[], cwd: string): Promise<string> {
@@ -140,6 +168,11 @@ export async function buildGitSnapshotContent(
   workspacePaths: WorkspacePaths = getWorkspacePaths(),
 ): Promise<string> {
   const cwd = path.resolve(workspacePaths.base);
+  const cacheKey = cwd;
+  const cached = gitSnapshotCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.value;
+  }
   try {
     const insideGit = await runGit(['rev-parse', '--is-inside-work-tree'], cwd);
     if (insideGit !== 'true') {
@@ -171,7 +204,12 @@ export async function buildGitSnapshotContent(
       recentCommits ? `\nRecent commits:\n${recentCommits}` : '',
     ].filter(Boolean);
 
-    return lines.join('\n');
+    const value = lines.join('\n');
+    gitSnapshotCache.set(cacheKey, {
+      expiresAt: Date.now() + GIT_SNAPSHOT_CACHE_TTL_MS,
+      value,
+    });
+    return value;
   } catch {
     return '';
   }
@@ -209,13 +247,30 @@ export async function buildRuntimeBaseSystemPrompt(params?: {
 }): Promise<string> {
   const toolPack = resolveBuiltinToolPack(params?.runtimeMode);
   const workspacePaths = params?.workspacePaths || getWorkspacePaths();
+  const cacheKey = JSON.stringify({
+    runtimeMode: params?.runtimeMode || 'redclaw',
+    interactive: params?.interactive ?? true,
+    customRules: params?.customRules || '',
+    base: path.resolve(workspacePaths.base),
+    workspaceRoot: path.resolve(workspacePaths.workspaceRoot),
+    toolPack,
+  });
+  const cached = runtimeBasePromptCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.value;
+  }
   const skillManager = new SkillManager();
   await skillManager.discoverSkills(workspacePaths.base);
-  return buildDefaultSystemPrompt({
+  const value = await buildDefaultSystemPrompt({
     skills: skillManager.getSkills(),
     tools: createBuiltinTools({ pack: toolPack, skillManager }),
     interactive: params?.interactive ?? true,
     customRules: params?.customRules,
     workspacePaths,
   });
+  runtimeBasePromptCache.set(cacheKey, {
+    expiresAt: Date.now() + RUNTIME_BASE_PROMPT_CACHE_TTL_MS,
+    value,
+  });
+  return value;
 }

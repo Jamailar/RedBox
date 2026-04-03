@@ -70,6 +70,7 @@ import {
 import { generateImagesToMediaLibrary } from '../imageGenerationService';
 import { generateVideosToMediaLibrary } from '../videoGenerationService';
 import { SkillManager } from '../skillManager';
+import { getWorkItemStore, type WorkItemStatus, type WorkItemType } from '../workItemStore';
 import {
     getMcpServers,
     saveMcpServers,
@@ -78,6 +79,7 @@ import {
     getMcpOAuthStatus,
 } from '../mcpStore';
 import { listMcpTools, callMcpTool } from '../mcpRuntime';
+import { getRandomWanderItems, runWanderBrainstorm } from '../wanderService';
 
 const AppCliParamsSchema = z.object({
     command: z.string().min(1).describe('CLI command. Example: "redclaw list --limit 20"'),
@@ -143,6 +145,7 @@ interface GeneratedVideoCliResult {
 
 const CONCURRENCY_SAFE_APP_CLI_ACTIONS = new Map<string, Set<string>>([
     ['workspace', new Set(['list', 'show', 'get'])],
+    ['work', new Set(['list', 'get', 'ready'])],
     ['spaces', new Set(['list'])],
     ['manuscripts', new Set(['list'])],
     ['knowledge', new Set(['list', 'get', 'search'])],
@@ -154,7 +157,7 @@ const CONCURRENCY_SAFE_APP_CLI_ACTIONS = new Map<string, Set<string>>([
     ['mcp', new Set(['list', 'status', 'oauth-status'])],
     ['settings', new Set(['get', 'show'])],
     ['archives', new Set(['list', 'get'])],
-    ['wander', new Set(['list', 'get'])],
+    ['wander', new Set(['list', 'get', 'random'])],
 ]);
 
 function toPrettyJson(data: unknown): string {
@@ -315,49 +318,128 @@ function buildReferenceAwarePrompt(basePrompt: string, referenceLabels: string[]
     ].join('\n');
 }
 
-function helpText(): string {
+const APP_CLI_NAMESPACE_HELP: Record<string, { summary: string; actions: string[]; examples: string[] }> = {
+    work: {
+        summary: 'Manage unified work items and ready/blocked states.',
+        actions: ['list', 'ready', 'get', 'create', 'update', 'link', 'dep-add', 'dep-remove', 'promote-redclaw', 'schedule-add', 'schedule-update', 'cycle-add', 'cycle-update', 'run-now'],
+        examples: ['work ready', 'work create --title "写一条效率工具笔记" --type redclaw-note', 'work schedule-add --title "每晚巡检选题库" --prompt "检查今日新增素材" --mode daily --time 22:30'],
+    },
+    spaces: {
+        summary: 'Manage workspaces/spaces.',
+        actions: ['list', 'create', 'rename', 'switch'],
+        examples: ['spaces list', 'spaces create --name "民宿空间"'],
+    },
+    manuscripts: {
+        summary: 'List, read, write, and organize manuscripts.',
+        actions: ['list', 'read', 'write', 'create', 'organize'],
+        examples: ['manuscripts list', 'manuscripts write --path "drafts/demo.md"'],
+    },
+    knowledge: {
+        summary: 'List and search saved knowledge items.',
+        actions: ['list', 'get', 'search'],
+        examples: ['knowledge list --source redbook', 'knowledge search --query "AI"'],
+    },
+    advisors: {
+        summary: 'List and query advisor profiles.',
+        actions: ['list', 'get', 'search'],
+        examples: ['advisors list'],
+    },
+    memory: {
+        summary: 'Manage long-term memory entries.',
+        actions: ['list', 'get', 'search', 'add', 'update', 'delete'],
+        examples: ['memory list', 'memory add --content "用户偏好短句风格" --type preference'],
+    },
+    redclaw: {
+        summary: 'Manage RedClaw projects and automation.',
+        actions: ['list', 'get', 'create', 'save-copy', 'save-image', 'save-retro', 'runner-status', 'runner-start', 'heartbeat-set', 'schedule-add', 'schedule-update', 'long-add', 'long-update'],
+        examples: ['redclaw create --goal "做一条民宿选题"', 'redclaw runner-status'],
+    },
+    media: {
+        summary: 'List media and bind assets to manuscripts.',
+        actions: ['list', 'get', 'bind', 'update'],
+        examples: ['media list --limit 100'],
+    },
+    subjects: {
+        summary: 'Search subjects/personas/products and categories.',
+        actions: ['list', 'get', 'search', 'categories'],
+        examples: ['subjects search --query "张三 Z001 跑鞋"', 'subjects get --id subject_xxx'],
+    },
+    image: {
+        summary: 'Generate images, including reference-guided flows.',
+        actions: ['generate'],
+        examples: ['image generate --prompt "..." --count 2'],
+    },
+    video: {
+        summary: 'Generate videos from text or reference images.',
+        actions: ['generate'],
+        examples: ['video generate --prompt "海边日落镜头" --mode text-to-video --duration 8'],
+    },
+    mcp: {
+        summary: 'Discover, inspect, test, and call MCP servers/tools.',
+        actions: ['list', 'import-local', 'tools', 'test', 'status', 'oauth-status', 'call'],
+        examples: ['mcp list', 'mcp tools --id filesystem', 'mcp call --id filesystem --tool read_file --args "{\\"path\\":\\"/tmp/demo.txt\\"}"'],
+    },
+    settings: {
+        summary: 'Inspect and update app settings.',
+        actions: ['get', 'set', 'show'],
+        examples: ['settings get'],
+    },
+    skills: {
+        summary: 'Inspect and manage workspace skills.',
+        actions: ['list', 'get', 'install', 'disable', 'enable'],
+        examples: ['skills list'],
+    },
+    archives: {
+        summary: 'Manage archive profiles and samples.',
+        actions: ['profiles', 'samples', 'list', 'get'],
+        examples: ['archives profiles'],
+    },
+    wander: {
+        summary: 'Inspect or run random wander / brainstorm flows.',
+        actions: ['list', 'get', 'random', 'run'],
+        examples: ['wander random --count 3', 'wander run --count 3 --multi-choice true'],
+    },
+};
+
+function helpText(topic?: string): string {
+    const normalizedTopic = String(topic || '').trim().toLowerCase();
+    if (normalizedTopic) {
+        const entry = APP_CLI_NAMESPACE_HELP[normalizedTopic];
+        if (!entry) {
+            return [
+                `Unknown app_cli help topic: ${normalizedTopic}`,
+                '',
+                'Use one of:',
+                ...Object.keys(APP_CLI_NAMESPACE_HELP).sort().map((name) => `- ${name}`),
+            ].join('\n');
+        }
+        return [
+            `App CLI - ${normalizedTopic}`,
+            '',
+            entry.summary,
+            `Actions: ${entry.actions.join(', ')}`,
+            '',
+            'Examples:',
+            ...entry.examples.map((item) => `- ${item}`),
+        ].join('\n');
+    }
+
     return [
-        'App CLI - 命令一览',
+        'App CLI - 命令发现入口',
         '',
         '命令结构: <namespace> <action> [--flags]',
+        '先用 `help <namespace>` 发现动作，再调用具体命令。',
         '',
-        '常用示例:',
-        '- spaces list',
-        '- spaces create --name "民宿空间"',
-        '- manuscripts list',
-        '- knowledge list --source redbook',
-        '- advisors list',
-        '- manuscripts read --path "redclaw/xxx.md"',
-        '- manuscripts write --path "redclaw/xxx.md" --content "...markdown..."',
-        '- redclaw create --goal "做一条民宿选题"',
-        '- subjects search --query "张三 Z001 跑鞋"',
-        '- subjects get --id subject_xxx',
-        '- subjects categories list',
-        '- image generate --prompt "保留人物主体和鞋款细节" --mode reference-guided --reference-images "/abs/a.jpg,/abs/b.jpg"',
-        '- image generate --prompt "张三穿 Z001 跑鞋在城市街头" --mode reference-guided',
-        '- redclaw save-copy --project-id rc_xxx --titles "标题A|标题B" --content "正文..."',
-        '- redclaw save-image --project-id rc_xxx --prompts "提示词1|提示词2"',
-        '- redclaw runner-status',
-        '- redclaw runner-start --interval 20',
-        '- redclaw runner-enable-project --project-id rc_xxx',
-        '- redclaw heartbeat-set --enabled true --interval 30',
-        '- redclaw schedule-add --name "每日复盘" --mode daily --time 21:30 --prompt "汇总今天任务进展"',
-        '- redclaw schedule-update --task-id sched_xxx --time 20:30 --enabled true',
-        '- redclaw long-add --name "30天IP实验" --objective "建立稳定选题方法" --step-prompt "推进一轮实验并产出结论" --rounds 30',
-        '- redclaw long-update --task-id long_xxx --interval 720 --rounds 21',
-        '- media list --limit 100',
-        '- media bind --asset-id media_xxx --manuscript-path "redclaw/rc_xxx.md"',
-        '- image generate --prompt "..." --project-id rc_xxx --count 2',
-        '- video generate --prompt "海边日落镜头" --mode text-to-video --duration 8',
-        '- video generate --prompt "让主体做一个推镜短视频" --mode reference-guided --reference-images "/abs/a.jpg"',
-        '- video generate --prompt "从白天切到夜晚" --mode first-last-frame --reference-images "/abs/first.jpg,/abs/last.jpg"',
-        '- mcp list',
-        '- mcp import-local',
-        '- mcp tools --id filesystem',
-        '- mcp test --id filesystem',
-        '- mcp call --id filesystem --tool read_file --args "{\\"path\\":\\"/tmp/demo.txt\\"}"',
-        '- archives profiles',
-        '- wander list',
+        'Namespaces:',
+        ...Object.entries(APP_CLI_NAMESPACE_HELP)
+            .sort(([left], [right]) => left.localeCompare(right))
+            .map(([name, entry]) => `- ${name}: ${entry.summary}`),
+        '',
+        'Examples:',
+        '- help work',
+        '- help redclaw',
+        '- help manuscripts',
+        '- help mcp',
         '',
         '规则: 新增功能页必须同步新增 app_cli 子命令。',
     ].join('\n');
@@ -443,7 +525,12 @@ export class AppCliTool extends DeclarativeTool<typeof AppCliParamsSchema> {
             });
 
             if (parsed.namespace === 'help') {
-                return createSuccessResult(helpText(), 'app_cli help');
+                const topic = parsed.action && parsed.action !== 'show'
+                    ? parsed.action
+                    : (typeof readFlag(parsed.flags, 'namespace', 'topic') === 'string'
+                        ? String(readFlag(parsed.flags, 'namespace', 'topic'))
+                        : '');
+                return createSuccessResult(helpText(topic), topic ? `app_cli help ${topic}` : 'app_cli help');
             }
 
             const result = await this.dispatch(parsed, payload);
@@ -552,6 +639,8 @@ export class AppCliTool extends DeclarativeTool<typeof AppCliParamsSchema> {
                     activeSpaceId: getActiveSpaceId(),
                     paths: getWorkspacePaths(),
                 };
+            case 'work':
+                return this.handleWork(parsed, payload);
             case 'spaces':
                 return this.handleSpaces(parsed, payload);
             case 'manuscripts':
@@ -609,6 +698,318 @@ export class AppCliTool extends DeclarativeTool<typeof AppCliParamsSchema> {
             return { space: setActiveSpace(id), paths: getWorkspacePaths() };
         }
         throw new Error(`Unsupported spaces action: ${action}`);
+    }
+
+    private async handleWork(parsed: ParsedCommand, payload: Record<string, unknown>) {
+        const store = getWorkItemStore();
+        const action = parsed.action;
+        if (action === 'list') {
+            const limit = parseNumber(readFlag(parsed.flags, 'limit') || payload.limit) || 30;
+            const items = await store.listWorkItems({
+                status: readFlag(parsed.flags, 'status') as any,
+                type: (readFlag(parsed.flags, 'type') || payload.type || undefined) as WorkItemType | undefined,
+                tag: readFlag(parsed.flags, 'tag') || (payload.tag as string | undefined),
+                limit,
+            });
+            return { count: items.length, items };
+        }
+        if (action === 'ready') {
+            const limit = parseNumber(readFlag(parsed.flags, 'limit') || payload.limit) || 20;
+            const items = await store.listReadyWorkItems(limit);
+            return { count: items.length, items };
+        }
+        if (action === 'get') {
+            const id = requireString(readFlag(parsed.flags, 'id') || payload.id, 'id');
+            return store.getWorkItem(id);
+        }
+        if (action === 'create') {
+            const title = requireString(readFlag(parsed.flags, 'title') || payload.title, 'title');
+            return store.createWorkItem({
+                title,
+                description: readFlag(parsed.flags, 'description', 'desc') || (payload.description as string | undefined),
+                type: (readFlag(parsed.flags, 'type') || payload.type || 'generic') as WorkItemType,
+                status: (readFlag(parsed.flags, 'status') || payload.status || 'pending') as WorkItemStatus,
+                priority: parseNumber(readFlag(parsed.flags, 'priority') || payload.priority),
+                tags: parseList(readFlag(parsed.flags, 'tags') || payload.tags),
+                parentId: readFlag(parsed.flags, 'parent-id') || (payload.parentId as string | undefined),
+                dependsOn: parseList(readFlag(parsed.flags, 'depends-on') || payload.dependsOn),
+                summary: readFlag(parsed.flags, 'summary') || (payload.summary as string | undefined),
+                refs: {
+                    projectIds: parseList(readFlag(parsed.flags, 'project-id') || payload.projectIds || payload.projectId),
+                    sessionIds: parseList(readFlag(parsed.flags, 'session-id') || payload.sessionIds || payload.sessionId),
+                    taskIds: parseList(readFlag(parsed.flags, 'task-id') || payload.taskIds || payload.taskId),
+                    backgroundTaskIds: parseList(readFlag(parsed.flags, 'background-task-id') || payload.backgroundTaskIds || payload.backgroundTaskId),
+                    filePaths: parseList(readFlag(parsed.flags, 'file-path') || payload.filePaths || payload.filePath),
+                },
+            });
+        }
+        if (action === 'update') {
+            const id = requireString(readFlag(parsed.flags, 'id') || payload.id, 'id');
+            return store.updateWorkItem(id, {
+                title: readFlag(parsed.flags, 'title') || (payload.title as string | undefined),
+                description: readFlag(parsed.flags, 'description', 'desc') || (payload.description as string | undefined),
+                type: (readFlag(parsed.flags, 'type') || payload.type || undefined) as WorkItemType | undefined,
+                status: (readFlag(parsed.flags, 'status') || payload.status || undefined) as WorkItemStatus | undefined,
+                priority: parseNumber(readFlag(parsed.flags, 'priority') || payload.priority),
+                tags: readFlag(parsed.flags, 'tags') !== undefined || payload.tags !== undefined
+                    ? parseList(readFlag(parsed.flags, 'tags') || payload.tags)
+                    : undefined,
+                parentId: readFlag(parsed.flags, 'clear-parent') === 'true'
+                    ? null
+                    : (readFlag(parsed.flags, 'parent-id') || payload.parentId || undefined) as string | undefined,
+                summary: readFlag(parsed.flags, 'clear-summary') === 'true'
+                    ? null
+                    : (readFlag(parsed.flags, 'summary') || payload.summary || undefined) as string | undefined,
+            });
+        }
+        if (action === 'link') {
+            const id = requireString(readFlag(parsed.flags, 'id') || payload.id, 'id');
+            return store.attachRefs(id, {
+                projectIds: parseList(readFlag(parsed.flags, 'project-id') || payload.projectIds || payload.projectId),
+                sessionIds: parseList(readFlag(parsed.flags, 'session-id') || payload.sessionIds || payload.sessionId),
+                taskIds: parseList(readFlag(parsed.flags, 'task-id') || payload.taskIds || payload.taskId),
+                backgroundTaskIds: parseList(readFlag(parsed.flags, 'background-task-id') || payload.backgroundTaskIds || payload.backgroundTaskId),
+                filePaths: parseList(readFlag(parsed.flags, 'file-path') || payload.filePaths || payload.filePath),
+            });
+        }
+        if (action === 'dep-add') {
+            const id = requireString(readFlag(parsed.flags, 'id') || payload.id, 'id');
+            const dependencyId = requireString(readFlag(parsed.flags, 'depends-on', 'dependency-id') || payload.dependsOn || payload.dependencyId, 'dependencyId');
+            return store.addDependency(id, dependencyId);
+        }
+        if (action === 'dep-remove') {
+            const id = requireString(readFlag(parsed.flags, 'id') || payload.id, 'id');
+            const dependencyId = requireString(readFlag(parsed.flags, 'depends-on', 'dependency-id') || payload.dependsOn || payload.dependencyId, 'dependencyId');
+            return store.removeDependency(id, dependencyId);
+        }
+        if (action === 'promote-redclaw') {
+            const id = requireString(readFlag(parsed.flags, 'id') || payload.id, 'id');
+            const existing = await store.getWorkItem(id);
+            if (!existing) {
+                throw new Error(`Work item not found: ${id}`);
+            }
+            const result = await createRedClawProject({
+                goal: readFlag(parsed.flags, 'goal') || (payload.goal as string | undefined) || existing.title,
+                targetAudience: readFlag(parsed.flags, 'audience', 'target-audience') || (payload.targetAudience as string | undefined),
+                tone: readFlag(parsed.flags, 'tone') || (payload.tone as string | undefined),
+                successCriteria: readFlag(parsed.flags, 'success', 'success-criteria') || (payload.successCriteria as string | undefined),
+                tags: parseList(readFlag(parsed.flags, 'tags') || payload.tags || existing.tags),
+                workItemId: id,
+            });
+            return {
+                workItemId: id,
+                projectId: result.project.id,
+                project: result.project,
+                projectDir: result.projectDir,
+            };
+        }
+        if (action === 'schedule-add') {
+            const title = requireString(readFlag(parsed.flags, 'title', 'name') || payload.title || payload.name, 'title');
+            const prompt = requireString(readFlag(parsed.flags, 'prompt') || payload.prompt, 'prompt');
+            const mode = String(readFlag(parsed.flags, 'mode') || payload.mode || 'interval').trim().toLowerCase() as 'interval' | 'daily' | 'weekly' | 'once';
+            const subagentRoles = parseList(readFlag(parsed.flags, 'subagent-roles', 'roles') || payload.subagentRoles);
+            const weekdays = parseList(readFlag(parsed.flags, 'weekdays') || payload.weekdays)
+                .map((item) => Number(item))
+                .filter((n) => Number.isFinite(n))
+                .map((n) => Math.max(0, Math.min(6, Math.floor(n))));
+            const workItem = await store.createWorkItem({
+                title,
+                description: prompt,
+                type: 'automation',
+                status: 'waiting',
+                priority: parseNumber(readFlag(parsed.flags, 'priority') || payload.priority),
+                tags: parseList(readFlag(parsed.flags, 'tags') || payload.tags),
+                summary: '已登记定时任务，等待执行。',
+                refs: {
+                    projectIds: parseList(readFlag(parsed.flags, 'project-id') || payload.projectId),
+                },
+                metadata: {
+                    automationKind: 'scheduled',
+                    subagentRoles,
+                },
+                schedule: {
+                    mode,
+                    enabled: parseBoolean(readFlag(parsed.flags, 'enabled') || payload.enabled) !== false,
+                    intervalMinutes: parseNumber(readFlag(parsed.flags, 'interval', 'interval-minutes') || payload.intervalMinutes),
+                    time: (readFlag(parsed.flags, 'time') || payload.time) as string | undefined,
+                    weekdays,
+                    runAt: (readFlag(parsed.flags, 'run-at', 'at') || payload.runAt) as string | undefined,
+                },
+            });
+            const mod = await import('../redclawBackgroundRunner');
+            const runner = mod.getRedClawBackgroundRunner();
+            const task = await runner.addScheduledTask({
+                name: title,
+                mode,
+                prompt,
+                projectId: readFlag(parsed.flags, 'project-id', 'projectid') || (payload.projectId as string | undefined),
+                workItemId: workItem.id,
+                subagentRoles: subagentRoles as any,
+                intervalMinutes: parseNumber(readFlag(parsed.flags, 'interval', 'interval-minutes') || payload.intervalMinutes),
+                time: (readFlag(parsed.flags, 'time') || payload.time) as string | undefined,
+                weekdays,
+                runAt: (readFlag(parsed.flags, 'run-at', 'at') || payload.runAt) as string | undefined,
+                enabled: parseBoolean(readFlag(parsed.flags, 'enabled') || payload.enabled),
+            });
+            return { workItemId: workItem.id, scheduledTaskId: task.id, workItem, task };
+        }
+        if (action === 'schedule-update') {
+            const id = requireString(readFlag(parsed.flags, 'id') || payload.id, 'id');
+            const existing = await store.getWorkItem(id);
+            if (!existing) throw new Error(`Work item not found: ${id}`);
+            const scheduledTaskId = String((existing.metadata as Record<string, unknown> | undefined)?.scheduledTaskId || '').trim()
+                || requireString(readFlag(parsed.flags, 'task-id', 'taskid') || payload.taskId, 'taskId');
+            const subagentRoles = readFlag(parsed.flags, 'subagent-roles', 'roles') !== undefined || payload.subagentRoles !== undefined
+                ? parseList(readFlag(parsed.flags, 'subagent-roles', 'roles') || payload.subagentRoles)
+                : undefined;
+            const weekdaysInput = readFlag(parsed.flags, 'weekdays') ?? payload.weekdays;
+            const weekdays = weekdaysInput !== undefined
+                ? parseList(weekdaysInput).map((item) => Number(item)).filter((n) => Number.isFinite(n)).map((n) => Math.max(0, Math.min(6, Math.floor(n))))
+                : undefined;
+            const mod = await import('../redclawBackgroundRunner');
+            const runner = mod.getRedClawBackgroundRunner();
+            const task = await runner.updateScheduledTask(scheduledTaskId, {
+                name: (readFlag(parsed.flags, 'title', 'name') || payload.title || payload.name) as string | undefined,
+                mode: (readFlag(parsed.flags, 'mode') || payload.mode || undefined) as any,
+                prompt: (readFlag(parsed.flags, 'prompt') || payload.prompt) as string | undefined,
+                projectId: readFlag(parsed.flags, 'clear-project') === 'true' ? null : (readFlag(parsed.flags, 'project-id', 'projectid') || payload.projectId || undefined) as string | undefined,
+                workItemId: id,
+                subagentRoles: subagentRoles as any,
+                intervalMinutes: parseNumber(readFlag(parsed.flags, 'interval', 'interval-minutes') || payload.intervalMinutes),
+                time: (readFlag(parsed.flags, 'time') || payload.time) as string | undefined,
+                weekdays,
+                runAt: (readFlag(parsed.flags, 'run-at', 'at') || payload.runAt) as string | undefined,
+                enabled: parseBoolean(readFlag(parsed.flags, 'enabled') || payload.enabled),
+            });
+            const nextSchedule = {
+                mode: task.mode,
+                enabled: task.enabled,
+                intervalMinutes: task.intervalMinutes,
+                time: task.time,
+                weekdays: task.weekdays,
+                runAt: task.runAt,
+                nextRunAt: task.nextRunAt,
+                lastRunAt: task.lastRunAt,
+            } as const;
+            const workItem = await store.updateWorkItem(id, {
+                title: (readFlag(parsed.flags, 'title', 'name') || payload.title || payload.name) as string | undefined,
+                description: (readFlag(parsed.flags, 'prompt') || payload.prompt) as string | undefined,
+                status: task.enabled ? 'waiting' : 'pending',
+                schedule: nextSchedule,
+                metadata: {
+                    ...(existing.metadata || {}),
+                    automationKind: 'scheduled',
+                    scheduledTaskId: task.id,
+                    subagentRoles: subagentRoles ?? (existing.metadata as any)?.subagentRoles ?? [],
+                },
+            });
+            return { workItem, task };
+        }
+        if (action === 'cycle-add') {
+            const title = requireString(readFlag(parsed.flags, 'title', 'name') || payload.title || payload.name, 'title');
+            const objective = requireString(readFlag(parsed.flags, 'objective') || payload.objective, 'objective');
+            const stepPrompt = requireString(readFlag(parsed.flags, 'step-prompt') || payload.stepPrompt, 'stepPrompt');
+            const subagentRoles = parseList(readFlag(parsed.flags, 'subagent-roles', 'roles') || payload.subagentRoles);
+            const intervalMinutes = parseNumber(readFlag(parsed.flags, 'interval', 'interval-minutes') || payload.intervalMinutes);
+            const totalRounds = parseNumber(readFlag(parsed.flags, 'rounds', 'total-rounds') || payload.totalRounds);
+            const workItem = await store.createWorkItem({
+                title,
+                description: objective,
+                type: 'automation',
+                status: 'active',
+                priority: parseNumber(readFlag(parsed.flags, 'priority') || payload.priority),
+                tags: parseList(readFlag(parsed.flags, 'tags') || payload.tags),
+                summary: '已登记长周期任务，等待首轮推进。',
+                refs: {
+                    projectIds: parseList(readFlag(parsed.flags, 'project-id') || payload.projectId),
+                },
+                metadata: {
+                    automationKind: 'long-cycle',
+                    subagentRoles: subagentRoles.length > 0 ? subagentRoles : ['planner', 'ops-coordinator', 'reviewer'],
+                },
+                schedule: {
+                    mode: 'long-cycle',
+                    enabled: parseBoolean(readFlag(parsed.flags, 'enabled') || payload.enabled) !== false,
+                    intervalMinutes: intervalMinutes || undefined,
+                    totalRounds: totalRounds || undefined,
+                    completedRounds: 0,
+                },
+            });
+            const mod = await import('../redclawBackgroundRunner');
+            const runner = mod.getRedClawBackgroundRunner();
+            const task = await runner.addLongCycleTask({
+                name: title,
+                objective,
+                stepPrompt,
+                projectId: readFlag(parsed.flags, 'project-id', 'projectid') || (payload.projectId as string | undefined),
+                workItemId: workItem.id,
+                subagentRoles: (subagentRoles.length > 0 ? subagentRoles : ['planner', 'ops-coordinator', 'reviewer']) as any,
+                intervalMinutes,
+                totalRounds,
+                enabled: parseBoolean(readFlag(parsed.flags, 'enabled') || payload.enabled),
+            });
+            return { workItemId: workItem.id, longCycleTaskId: task.id, workItem, task };
+        }
+        if (action === 'cycle-update') {
+            const id = requireString(readFlag(parsed.flags, 'id') || payload.id, 'id');
+            const existing = await store.getWorkItem(id);
+            if (!existing) throw new Error(`Work item not found: ${id}`);
+            const longCycleTaskId = String((existing.metadata as Record<string, unknown> | undefined)?.longCycleTaskId || '').trim()
+                || requireString(readFlag(parsed.flags, 'task-id', 'taskid') || payload.taskId, 'taskId');
+            const subagentRoles = readFlag(parsed.flags, 'subagent-roles', 'roles') !== undefined || payload.subagentRoles !== undefined
+                ? parseList(readFlag(parsed.flags, 'subagent-roles', 'roles') || payload.subagentRoles)
+                : undefined;
+            const mod = await import('../redclawBackgroundRunner');
+            const runner = mod.getRedClawBackgroundRunner();
+            const task = await runner.updateLongCycleTask(longCycleTaskId, {
+                name: (readFlag(parsed.flags, 'title', 'name') || payload.title || payload.name) as string | undefined,
+                objective: (readFlag(parsed.flags, 'objective') || payload.objective) as string | undefined,
+                stepPrompt: (readFlag(parsed.flags, 'step-prompt') || payload.stepPrompt) as string | undefined,
+                projectId: readFlag(parsed.flags, 'clear-project') === 'true' ? null : (readFlag(parsed.flags, 'project-id', 'projectid') || payload.projectId || undefined) as string | undefined,
+                workItemId: id,
+                subagentRoles: subagentRoles as any,
+                intervalMinutes: parseNumber(readFlag(parsed.flags, 'interval', 'interval-minutes') || payload.intervalMinutes),
+                totalRounds: parseNumber(readFlag(parsed.flags, 'rounds', 'total-rounds') || payload.totalRounds),
+                enabled: parseBoolean(readFlag(parsed.flags, 'enabled') || payload.enabled),
+            });
+            const workItem = await store.updateWorkItem(id, {
+                title: (readFlag(parsed.flags, 'title', 'name') || payload.title || payload.name) as string | undefined,
+                description: (readFlag(parsed.flags, 'objective') || payload.objective) as string | undefined,
+                status: task.status === 'completed' ? 'done' : (task.enabled ? 'active' : 'waiting'),
+                schedule: {
+                    mode: 'long-cycle',
+                    enabled: task.enabled,
+                    intervalMinutes: task.intervalMinutes,
+                    totalRounds: task.totalRounds,
+                    completedRounds: task.completedRounds,
+                    nextRunAt: task.nextRunAt,
+                    lastRunAt: task.lastRunAt,
+                },
+                metadata: {
+                    ...(existing.metadata || {}),
+                    automationKind: 'long-cycle',
+                    longCycleTaskId: task.id,
+                    subagentRoles: subagentRoles ?? (existing.metadata as any)?.subagentRoles ?? [],
+                },
+            });
+            return { workItem, task };
+        }
+        if (action === 'run-now') {
+            const id = requireString(readFlag(parsed.flags, 'id') || payload.id, 'id');
+            const existing = await store.getWorkItem(id);
+            if (!existing) throw new Error(`Work item not found: ${id}`);
+            const metadata = (existing.metadata || {}) as Record<string, unknown>;
+            const mod = await import('../redclawBackgroundRunner');
+            const runner = mod.getRedClawBackgroundRunner();
+            if (metadata.scheduledTaskId) {
+                return runner.runScheduledTaskNow(String(metadata.scheduledTaskId));
+            }
+            if (metadata.longCycleTaskId) {
+                return runner.runLongCycleTaskNow(String(metadata.longCycleTaskId));
+            }
+            throw new Error('This work item is not bound to a scheduled or long-cycle task.');
+        }
+        throw new Error(`Unsupported work action: ${action}`);
     }
 
     private async handleManuscripts(parsed: ParsedCommand, payload: Record<string, unknown>) {
@@ -918,6 +1319,7 @@ export class AppCliTool extends DeclarativeTool<typeof AppCliParamsSchema> {
                 tone: readFlag(parsed.flags, 'tone') || (payload.tone as string | undefined),
                 successCriteria: readFlag(parsed.flags, 'success', 'success-criteria') || (payload.successCriteria as string | undefined),
                 tags: parseList(readFlag(parsed.flags, 'tags') || payload.tags),
+                workItemId: readFlag(parsed.flags, 'work-item-id') || (payload.workItemId as string | undefined),
             });
         }
         if (action === 'get') {
@@ -1073,6 +1475,8 @@ export class AppCliTool extends DeclarativeTool<typeof AppCliParamsSchema> {
                 mode: mode as 'interval' | 'daily' | 'weekly' | 'once',
                 prompt: requireString(readFlag(parsed.flags, 'prompt') || payload.prompt, 'prompt'),
                 projectId: readFlag(parsed.flags, 'project-id', 'projectid') || (payload.projectId as string | undefined),
+                workItemId: readFlag(parsed.flags, 'work-item-id') || (payload.workItemId as string | undefined),
+                subagentRoles: parseList(readFlag(parsed.flags, 'subagent-roles', 'roles') || payload.subagentRoles) as any,
                 intervalMinutes: parseNumber(readFlag(parsed.flags, 'interval', 'interval-minutes') || payload.intervalMinutes),
                 time: (readFlag(parsed.flags, 'time') || payload.time) as string | undefined,
                 weekdays,
@@ -1092,6 +1496,9 @@ export class AppCliTool extends DeclarativeTool<typeof AppCliParamsSchema> {
                     .filter((n) => Number.isFinite(n))
                     .map((n) => Math.max(0, Math.min(6, Math.floor(n))))
                 : undefined;
+            const subagentRoles = readFlag(parsed.flags, 'subagent-roles', 'roles') !== undefined || payload.subagentRoles !== undefined
+                ? parseList(readFlag(parsed.flags, 'subagent-roles', 'roles') || payload.subagentRoles)
+                : undefined;
             const clearProject = parseBoolean(readFlag(parsed.flags, 'clear-project') || payload.clearProject) === true;
             const projectIdRaw = readFlag(parsed.flags, 'project-id', 'projectid') || (payload.projectId as string | undefined);
 
@@ -1100,6 +1507,8 @@ export class AppCliTool extends DeclarativeTool<typeof AppCliParamsSchema> {
                 mode,
                 prompt: (readFlag(parsed.flags, 'prompt') || payload.prompt) as string | undefined,
                 projectId: clearProject ? null : projectIdRaw,
+                workItemId: (readFlag(parsed.flags, 'work-item-id') || payload.workItemId || undefined) as string | undefined,
+                subagentRoles: subagentRoles as any,
                 intervalMinutes: parseNumber(readFlag(parsed.flags, 'interval', 'interval-minutes') || payload.intervalMinutes),
                 time: (readFlag(parsed.flags, 'time') || payload.time) as string | undefined,
                 weekdays,
@@ -1134,6 +1543,8 @@ export class AppCliTool extends DeclarativeTool<typeof AppCliParamsSchema> {
                 objective: requireString(readFlag(parsed.flags, 'objective') || payload.objective, 'objective'),
                 stepPrompt: requireString(readFlag(parsed.flags, 'step-prompt') || payload.stepPrompt, 'stepPrompt'),
                 projectId: readFlag(parsed.flags, 'project-id', 'projectid') || (payload.projectId as string | undefined),
+                workItemId: readFlag(parsed.flags, 'work-item-id') || (payload.workItemId as string | undefined),
+                subagentRoles: parseList(readFlag(parsed.flags, 'subagent-roles', 'roles') || payload.subagentRoles) as any,
                 intervalMinutes: parseNumber(readFlag(parsed.flags, 'interval', 'interval-minutes') || payload.intervalMinutes),
                 totalRounds: parseNumber(readFlag(parsed.flags, 'rounds', 'total-rounds') || payload.totalRounds),
                 enabled: parseBoolean(readFlag(parsed.flags, 'enabled') || payload.enabled),
@@ -1144,11 +1555,16 @@ export class AppCliTool extends DeclarativeTool<typeof AppCliParamsSchema> {
             const taskId = requireString(readFlag(parsed.flags, 'task-id', 'taskid') || payload.taskId, 'taskId');
             const clearProject = parseBoolean(readFlag(parsed.flags, 'clear-project') || payload.clearProject) === true;
             const projectIdRaw = readFlag(parsed.flags, 'project-id', 'projectid') || (payload.projectId as string | undefined);
+            const subagentRoles = readFlag(parsed.flags, 'subagent-roles', 'roles') !== undefined || payload.subagentRoles !== undefined
+                ? parseList(readFlag(parsed.flags, 'subagent-roles', 'roles') || payload.subagentRoles)
+                : undefined;
             return runner.updateLongCycleTask(taskId, {
                 name: (readFlag(parsed.flags, 'name') || payload.name) as string | undefined,
                 objective: (readFlag(parsed.flags, 'objective') || payload.objective) as string | undefined,
                 stepPrompt: (readFlag(parsed.flags, 'step-prompt') || payload.stepPrompt) as string | undefined,
                 projectId: clearProject ? null : projectIdRaw,
+                workItemId: (readFlag(parsed.flags, 'work-item-id') || payload.workItemId || undefined) as string | undefined,
+                subagentRoles: subagentRoles as any,
                 intervalMinutes: parseNumber(readFlag(parsed.flags, 'interval', 'interval-minutes') || payload.intervalMinutes),
                 totalRounds: parseNumber(readFlag(parsed.flags, 'rounds', 'total-rounds') || payload.totalRounds),
                 enabled: parseBoolean(readFlag(parsed.flags, 'enabled') || payload.enabled),
@@ -1700,6 +2116,36 @@ export class AppCliTool extends DeclarativeTool<typeof AppCliParamsSchema> {
             const items = Array.isArray(payload.items) ? payload.items : [];
             const result = payload.result;
             return saveWanderHistory(id, items as any[], result as any);
+        }
+        if (action === 'random') {
+            const count = parseNumber(readFlag(parsed.flags, 'count') || payload.count) || 3;
+            return getRandomWanderItems(count);
+        }
+        if (action === 'run' || action === 'brainstorm') {
+            const count = parseNumber(readFlag(parsed.flags, 'count') || payload.count) || 3;
+            const multiChoiceInput = readFlag(parsed.flags, 'multi-choice', 'deep-think')
+                ?? payload.multiChoice
+                ?? payload.deepThink;
+            const persistHistoryInput = readFlag(parsed.flags, 'save', 'persist-history')
+                ?? payload.persistHistory;
+            const multiChoice = parseBoolean(multiChoiceInput);
+            const persistHistory = parseBoolean(persistHistoryInput);
+            const requestId = String(readFlag(parsed.flags, 'request-id') || payload.requestId || '').trim() || undefined;
+            const items = Array.isArray(payload.items) ? payload.items as any[] : undefined;
+            const result = await runWanderBrainstorm({
+                items: items as any,
+                count,
+                multiChoice,
+                deepThink: multiChoice,
+                persistHistory,
+                requestId,
+            });
+            return {
+                requestId: result.requestId,
+                historyId: result.historyId,
+                items: result.items,
+                result: result.result,
+            };
         }
         if (action === 'delete') {
             const id = requireString(readFlag(parsed.flags, 'id') || payload.id, 'id');

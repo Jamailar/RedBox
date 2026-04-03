@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ComponentType } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ComponentType, type SetStateAction } from 'react';
 import { Save, RefreshCw, AlertCircle, FolderOpen, Wrench, Download, LayoutGrid, Cpu, Database, Trash2, Eye, EyeOff, FlaskConical, Info, Brain, Plus, Star, ChevronDown, Check } from 'lucide-react';
 import clsx from 'clsx';
 import { useFeatureFlags } from '../hooks/useFeatureFlags';
@@ -100,6 +100,7 @@ type AssistantDaemonDraft = {
     enabled: boolean;
     endpointPath: string;
     authToken: string;
+    accountId: string;
     autoStartSidecar: boolean;
     cursorFile: string;
     sidecarCommand: string;
@@ -107,6 +108,17 @@ type AssistantDaemonDraft = {
     sidecarCwd: string;
     sidecarEnvText: string;
   };
+};
+
+type AssistantDaemonWeixinLoginState = {
+  sessionKey?: string;
+  qrcodeUrl?: string;
+  qrcodeImageUrl?: string;
+  message: string;
+  accountId?: string;
+  userId?: string;
+  connected: boolean;
+  stateDir?: string;
 };
 
 const createDefaultAssistantDaemonDraft = (): AssistantDaemonDraft => ({
@@ -134,6 +146,7 @@ const createDefaultAssistantDaemonDraft = (): AssistantDaemonDraft => ({
     enabled: false,
     endpointPath: '/hooks/weixin/relay',
     authToken: '',
+    accountId: '',
     autoStartSidecar: false,
     cursorFile: '',
     sidecarCommand: '',
@@ -170,6 +183,7 @@ const assistantDaemonStatusToDraft = (status?: AssistantDaemonStatus | null): As
       enabled: Boolean(status.weixin?.enabled),
       endpointPath: String(status.weixin?.endpointPath || '/hooks/weixin/relay'),
       authToken: String(status.weixin?.authToken || ''),
+      accountId: String(status.weixin?.accountId || ''),
       autoStartSidecar: Boolean(status.weixin?.autoStartSidecar),
       cursorFile: String(status.weixin?.cursorFile || ''),
       sidecarCommand: String(status.weixin?.sidecarCommand || ''),
@@ -276,6 +290,9 @@ export function Settings() {
     search_provider: 'duckduckgo',
     search_endpoint: '',
     search_api_key: '',
+    proxy_enabled: false,
+    proxy_url: '',
+    proxy_bypass: 'localhost,127.0.0.1,::1',
     redclaw_compact_target_tokens: '256000',
     chat_max_tokens_default: String(DEFAULT_CHAT_MAX_TOKENS),
     chat_max_tokens_deepseek: String(DEFAULT_CHAT_MAX_TOKENS_DEEPSEEK),
@@ -335,13 +352,34 @@ export function Settings() {
   const [backgroundTaskActionRunning, setBackgroundTaskActionRunning] = useState<Record<string, 'cancel' | undefined>>({});
   const [status, setStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [assistantDaemonStatus, setAssistantDaemonStatus] = useState<AssistantDaemonStatus | null>(null);
-  const [assistantDaemonDraft, setAssistantDaemonDraft] = useState<AssistantDaemonDraft>(() => createDefaultAssistantDaemonDraft());
+  const [assistantDaemonDraft, setAssistantDaemonDraftState] = useState<AssistantDaemonDraft>(() => createDefaultAssistantDaemonDraft());
   const [assistantDaemonLogs, setAssistantDaemonLogs] = useState<string[]>([]);
   const [assistantDaemonBusy, setAssistantDaemonBusy] = useState(false);
+  const [assistantDaemonDraftDirty, setAssistantDaemonDraftDirty] = useState(false);
+  const [assistantDaemonWeixinLoginBusy, setAssistantDaemonWeixinLoginBusy] = useState(false);
+  const [assistantDaemonWeixinLogin, setAssistantDaemonWeixinLogin] = useState<AssistantDaemonWeixinLoginState | null>(null);
   const [showScopedModelOverrides, setShowScopedModelOverrides] = useState(false);
   const [developerVersionTapCount, setDeveloperVersionTapCount] = useState(0);
+
+  const buildWeixinQrImageUrl = useCallback(async (rawUrl?: string): Promise<string | undefined> => {
+    const text = String(rawUrl || '').trim();
+    if (!text) return undefined;
+    try {
+      const QRCode = await import('qrcode');
+      return await QRCode.toDataURL(text, {
+        errorCorrectionLevel: 'M',
+        margin: 1,
+        width: 320,
+      });
+    } catch (error) {
+      console.error('Failed to build Weixin QR image', error);
+      return undefined;
+    }
+  }, []);
   const fetchModelsRequestRef = useRef(0);
   const fetchImageModelsRequestRef = useRef(0);
+  const assistantDaemonLogBufferRef = useRef<string[]>([]);
+  const assistantDaemonLogFlushTimerRef = useRef<number | null>(null);
 
   const defaultAiSource = useMemo(() => {
     if (!aiSources.length) return null;
@@ -725,6 +763,16 @@ export function Settings() {
     }
   }, []);
 
+  const setAssistantDaemonDraft = useCallback((updater: SetStateAction<AssistantDaemonDraft>) => {
+    setAssistantDaemonDraftDirty(true);
+    setAssistantDaemonDraftState(updater);
+  }, []);
+
+  const replaceAssistantDaemonDraft = useCallback((nextDraft: AssistantDaemonDraft) => {
+    setAssistantDaemonDraftDirty(false);
+    setAssistantDaemonDraftState(nextDraft);
+  }, []);
+
   useEffect(() => {
     loadSettings();
     checkTools();
@@ -740,13 +788,25 @@ export function Settings() {
     return () => {
       window.ipcRenderer.off('youtube:install-progress', handleProgress);
     };
-  }, [loadAssistantDaemonStatus]);
+  }, []);
 
   useEffect(() => {
+    if (activeTab !== 'general') {
+      return;
+    }
+
+    const flushAssistantDaemonLogs = () => {
+      assistantDaemonLogFlushTimerRef.current = null;
+      const nextLines = assistantDaemonLogBufferRef.current;
+      assistantDaemonLogBufferRef.current = [];
+      if (!nextLines.length) return;
+      setAssistantDaemonLogs((prev) => [...nextLines.reverse(), ...prev].slice(0, 20));
+    };
+
     const handleDaemonStatus = (_: unknown, status: AssistantDaemonStatus) => {
       setAssistantDaemonStatus(status);
-      setAssistantDaemonDraft((prev) => {
-        if (assistantDaemonBusy) return prev;
+      setAssistantDaemonDraftState((prev) => {
+        if (assistantDaemonBusy || assistantDaemonDraftDirty) return prev;
         return assistantDaemonStatusToDraft(status);
       });
     };
@@ -757,15 +817,23 @@ export function Settings() {
         payload?.message || '',
         payload?.details ? JSON.stringify(payload.details) : '',
       ].filter(Boolean).join(' | ');
-      setAssistantDaemonLogs((prev) => [line, ...prev].slice(0, 40));
+      assistantDaemonLogBufferRef.current.push(line);
+      if (assistantDaemonLogFlushTimerRef.current == null) {
+        assistantDaemonLogFlushTimerRef.current = window.setTimeout(flushAssistantDaemonLogs, 300);
+      }
     };
     window.ipcRenderer.on('assistant:daemon-status', handleDaemonStatus);
     window.ipcRenderer.on('assistant:daemon-log', handleDaemonLog);
     return () => {
       window.ipcRenderer.off('assistant:daemon-status', handleDaemonStatus);
       window.ipcRenderer.off('assistant:daemon-log', handleDaemonLog);
+      if (assistantDaemonLogFlushTimerRef.current != null) {
+        window.clearTimeout(assistantDaemonLogFlushTimerRef.current);
+        assistantDaemonLogFlushTimerRef.current = null;
+      }
+      assistantDaemonLogBufferRef.current = [];
     };
-  }, [assistantDaemonBusy]);
+  }, [activeTab, assistantDaemonBusy, assistantDaemonDraftDirty]);
 
   useEffect(() => {
     let memoryPollTimer: number | null = null;
@@ -1927,6 +1995,9 @@ export function Settings() {
           search_provider: settings.search_provider || 'duckduckgo',
           search_endpoint: settings.search_endpoint || '',
           search_api_key: settings.search_api_key || '',
+          proxy_enabled: Boolean(settings.proxy_enabled),
+          proxy_url: settings.proxy_url || '',
+          proxy_bypass: settings.proxy_bypass || 'localhost,127.0.0.1,::1',
           redclaw_compact_target_tokens: String(settings.redclaw_compact_target_tokens || 256000),
           chat_max_tokens_default: sanitizeChatMaxTokensInput(String(settings.chat_max_tokens_default || DEFAULT_CHAT_MAX_TOKENS), DEFAULT_CHAT_MAX_TOKENS),
           chat_max_tokens_deepseek: sanitizeChatMaxTokensInput(String(settings.chat_max_tokens_deepseek || DEFAULT_CHAT_MAX_TOKENS_DEEPSEEK), DEFAULT_CHAT_MAX_TOKENS_DEEPSEEK),
@@ -2003,15 +2074,15 @@ export function Settings() {
     }
   };
 
-  async function loadAssistantDaemonStatus() {
+  const loadAssistantDaemonStatus = useCallback(async () => {
     try {
       const status = await window.ipcRenderer.assistantDaemon.getStatus();
       setAssistantDaemonStatus(status);
-      setAssistantDaemonDraft(assistantDaemonStatusToDraft(status));
+      replaceAssistantDaemonDraft(assistantDaemonStatusToDraft(status));
     } catch (error) {
       console.error('Failed to load assistant daemon status', error);
     }
-  }
+  }, [replaceAssistantDaemonDraft]);
 
   const buildAssistantDaemonPayload = useCallback(() => ({
     enabled: assistantDaemonDraft.enabled,
@@ -2038,6 +2109,7 @@ export function Settings() {
       enabled: assistantDaemonDraft.weixin.enabled,
       endpointPath: String(assistantDaemonDraft.weixin.endpointPath || '').trim(),
       authToken: String(assistantDaemonDraft.weixin.authToken || '').trim() || undefined,
+      accountId: String(assistantDaemonDraft.weixin.accountId || '').trim() || undefined,
       autoStartSidecar: assistantDaemonDraft.weixin.autoStartSidecar,
       cursorFile: String(assistantDaemonDraft.weixin.cursorFile || '').trim() || undefined,
       sidecarCommand: String(assistantDaemonDraft.weixin.sidecarCommand || '').trim() || undefined,
@@ -2054,41 +2126,123 @@ export function Settings() {
     try {
       const status = await window.ipcRenderer.assistantDaemon.setConfig(buildAssistantDaemonPayload()) as AssistantDaemonStatus;
       setAssistantDaemonStatus(status);
-      setAssistantDaemonDraft(assistantDaemonStatusToDraft(status));
+      replaceAssistantDaemonDraft(assistantDaemonStatusToDraft(status));
     } catch (error) {
       console.error('Failed to save assistant daemon config', error);
       window.alert(`保存后台通信配置失败：${String(error)}`);
     } finally {
       setAssistantDaemonBusy(false);
     }
-  }, [buildAssistantDaemonPayload]);
+  }, [buildAssistantDaemonPayload, replaceAssistantDaemonDraft]);
 
   const handleStartAssistantDaemon = useCallback(async () => {
     setAssistantDaemonBusy(true);
     try {
       const status = await window.ipcRenderer.assistantDaemon.start(buildAssistantDaemonPayload()) as AssistantDaemonStatus;
       setAssistantDaemonStatus(status);
-      setAssistantDaemonDraft(assistantDaemonStatusToDraft(status));
+      replaceAssistantDaemonDraft(assistantDaemonStatusToDraft(status));
     } catch (error) {
       console.error('Failed to start assistant daemon', error);
       window.alert(`启动后台值守失败：${String(error)}`);
     } finally {
       setAssistantDaemonBusy(false);
     }
-  }, [buildAssistantDaemonPayload]);
+  }, [buildAssistantDaemonPayload, replaceAssistantDaemonDraft]);
 
   const handleStopAssistantDaemon = useCallback(async () => {
     setAssistantDaemonBusy(true);
     try {
       const status = await window.ipcRenderer.assistantDaemon.stop() as AssistantDaemonStatus;
       setAssistantDaemonStatus(status);
-      setAssistantDaemonDraft(assistantDaemonStatusToDraft(status));
+      replaceAssistantDaemonDraft(assistantDaemonStatusToDraft(status));
     } catch (error) {
       console.error('Failed to stop assistant daemon', error);
       window.alert(`停止后台值守失败：${String(error)}`);
     } finally {
       setAssistantDaemonBusy(false);
     }
+  }, [replaceAssistantDaemonDraft]);
+
+  const handleStartAssistantDaemonWeixinLogin = useCallback(async () => {
+    setAssistantDaemonWeixinLoginBusy(true);
+    try {
+      const result = await window.ipcRenderer.assistantDaemon.startWeixinLogin({
+        accountId: String(assistantDaemonDraft.weixin.accountId || '').trim() || undefined,
+        force: true,
+      });
+      const qrcodeImageUrl = await buildWeixinQrImageUrl(result.qrcodeUrl);
+      if (!result.success || !result.qrcodeUrl) {
+        setAssistantDaemonWeixinLogin({
+          sessionKey: result.sessionKey,
+          qrcodeUrl: result.qrcodeUrl,
+          qrcodeImageUrl,
+          message: result.message,
+          connected: false,
+          stateDir: result.stateDir,
+        });
+        window.alert(result.message || '启动微信扫码失败。');
+        return;
+      }
+      setAssistantDaemonWeixinLogin({
+        sessionKey: result.sessionKey,
+        qrcodeUrl: result.qrcodeUrl,
+        qrcodeImageUrl,
+        message: result.message,
+        connected: false,
+        stateDir: result.stateDir,
+      });
+    } catch (error) {
+      console.error('Failed to start Weixin login', error);
+      window.alert(`启动微信扫码失败：${String(error)}`);
+    } finally {
+      setAssistantDaemonWeixinLoginBusy(false);
+    }
+  }, [assistantDaemonDraft.weixin.accountId, buildWeixinQrImageUrl]);
+
+  const handleCheckAssistantDaemonWeixinLogin = useCallback(async () => {
+    const sessionKey = String(assistantDaemonWeixinLogin?.sessionKey || '').trim();
+    if (!sessionKey) {
+      window.alert('请先点击“开始扫码”，生成微信二维码。');
+      return;
+    }
+    setAssistantDaemonWeixinLoginBusy(true);
+    try {
+      const result = await window.ipcRenderer.assistantDaemon.waitForWeixinLogin({
+        sessionKey,
+        timeoutMs: 1500,
+      });
+      setAssistantDaemonWeixinLogin((prev) => ({
+        sessionKey,
+        qrcodeUrl: prev?.qrcodeUrl,
+        qrcodeImageUrl: prev?.qrcodeImageUrl,
+        stateDir: prev?.stateDir,
+        message: result.message,
+        connected: result.connected,
+        accountId: result.accountId,
+        userId: result.userId,
+      }));
+      if (result.connected) {
+        setAssistantDaemonDraft((prev) => ({
+          ...prev,
+          weixin: {
+            ...prev.weixin,
+            enabled: true,
+            autoStartSidecar: true,
+            accountId: result.accountId || prev.weixin.accountId,
+          },
+        }));
+        await loadAssistantDaemonStatus();
+      }
+    } catch (error) {
+      console.error('Failed to wait for Weixin login', error);
+      window.alert(`检查微信登录状态失败：${String(error)}`);
+    } finally {
+      setAssistantDaemonWeixinLoginBusy(false);
+    }
+  }, [assistantDaemonWeixinLogin?.sessionKey, loadAssistantDaemonStatus, setAssistantDaemonDraft]);
+
+  const handleClearAssistantDaemonWeixinLogin = useCallback(() => {
+    setAssistantDaemonWeixinLogin(null);
   }, []);
 
   const loadVectorStats = async () => {
@@ -2245,6 +2399,9 @@ export function Settings() {
         formData.chat_max_tokens_deepseek,
         DEFAULT_CHAT_MAX_TOKENS_DEEPSEEK,
       ));
+      if (formData.proxy_enabled && !String(formData.proxy_url || '').trim()) {
+        throw new Error('启用代理时必须填写代理地址，例如 http://127.0.0.1:7890');
+      }
 
       await window.ipcRenderer.saveSettings({
         ...formData,
@@ -2255,6 +2412,9 @@ export function Settings() {
         model_name_chatroom: String(formData.model_name_chatroom || '').trim(),
         model_name_knowledge: String(formData.model_name_knowledge || '').trim(),
         model_name_redclaw: String(formData.model_name_redclaw || '').trim(),
+        proxy_enabled: Boolean(formData.proxy_enabled),
+        proxy_url: String(formData.proxy_url || '').trim(),
+        proxy_bypass: String(formData.proxy_bypass || '').trim(),
         transcription_model: resolvedTranscriptionModel,
         transcription_endpoint: String(resolvedTranscriptionSource?.baseURL || formData.transcription_endpoint || resolvedApiEndpoint).trim(),
         transcription_key: String(resolvedTranscriptionSource?.apiKey || formData.transcription_key || '').trim(),
@@ -2346,10 +2506,15 @@ export function Settings() {
                 setAssistantDaemonDraft={setAssistantDaemonDraft}
                 assistantDaemonLogs={assistantDaemonLogs}
                 assistantDaemonBusy={assistantDaemonBusy}
+                assistantDaemonWeixinLogin={assistantDaemonWeixinLogin}
+                assistantDaemonWeixinLoginBusy={assistantDaemonWeixinLoginBusy}
                 handleReloadAssistantDaemonStatus={loadAssistantDaemonStatus}
                 handleSaveAssistantDaemonConfig={handleSaveAssistantDaemonConfig}
                 handleStartAssistantDaemon={handleStartAssistantDaemon}
                 handleStopAssistantDaemon={handleStopAssistantDaemon}
+                handleStartAssistantDaemonWeixinLogin={handleStartAssistantDaemonWeixinLogin}
+                handleCheckAssistantDaemonWeixinLogin={handleCheckAssistantDaemonWeixinLogin}
+                handleClearAssistantDaemonWeixinLogin={handleClearAssistantDaemonWeixinLogin}
               />
             )}
 

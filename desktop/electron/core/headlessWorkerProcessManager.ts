@@ -58,6 +58,8 @@ type PendingRuntimeRun = PendingRunBase & {
   runtimeMode?: string;
   requiresHumanApproval?: boolean;
   toolAbortController: AbortController;
+  toolRegistry: ToolRegistry;
+  toolExecutor: ToolExecutor;
   resolve: (value: RuntimeWorkerResult) => void;
   reject: (reason?: unknown) => void;
 };
@@ -818,6 +820,7 @@ export class HeadlessWorkerProcessManager {
         const skillManager = new SkillManager();
         await skillManager.discoverSkills(getWorkspacePaths().base);
         toolRegistry.registerTools(createBuiltinTools({ pack: input.toolPack, skillManager }));
+        const toolExecutor = new ToolExecutor(toolRegistry, async () => ToolConfirmationOutcome.ProceedOnce);
         const onAttemptAbort = () => this.abortRuntimeRun(slot);
 
         this.currentAffinity('runtime', input.sessionId, slot.id);
@@ -832,6 +835,8 @@ export class HeadlessWorkerProcessManager {
           attemptSignal: input.attemptSignal,
           onAttemptAbort,
           toolAbortController: new AbortController(),
+          toolRegistry,
+          toolExecutor,
           resolve,
           reject,
         };
@@ -951,12 +956,6 @@ export class HeadlessWorkerProcessManager {
     run: PendingRuntimeRun,
     calls: ToolCallMessage[],
   ): Promise<HostedToolFeedback[]> {
-    const registry = new ToolRegistry();
-    const skillManager = new SkillManager();
-    await skillManager.discoverSkills(getWorkspacePaths().base);
-    registry.registerTools(createBuiltinTools({ pack: run.toolPack, skillManager }));
-    const executor = new ToolExecutor(registry, async () => ToolConfirmationOutcome.ProceedOnce);
-
     this.runtimeStore.appendTranscript({
       sessionId: run.sessionId,
       recordType: 'assistant.tool_call',
@@ -978,7 +977,7 @@ export class HeadlessWorkerProcessManager {
         source: 'tool',
         text: `调用工具：${call.name}`,
       });
-      const tool = registry.getTool(call.name);
+      const tool = run.toolRegistry.getTool(call.name);
       if (!tool) {
         const missingResult = createErrorResult(`Tool "${call.name}" not found`, ToolErrorType.EXECUTION_FAILED);
         responses.push({
@@ -1068,7 +1067,7 @@ export class HeadlessWorkerProcessManager {
             text: `${call.name}: auto-approved in hosted worker | ${permission.reason}`,
           });
         }
-        const response = await executor.execute({
+        const response = await run.toolExecutor.execute({
           callId: call.id,
           name: call.name,
           params: call.args,
@@ -1119,7 +1118,7 @@ export class HeadlessWorkerProcessManager {
     }
 
     const budgeted = applyToolResultBudget(
-      registry,
+      run.toolRegistry,
       responses.map((response) => ({
         toolName: response.name,
         result: response.result,

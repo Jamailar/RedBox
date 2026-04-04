@@ -6,7 +6,7 @@ import { MessageItem, Message, ToolEvent, SkillEvent } from '../components/Messa
 import type { ProcessItem, ProcessItemType } from '../components/ProcessTimeline';
 import type { PendingChatMessage } from '../App';
 import { ErrorBoundary } from '../components/ErrorBoundary';
-import { inferModelCapabilities, normalizeModelCapabilities, type ModelCapability } from '../../shared/modelCapabilities';
+import { getForcedModelCapabilities, inferModelCapabilities, normalizeModelCapabilities, type ModelCapability } from '../../shared/modelCapabilities';
 
 interface Session {
   id: string;
@@ -117,14 +117,17 @@ interface ChatSettingsSnapshot {
 
 function modelSupportsChat(model: string | { id?: unknown; capabilities?: unknown }): boolean {
   if (typeof model === 'string') {
-    return inferModelCapabilities(model).includes('chat');
+    const forced = getForcedModelCapabilities(model);
+    const resolved = forced.length ? forced : inferModelCapabilities(model);
+    return resolved.includes('chat');
   }
   const id = String(model?.id || '').trim();
   if (!id) return false;
+  const forced = getForcedModelCapabilities(id);
   const capabilities = Array.isArray((model as { capabilities?: unknown[] }).capabilities)
     ? normalizeModelCapabilities((model as { capabilities?: Array<ModelCapability | string | null | undefined> }).capabilities || [])
     : [];
-  const resolved = capabilities.length ? capabilities : inferModelCapabilities(id);
+  const resolved = forced.length ? forced : (capabilities.length ? capabilities : inferModelCapabilities(id));
   return resolved.includes('chat');
 }
 

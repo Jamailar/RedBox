@@ -5419,12 +5419,17 @@ ipcMain.handle('chatrooms:send', async (_, { roomId, message, context, clientMes
           const configPath = path.join(advisorsDir, advisorId, 'config.json');
           const advisorContent = await fs.readFile(configPath, 'utf-8');
           const advisor = JSON.parse(advisorContent);
+          const advisorDir = path.join(advisorsDir, advisorId);
+          const avatar = String(advisor.avatar || '').trim();
+          if (avatar.startsWith('http')) {
+            localizeAdvisorAvatarInBackground(advisorDir, configPath, advisor);
+          }
           const knowledgeDir = path.join(advisorsDir, advisorId, 'knowledge');
 
           advisorInfos.push({
             id: advisorId,
             name: advisor.name,
-            avatar: advisor.avatar,
+            avatar: resolveAdvisorAvatarForList(advisorDir, advisor),
             systemPrompt: advisor.systemPrompt || '',
             knowledgeDir,
             knowledgeLanguage: String(advisor.knowledgeLanguage || '').trim() || '中文',

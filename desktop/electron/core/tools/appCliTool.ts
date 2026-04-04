@@ -145,6 +145,7 @@ interface GeneratedVideoCliResult {
     model: string;
     generationMode?: 'text-to-video' | 'reference-guided' | 'first-last-frame' | 'continuation';
     referenceImageCount?: number;
+    referenceSource?: 'video-project-keyframes' | 'video-project-references' | 'subject-or-direct-references';
     subjects?: Array<{
         id: string;
         name: string;
@@ -2044,6 +2045,9 @@ export class AppCliTool extends DeclarativeTool<typeof AppCliParamsSchema> {
                 .map((item) => item.trim())
                 .filter(Boolean)
                 .slice(0, 5);
+        const rawProjectId = String(readFlag(parsed.flags, 'video-project-id') || payload.videoProjectId || readFlag(parsed.flags, 'project-id') || '').trim();
+        const videoProjectId = rawProjectId.startsWith('video_project_') ? rawProjectId : String(readFlag(parsed.flags, 'video-project-id') || payload.videoProjectId || '').trim();
+        const videoProject = videoProjectId ? await getVideoProjectPack(videoProjectId) : null;
         const subjectIds = parseList(readFlag(parsed.flags, 'subject-ids', 'subjects') || payload.subjectIds);
         const subjectQuery = readFlag(parsed.flags, 'subject-query', 'query-subjects') || (payload.subjectQuery as string | undefined);
         const matchedSubjects = subjectIds.length > 0
@@ -2065,10 +2069,22 @@ export class AppCliTool extends DeclarativeTool<typeof AppCliParamsSchema> {
                 }
             }
         }
-        const referenceImages = dedupeList([...directReferenceImages, ...subjectReferenceImages], 5);
+        const projectKeyframeImages = (videoProject?.keyframes || [])
+            .map((entry) => entry.absolutePath)
+            .filter(Boolean)
+            .slice(0, 5);
+        const projectReferenceImages = (videoProject?.references || [])
+            .filter((entry) => entry.kind === 'reference-image')
+            .map((entry) => entry.absolutePath)
+            .filter(Boolean)
+            .slice(0, 5);
+        const projectPriorityImages = projectKeyframeImages.length > 0 ? projectKeyframeImages : projectReferenceImages;
+        const shouldPreferProjectImages = projectPriorityImages.length > 0 && directReferenceImages.length === 0;
+        const referenceImages = shouldPreferProjectImages
+            ? dedupeList(projectPriorityImages, 5)
+            : dedupeList([...directReferenceImages, ...subjectReferenceImages], 5);
         const explicitDrivingAudio = String(readFlag(parsed.flags, 'driving-audio', 'audio-url') || payload.drivingAudio || '').trim();
         const firstClip = String(readFlag(parsed.flags, 'first-clip', 'video-url') || payload.firstClip || '').trim();
-        const videoProjectId = String(readFlag(parsed.flags, 'video-project-id') || payload.videoProjectId || '').trim();
         const effectiveGenerationMode = inferVideoGenerationMode(generationMode, referenceImages);
         const subjectDrivingAudio = !explicitDrivingAudio && effectiveGenerationMode === 'reference-guided'
             ? String(matchedSubjects.find((subject) => subject.absoluteVoicePath)?.absoluteVoicePath || '').trim()
@@ -2089,10 +2105,10 @@ export class AppCliTool extends DeclarativeTool<typeof AppCliParamsSchema> {
             durationSeconds: parseNumber(readFlag(parsed.flags, 'duration', 'seconds') || payload.durationSeconds || payload.seconds),
             generateAudio: parseBoolean(readFlag(parsed.flags, 'audio', 'generate-audio') || payload.generateAudio),
         });
-        let videoProject = videoProjectId ? await getVideoProjectPack(videoProjectId) : null;
+        let updatedVideoProject = videoProject;
         if (videoProjectId) {
             for (const [index, asset] of result.assets.entries()) {
-                videoProject = await addGeneratedAssetToVideoProjectPack({
+                updatedVideoProject = await addGeneratedAssetToVideoProjectPack({
                     projectId: videoProjectId,
                     asset,
                     kind: result.assets.length > 1 ? 'clip' : 'output',
@@ -2113,6 +2129,9 @@ export class AppCliTool extends DeclarativeTool<typeof AppCliParamsSchema> {
                 voiceReference: Boolean(subject.absoluteVoicePath),
             })),
             voiceReferenceUsed: Boolean(subjectDrivingAudio),
+            referenceSource: shouldPreferProjectImages
+                ? (projectKeyframeImages.length > 0 ? 'video-project-keyframes' : 'video-project-references')
+                : 'subject-or-direct-references',
             aspectRatio: result.aspectRatio,
             resolution: result.resolution,
             durationSeconds: result.durationSeconds,
@@ -2126,13 +2145,13 @@ export class AppCliTool extends DeclarativeTool<typeof AppCliParamsSchema> {
                 prompt: asset.prompt,
                 createdAt: asset.createdAt,
             })),
-            videoProject: videoProject ? {
-                id: videoProject.id,
-                title: videoProject.title,
-                projectDir: videoProject.projectDir,
-                manifestPath: path.join(videoProject.projectDir, 'manifest.json'),
-                scriptPath: path.join(videoProject.projectDir, videoProject.scriptPath),
-                briefPath: path.join(videoProject.projectDir, videoProject.briefPath),
+            videoProject: updatedVideoProject ? {
+                id: updatedVideoProject.id,
+                title: updatedVideoProject.title,
+                projectDir: updatedVideoProject.projectDir,
+                manifestPath: path.join(updatedVideoProject.projectDir, 'manifest.json'),
+                scriptPath: path.join(updatedVideoProject.projectDir, updatedVideoProject.scriptPath),
+                briefPath: path.join(updatedVideoProject.projectDir, updatedVideoProject.briefPath),
             } : null,
         } satisfies GeneratedVideoCliResult;
     }

@@ -34,8 +34,8 @@ if [[ "$SKIP_WIN" != "1" ]]; then
 fi
 
 if [[ "$SKIP_MAC" != "1" ]]; then
-  echo "[publish] Step 2/3: build macOS on local machine (signed)"
-  "$SCRIPT_DIR/build-mac-local.sh"
+  echo "[publish] Step 2/3: build macOS on local machine (signed + notarized)"
+  REDBOX_MAC_MODE=full "$SCRIPT_DIR/build-mac-local.sh"
 fi
 
 echo "[publish] Step 3/3: upload artifacts to GitHub Release"

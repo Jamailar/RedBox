@@ -59,13 +59,21 @@ export class ListDirTool extends DeclarativeTool<typeof ListDirParamsSchema> {
     readonly parameterSchema = ListDirParamsSchema;
     readonly requiresConfirmation = false;
 
+    constructor(private readonly workspaceRootOverride?: string) {
+        super();
+    }
+
+    private getWorkspaceRoot(): string {
+        return this.workspaceRootOverride || Instance.directory;
+    }
+
     protected validateValues(params: ListDirParams): string | null {
         // 参考 OpenCode: path 是可选的，不需要验证
         return null;
     }
 
     getDescription(params: ListDirParams): string {
-        return `List directory: ${params.path || Instance.directory}`;
+        return `List directory: ${params.path || this.getWorkspaceRoot()}`;
     }
 
     isConcurrencySafe(_params: ListDirParams): boolean {
@@ -78,7 +86,7 @@ export class ListDirTool extends DeclarativeTool<typeof ListDirParamsSchema> {
         }
 
         try {
-            const workspaceRoot = Instance.directory;
+            const workspaceRoot = this.getWorkspaceRoot();
 
             // 参考 OpenCode: 解析路径，支持相对路径和绝对路径
             let searchPath = params.path

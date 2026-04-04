@@ -18,6 +18,7 @@
     "sync:prompt-library": "node scripts/sync-prompt-library.cjs",
     "build": "pnpm run prepare:private-runtime && pnpm run prepare:plugin-runtime && pnpm run prepare:ffmpeg && pnpm run clean && tsc && vite build && pnpm run sync:prompt-library && electron-builder",
     "build:mac": "pnpm run prepare:private-runtime && pnpm run prepare:plugin-runtime && pnpm run prepare:ffmpeg && pnpm run clean && tsc && vite build && pnpm run sync:prompt-library && electron-builder --mac --x64 --arm64",
+    "build:mac:signed": "pnpm run prepare:private-runtime && pnpm run prepare:plugin-runtime && pnpm run prepare:ffmpeg && pnpm run clean && tsc && vite build && pnpm run sync:prompt-library && electron-builder --mac --x64 --arm64 -c.mac.notarize=false",
     "build:win": "pnpm run prepare:private-runtime && pnpm run prepare:plugin-runtime && pnpm run prepare:ffmpeg && pnpm run clean && tsc && vite build && pnpm run sync:prompt-library && electron-builder --win --x64",
     "build:all": "pnpm run prepare:private-runtime && pnpm run prepare:plugin-runtime && pnpm run prepare:ffmpeg && pnpm run clean && tsc && vite build && pnpm run sync:prompt-library && electron-builder --mac --x64 --arm64 --win --x64",
     "build:mac:nosign": "pnpm run prepare:private-runtime && pnpm run prepare:plugin-runtime && pnpm run prepare:ffmpeg && pnpm run clean && tsc && vite build && pnpm run sync:prompt-library && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac --x64 --arm64 -c.mac.identity=null",

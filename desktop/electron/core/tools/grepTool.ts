@@ -31,6 +31,14 @@ export class GrepTool extends DeclarativeTool<typeof GrepToolParamsSchema> {
 
     private rgPath: string | undefined;
 
+    constructor(private readonly workspaceRootOverride?: string) {
+        super();
+    }
+
+    private getWorkspaceRoot(): string {
+        return this.workspaceRootOverride || Instance.directory;
+    }
+
     protected validateValues(params: GrepToolParams): string | null {
         if (!params.pattern || params.pattern.trim() === '') {
             return 'pattern is required. Provide a search keyword like "Dan Koe" or regex pattern.';
@@ -53,11 +61,11 @@ export class GrepTool extends DeclarativeTool<typeof GrepToolParamsSchema> {
             }
 
             let searchDir = params.path 
-                ? (path.isAbsolute(params.path) ? params.path : path.join(Instance.directory, params.path))
-                : Instance.directory;
+                ? (path.isAbsolute(params.path) ? params.path : path.join(this.getWorkspaceRoot(), params.path))
+                : this.getWorkspaceRoot();
 
             try {
-                searchDir = resolvePathInWorkspace(searchDir, Instance.directory);
+                searchDir = resolvePathInWorkspace(searchDir, this.getWorkspaceRoot());
             } catch (error) {
                 const message = error instanceof Error ? error.message : String(error);
                 return createErrorResult(message, ToolErrorType.PERMISSION_DENIED);

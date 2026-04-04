@@ -183,6 +183,9 @@ If storyboard frames are generated:
 
 This is mandatory when the storyboard is later used for video generation.
 
+If those storyboard frames have already been saved into a video project pack, later video generation should use those keyframes as the main visual references.
+Do not keep reusing raw subject-library portraits or product stills as the primary visual input unless you truly need extra补充 angles or missing objects.
+
 ## Script Format
 
 The pre-generation script must be shown as a Markdown table. Use these columns:
@@ -237,6 +240,7 @@ If the script contains multiple shots, a named character, an important environme
 - If a suitable voice reference exists, pass it as `drivingAudio` and describe it explicitly as `Audio 1` in the prompt preface.
 - For `reference-guided`, if a suitable voice reference exists, also pass it as the mode's voice reference input.
 - When a subject-library character is used, default to that character's saved voice reference as `Audio 1`.
+- If a video project pack already contains storyboard keyframes, prefer `video-project-id` + those keyframes as the main visual condition for `reference-guided`.
 - Keep the final generation prompt focused on execution details derived from the approved script.
 - Do not dump the whole planning discussion into the generation prompt.
 - If the user intent is ambiguous, explain the ambiguity briefly and pick the safer mode instead of faking certainty.

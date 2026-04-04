@@ -9,6 +9,7 @@ import {
   inferPresetIdByEndpoint,
 } from '../../config/aiSources';
 import {
+  getForcedModelCapabilities,
   MODEL_CAPABILITY_META,
   inferModelCapabilities,
   normalizeModelCapabilities,
@@ -1263,18 +1264,20 @@ export const toAiModelDescriptor = (
   if (typeof model === 'string') {
     const id = model.trim();
     if (!id) return null;
+    const forcedCapabilities = getForcedModelCapabilities(id);
     return {
       id,
-      capabilities: inferModelCapabilities(id),
+      capabilities: forcedCapabilities.length > 0 ? forcedCapabilities : inferModelCapabilities(id),
     };
   }
 
   const id = String(model?.id || '').trim();
   if (!id) return null;
+  const forcedCapabilities = getForcedModelCapabilities(id);
   const capabilities = Array.isArray(model?.capabilities) && model.capabilities.length > 0
     ? normalizeModelCapabilities(model.capabilities)
     : inferModelCapabilities(id);
-  return { id, capabilities };
+  return { id, capabilities: forcedCapabilities.length > 0 ? forcedCapabilities : capabilities };
 };
 
 export const filterAiModelsByCapability = (

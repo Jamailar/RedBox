@@ -32,9 +32,30 @@ const CAPABILITY_RULES: Array<{ capability: ModelCapability; patterns: RegExp[] 
     { capability: 'image', patterns: [/\bimage\b/i, /\bdall-?e\b/i, /\bimagen\b/i, /\bseedream\b/i, /\bbanana\b/i] },
 ];
 
+const FORCED_CAPABILITY_RULES: Array<{ capabilities: ModelCapability[]; patterns: RegExp[] }> = [
+    { capabilities: ['video'], patterns: [/\bseedance\b/i] },
+    { capabilities: ['image'], patterns: [/\bseedream\b/i, /\bbanana\b/i] },
+];
+
+export const getForcedModelCapabilities = (modelId: string): ModelCapability[] => {
+    const normalized = String(modelId || '').trim().toLowerCase();
+    if (!normalized) return [];
+    for (const rule of FORCED_CAPABILITY_RULES) {
+        if (rule.patterns.some((pattern) => pattern.test(normalized))) {
+            return rule.capabilities;
+        }
+    }
+    return [];
+};
+
 export const inferModelCapabilities = (modelId: string): ModelCapability[] => {
     const normalized = String(modelId || '').trim().toLowerCase();
     if (!normalized) return ['chat'];
+
+    const forced = getForcedModelCapabilities(normalized);
+    if (forced.length > 0) {
+        return forced;
+    }
 
     const detected = new Set<ModelCapability>();
     for (const rule of CAPABILITY_RULES) {

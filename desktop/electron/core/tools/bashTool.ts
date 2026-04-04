@@ -140,8 +140,16 @@ export class BashTool extends DeclarativeTool<typeof BashToolParamsSchema> {
     readonly parameterSchema = BashToolParamsSchema;
     readonly requiresConfirmation = false; // 动态决定是否需要确认
 
+    constructor(private readonly workspaceRootOverride?: string) {
+        super();
+    }
+
+    private getWorkspaceRoot(): string {
+        return this.workspaceRootOverride || Instance.directory;
+    }
+
     protected validateValues(params: BashToolParams): string | null {
-        const workspaceRoot = Instance.directory;
+        const workspaceRoot = this.getWorkspaceRoot();
 
         // 1. 检查绝对禁止的命令
         if (isForbiddenCommand(params.command)) {
@@ -195,7 +203,7 @@ export class BashTool extends DeclarativeTool<typeof BashToolParamsSchema> {
     }
 
     async execute(params: BashToolParams, signal: AbortSignal): Promise<ToolResult> {
-        const workspaceRoot = Instance.directory;
+        const workspaceRoot = this.getWorkspaceRoot();
 
         // 再次验证（防御性编程）
         const validationError = this.validateValues(params);

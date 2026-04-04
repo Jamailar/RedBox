@@ -34,6 +34,14 @@ export class ReadFileTool extends DeclarativeTool<typeof ReadFileParamsSchema> {
     readonly parameterSchema = ReadFileParamsSchema;
     readonly requiresConfirmation = false;
 
+    constructor(private readonly workspaceRootOverride?: string) {
+        super();
+    }
+
+    private getWorkspaceRoot(): string {
+        return this.workspaceRootOverride || Instance.directory;
+    }
+
     protected validateValues(params: ReadFileParams): string | null {
         return null;
     }
@@ -55,7 +63,7 @@ export class ReadFileTool extends DeclarativeTool<typeof ReadFileParamsSchema> {
         try {
             let filepath = params.filePath;
             try {
-                filepath = resolvePathInWorkspace(filepath, Instance.directory);
+                filepath = resolvePathInWorkspace(filepath, this.getWorkspaceRoot());
             } catch (error) {
                 const message = error instanceof Error ? error.message : String(error);
                 return createErrorResult(message, ToolErrorType.PERMISSION_DENIED);

@@ -2195,7 +2195,7 @@ export class PiChatService {
     const normalized = String(content || '').trim();
     const uniqueImages = images
       .filter((image, index, list) => list.findIndex((item) => item.id === image.id) === index)
-      .filter((image) => !normalized.includes(image.previewUrl));
+      .filter((image) => !this.hasGeneratedMediaEmbed(normalized, image.previewUrl));
     if (uniqueImages.length === 0) {
       return normalized;
     }
@@ -2233,7 +2233,7 @@ export class PiChatService {
     const normalized = String(content || '').trim();
     const uniqueVideos = videos
       .filter((video, index, list) => list.findIndex((item) => item.id === video.id) === index)
-      .filter((video) => !normalized.includes(video.previewUrl));
+      .filter((video) => !this.hasGeneratedMediaEmbed(normalized, video.previewUrl));
     if (uniqueVideos.length === 0) {
       return normalized;
     }
@@ -2244,6 +2244,15 @@ export class PiChatService {
     ].join('\n\n');
 
     return normalized ? `${normalized}\n\n${gallery}` : gallery;
+  }
+
+  private hasGeneratedMediaEmbed(content: string, previewUrl: string): boolean {
+    const normalized = String(content || '').trim();
+    const url = String(previewUrl || '').trim();
+    if (!normalized || !url) {
+      return false;
+    }
+    return normalized.includes(`](${url})`) || normalized.includes(`src="${url}"`) || normalized.includes(`src='${url}'`);
   }
 
   private cleanupLeakedToolMarkup(response: string, hadRealToolExecution: boolean): ToolMarkupCleanupResult {
@@ -3058,6 +3067,7 @@ export class PiChatService {
         '- 关键帧必须逐张生成，不要一次性并发生成多张易漂移的分镜图。先生成核心环境图，再让后续关键帧把核心环境图作为参考图，只描述该镜头相对于基线发生的变化。',
         '- 若已经创建视频项目包，调用 `image generate` 生成关键帧时应优先附带 `video-project-id`，让关键帧自动归档到项目包的 `keyframes/` 下。',
         '- 若已经创建视频项目包，生成出的关键帧、视频片段和最终成片都应继续归档回该项目包，保持同一项目下的资产、脚本、参考资料一致。',
+        '- 若视频项目包里已经有关键帧，后续 `video generate` 应优先使用这些关键帧作为主视觉参考，不要继续把主体库人物图或商品图重复当成主要参考图；主体库此时主要用于声音参考或缺失角度补充。',
         '- 如果已经命中主体库且主体含图片，优先通过 `payload.subjectIds` 或 `referenceImages` 把主体图片传进生图工具。',
         '- 多图参考时，提示词必须明确写出“图1/图2/图3 各自代表什么”，例如：图1是人物主体，图2是商品主体，图3是场景氛围参考。',
         '- 若本轮生图调用有参考图，但工具返回 `referenceImageCount = 0`，不能宣称“已按参考图生成成功”，必须说明参考图没有真正带入。',

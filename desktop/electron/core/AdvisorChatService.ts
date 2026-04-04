@@ -3,8 +3,8 @@
  *
  * 专门为智囊团设计的聊天服务，包含：
  * - 思维链展示
- * - 知识库检索 (RAG)
- * - 基础工具支持（计算、文件写入/编辑）
+ * - 智囊团私有知识库文件检索
+ * - 通用系统工具（限定在成员自己的知识库目录）
  */
 
 import { EventEmitter } from 'events';
@@ -12,6 +12,8 @@ import {
     ToolRegistry,
     ToolExecutor,
     ToolConfirmationOutcome,
+    type ToolDefinition,
+    type ToolResult,
 } from './toolRegistry';
 import {
     addChatMessage,
@@ -19,12 +21,12 @@ import {
     createChatSession,
     getChatMessages,
     getChatSessionByContext,
-    searchVectors,
 } from '../db';
 import { CalculatorTool } from './tools/calculatorTool';
-import { WriteFileTool } from './tools/writeFileTool';
-import { EditTool } from './tools/editTool';
-import { embeddingService } from './vector/EmbeddingService';
+import { ReadFileTool } from './tools/readFileTool';
+import { ListDirTool } from './tools/listDirTool';
+import { GrepTool } from './tools/grepTool';
+import { BashTool } from './tools/bashTool';
 import { QueryRuntime } from './queryRuntime';
 import { getAgentRuntime, getLongTaskCoordinator } from './ai';
 
@@ -111,11 +113,20 @@ export class AdvisorChatService extends EventEmitter {
 
         // 初始化工具注册表（仅包含安全工具）
         this.toolRegistry = new ToolRegistry();
-        this.toolRegistry.registerTools([
+        const tools: ToolDefinition<unknown, ToolResult>[] = [
             new CalculatorTool(),
-            new WriteFileTool(),
-            new EditTool(),
-        ]);
+        ];
+
+        if (this.config.knowledgeDir) {
+            tools.push(
+                new ListDirTool(this.config.knowledgeDir),
+                new GrepTool(this.config.knowledgeDir),
+                new ReadFileTool(this.config.knowledgeDir),
+                new BashTool(this.config.knowledgeDir),
+            );
+        }
+
+        this.toolRegistry.registerTools(tools);
 
         // 初始化工具执行器（智囊团模式默认允许）
         this.toolExecutor = new ToolExecutor(
@@ -150,12 +161,13 @@ export class AdvisorChatService extends EventEmitter {
             });
 
             const effectiveHistory = history.length > 0 ? history : this.getStoredHistory();
-            const ragContext = await this.performRAG(options.ragQuery || message, signal, effectiveHistory);
-            const systemPrompt = this.buildSystemPrompt(ragContext, options);
+            const systemPrompt = this.buildSystemPrompt(options);
 
             this.emitEvent({
                 type: 'thinking_chunk',
-                content: '基于专业知识和上下文进行深度思考...',
+                content: this.config.knowledgeDir
+                    ? '先检查自己的知识库与上下文，再形成观点...'
+                    : '基于角色设定和上下文进行深度思考...',
             });
 
             const fullResponse = await this.runAgentLoop(message, effectiveHistory, systemPrompt, signal);
@@ -191,71 +203,9 @@ export class AdvisorChatService extends EventEmitter {
     }
 
     /**
-     * 执行 RAG 检索 (纯向量检索)
-     */
-    private async performRAG(
-        query: string,
-        signal: AbortSignal,
-        _history: ChatHistoryMessage[] = []
-    ): Promise<{ context: string; sources: string[]; reasoning?: string }> {
-        if (!this.config.knowledgeDir) {
-            return { context: '', sources: [] };
-        }
-
-        this.emitEvent({
-            type: 'rag_start',
-            content: '正在检索知识库...',
-        });
-
-        try {
-            const queryEmbedding = await embeddingService.embedQuery(query);
-            if (signal.aborted) {
-                return { context: '', sources: [] };
-            }
-
-            const searchResults = searchVectors(queryEmbedding, 5, {
-                advisorId: this.config.advisorId
-            });
-
-            if (searchResults.length === 0) {
-                console.log(`[AdvisorChatService] RAG: No results found for query: "${query}"`);
-                this.emitEvent({
-                    type: 'rag_result',
-                    content: '未检索到相关知识',
-                    sources: [],
-                });
-                return { context: '', sources: [] };
-            }
-
-            console.log(`[AdvisorChatService] RAG: Found ${searchResults.length} results for query: "${query}"`);
-
-            const sources = searchResults.map((r: { sourceId: string }) => r.sourceId);
-            const context = searchResults
-                .map((r: { sourceId: string; content: string }, i: number) => `[参考 ${i + 1}] (${r.sourceId})\n${r.content}`)
-                .join('\n\n');
-
-            this.emitEvent({
-                type: 'rag_result',
-                content: `检索到 ${searchResults.length} 条相关内容`,
-                sources,
-            });
-
-            return {
-                context,
-                sources,
-                reasoning: `基于当前问题与分工检索了 Top ${searchResults.length} 条相关记录。`
-            };
-        } catch (error) {
-            console.error('[AdvisorChatService] RAG failed:', error);
-            return { context: '', sources: [] };
-        }
-    }
-
-    /**
      * 构建系统提示词
      */
     private buildSystemPrompt(
-        ragContext: { context: string; sources: string[]; reasoning?: string },
         options: AdvisorSendOptions = {},
     ): string {
         const parts: string[] = [];
@@ -274,6 +224,27 @@ export class AdvisorChatService extends EventEmitter {
 - 引用或内化知识库信息时，优先忠实保留原语言语义，避免因为误判语言而检索不到内容。`);
         }
 
+        if (this.config.knowledgeDir) {
+            parts.push(`
+## 你的知识库工作流
+
+你能使用常规系统工具访问文件系统，但这些工具的工作区根目录已经被限制为你自己的知识库目录。
+
+可用工具：
+- \`grep\`：搜索相关片段，先找候选文件
+- \`read_file\`：打开并精读具体文件
+- \`list_dir\`：查看目录结构，适合先摸清有哪些资料
+- \`bash\`：做更灵活的文件检索，例如 \`rg\`、\`find\`、\`cat\`、\`sed\`
+
+工作要求：
+- 你的知识库**不会**自动注入到上下文里，必须由你自己决定何时搜索、何时打开文件。
+- 只要问题依赖事实、案例、原话、经验、数据、历史观点，先搜索再回答。
+- 推荐顺序：先 \`grep\` 或 \`bash\` 搜索，再用 \`read_file\` 打开 1-3 个最相关文件，再形成观点。
+- 不要假装读过没打开的文件；文件路径必须以工具返回结果为准。
+- 如果没有搜到相关资料，要明确承认，不要编造。
+- 如果只是寒暄、确认、很短的态度表述，可以直接回答，不必强行检索。`);
+        }
+
         if (options.discussionTask) {
             parts.push(`
 ## 你的本轮分工
@@ -286,38 +257,29 @@ ${options.discussionTask}
 - 最终发言必须直接回应这项分工。`);
         }
 
+        if (String(options.ragQuery || '').trim()) {
+            parts.push(`
+## 当前检索焦点
+
+如果你需要搜索知识库，优先围绕下面这些线索展开：
+
+${String(options.ragQuery || '').trim()}`);
+        }
+
         parts.push(`
 ## 思考方式 (Thinking Process)
 
 在回答前，请像真人一样思考：
 1. **意图洞察**：用户真正想问什么？（别看表面，看痛点）
-2. **经验调用**：结合下方的【唤醒记忆】，我有类似的经历吗？
+2. **经验调用**：如果问题需要事实或案例，我应该先搜索哪类知识、打开哪些文件？
 3. **观点形成**：基于我的性格，我怎么看这件事？支持还是反对？
 4. **语言组织**：用最接地气的话说出来。`);
 
-        if (ragContext.context) {
-            let ragSection = `
-## 唤醒记忆 (Recalled Experiences)
-
-以下是你脑海中浮现的相关经验和案例（Knowledge Base）：`;
-
-            if (ragContext.reasoning) {
-                ragSection += `
-（潜意识联想: ${ragContext.reasoning}）`;
-            }
-
-            ragSection += `
-
-${ragContext.context}
-
-**重要**：请将这些信息内化为你的直觉和观点，**严禁**直接复述或说"根据资料"、"知识库显示"。要把它们当作你自己的经验来讲。`;
-
-            parts.push(ragSection);
-        }
-
         parts.push(`
 ## 辅助能力
-如果遇到需要精确计算或改写文件的情况，可以调用工具。但请记住，你的核心价值在于你的**观点**和**判断**。`);
+如果遇到需要精确计算或改写文件的情况，可以调用工具。但请记住，你的核心价值在于你的**观点**和**判断**。
+
+如果你从知识库中读到了有效材料，请把它内化为你的经验来表达，不要写成"知识库显示"、"根据资料"这种生硬说法。`);
 
         return parts.join('\n\n');
     }

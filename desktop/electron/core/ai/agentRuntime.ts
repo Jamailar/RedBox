@@ -23,7 +23,7 @@ const DEFAULT_INTENT_BY_MODE: Record<RuntimeMode, IntentRoute['intent']> = {
 const DEFAULT_ROLE_BY_MODE: Record<RuntimeMode, RoleId> = {
   redclaw: 'copywriter',
   knowledge: 'researcher',
-  chatroom: 'planner',
+  chatroom: 'ops-coordinator',
   'advisor-discussion': 'researcher',
   'background-maintenance': 'ops-coordinator',
 };

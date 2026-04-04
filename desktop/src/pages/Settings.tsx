@@ -678,6 +678,24 @@ export function Settings() {
   const [officialAiPanelEnabled, setOfficialAiPanelEnabled] = useState(false);
   const [OfficialAiPanelComponent, setOfficialAiPanelComponent] = useState<ComponentType<OfficialAiPanelProps> | null>(null);
 
+  const isDeprecatedEmptyOpenAiSource = useCallback((source?: AiSourceConfig | null): boolean => {
+    if (!source) return false;
+    const presetId = String(source.presetId || '').trim().toLowerCase();
+    const name = String(source.name || '').trim();
+    const baseURL = String(source.baseURL || '').trim().replace(/\/+$/, '');
+    const model = String(source.model || '').trim();
+    const models = Array.isArray(source.models) ? source.models.map((item) => String(item || '').trim()).filter(Boolean) : [];
+    const apiKey = String(source.apiKey || '').trim();
+    return (
+      presetId === 'openai'
+      && name === 'OpenAI'
+      && baseURL === 'https://api.openai.com/v1'
+      && !apiKey
+      && !model
+      && models.length === 0
+    );
+  }, []);
+
   useEffect(() => {
     if (!hasOfficialAiPanel) {
       setOfficialAiPanelEnabled(false);
@@ -731,6 +749,31 @@ export function Settings() {
     const presetId = String(source.presetId || '').trim().toLowerCase();
     return sourceId === 'redbox_official_auto' || sourceName === 'redbox official' || presetId === 'redbox-official';
   }, []);
+
+  const hasOfficialManagedSource = useMemo(
+    () => aiSources.some((source) => isOfficialManagedSource(source)),
+    [aiSources, isOfficialManagedSource]
+  );
+
+  const displayedAiSources = useMemo<AiSourceConfig[]>(() => {
+    if (!officialAiPanelEnabled || hasOfficialManagedSource) {
+      return aiSources;
+    }
+    return [
+      {
+        id: 'redbox_official_auto',
+        name: 'RedBox Official',
+        presetId: 'redbox-official',
+        baseURL: REDBOX_OFFICIAL_VIDEO_BASE_URL,
+        apiKey: '',
+        models: [],
+        modelsMeta: [],
+        model: '',
+        protocol: 'openai',
+      },
+      ...aiSources,
+    ];
+  }, [aiSources, hasOfficialManagedSource, officialAiPanelEnabled]);
 
   const getLocalGuideForSource = useCallback((source?: AiSourceConfig | null): LocalAiGuide | null => {
     if (!source) return null;
@@ -1934,8 +1977,10 @@ export function Settings() {
     try {
       const settings = await window.ipcRenderer.getSettings();
       if (settings) {
-        let sourceList = parseAiSources(settings.ai_sources_json);
-        if (!sourceList.length && (settings.api_endpoint || settings.api_key || settings.model_name)) {
+        const requestedDefaultSourceId = String(settings.default_ai_source_id || '').trim();
+        const prefersOfficialDefault = requestedDefaultSourceId.toLowerCase() === 'redbox_official_auto';
+        let sourceList = parseAiSources(settings.ai_sources_json).filter((source) => !isDeprecatedEmptyOpenAiSource(source));
+        if (!sourceList.length && !prefersOfficialDefault && (settings.api_endpoint || settings.api_key || settings.model_name)) {
           const inferredPresetId = inferPresetIdByEndpoint(settings.api_endpoint || '');
           sourceList = [{
             id: generateAiSourceId(),
@@ -1949,15 +1994,12 @@ export function Settings() {
             protocol: findAiPresetById(inferredPresetId)?.protocol || 'openai',
           }];
         }
-        if (!sourceList.length) {
-          sourceList = [createAiSourceFromPreset(DEFAULT_AI_PRESET_ID)];
-        }
 
-        const loadedDefaultId = settings.default_ai_source_id || sourceList[0]?.id || '';
+        const loadedDefaultId = requestedDefaultSourceId || sourceList[0]?.id || 'redbox_official_auto';
         const normalizedDefaultId = sourceList.some((source) => source.id === loadedDefaultId)
           ? loadedDefaultId
-          : sourceList[0].id;
-        const resolvedDefaultSource = sourceList.find((source) => source.id === normalizedDefaultId) || sourceList[0];
+          : (loadedDefaultId === 'redbox_official_auto' ? 'redbox_official_auto' : (sourceList[0]?.id || 'redbox_official_auto'));
+        const resolvedDefaultSource = sourceList.find((source) => source.id === normalizedDefaultId) || sourceList[0] || null;
         const unlockedAt = String(settings.developer_mode_unlocked_at || '').trim();
         const unlockedAtMs = unlockedAt ? Date.parse(unlockedAt) : NaN;
         const developerModeEnabled = Boolean(settings.developer_mode_enabled)
@@ -1972,9 +2014,9 @@ export function Settings() {
         setMcpServers(parseMcpServers(settings.mcp_servers_json));
 
         setFormData({
-          api_endpoint: resolvedDefaultSource?.baseURL || settings.api_endpoint || '',
-          api_key: resolvedDefaultSource?.apiKey || settings.api_key || '',
-          model_name: resolvedDefaultSource?.model || settings.model_name || '',
+          api_endpoint: resolvedDefaultSource?.baseURL || '',
+          api_key: resolvedDefaultSource?.apiKey || '',
+          model_name: resolvedDefaultSource?.model || '',
           workspace_dir: settings.workspace_dir || '',
           transcription_model: settings.transcription_model || '',
           transcription_endpoint: settings.transcription_endpoint || '',
@@ -2032,10 +2074,9 @@ export function Settings() {
           void persistDeveloperModeState(false, null);
         }
       } else {
-        const fallback = createAiSourceFromPreset(DEFAULT_AI_PRESET_ID);
-        setAiSources([fallback]);
-        setDefaultAiSourceId(fallback.id);
-        setActiveAiSourceId(fallback.id);
+        setAiSources([]);
+        setDefaultAiSourceId('redbox_official_auto');
+        setActiveAiSourceId('redbox_official_auto');
         setModelsBySource({});
         setDetectedAiProtocol('openai');
         setMcpServers([]);
@@ -2386,7 +2427,7 @@ export function Settings() {
           ...(source.models || []).map((id) => ({ id })),
           source.model ? { id: source.model } : null,
         ]),
-      }));
+      })).filter((source) => !isDeprecatedEmptyOpenAiSource(source));
 
       const resolvedDefaultSourceId = defaultAiSourceId;
       const defaultSource = sanitizedSources.find((source) => source.id === resolvedDefaultSourceId) || sanitizedSources[0];
@@ -2728,11 +2769,12 @@ export function Settings() {
                     </div>
 
                     <div className="rounded-xl border border-border bg-surface-secondary/20 p-2 space-y-2">
-                      {aiSources.map((source) => {
+                      {displayedAiSources.map((source) => {
                         const preset = findAiPresetById(source.presetId);
                         const isDefaultSource = source.id === defaultAiSourceId;
                         const isExpanded = aiSourceExpandState[source.id] ?? false;
                         const isOfficialSource = isOfficialManagedSource(source);
+                        const isOfficialPlaceholder = isOfficialSource && !hasOfficialManagedSource;
                         const isModelListExpanded = aiSourceModelExpandState[source.id] ?? false;
                         const sourceModels = getAddedSourceModelList(source);
                         const localGuide = getLocalGuideForSource(source);
@@ -2753,7 +2795,7 @@ export function Settings() {
                                 <div className="flex items-center gap-2 min-w-0">
                                   <AiSourceLogo source={source} />
                                   <span className="text-sm font-medium text-text-primary truncate">{source.name || '未命名模型源'}</span>
-                                  {isDefaultSource && (
+                                  {isDefaultSource && !isOfficialPlaceholder && (
                                     <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] bg-amber-500/10 text-amber-600">
                                       <Star className="w-2.5 h-2.5" />
                                       默认源
@@ -2761,39 +2803,67 @@ export function Settings() {
                                   )}
                                 </div>
                                 <p className="text-[11px] text-text-tertiary mt-0.5 truncate">
-                                  {isOfficialSource
+                                  {isOfficialPlaceholder
+                                    ? '官方托管模型源 · 当前未登录，登录后自动同步官方模型与凭据'
+                                    : isOfficialSource
                                     ? `已托管登录态 · 默认模型：${source.model || '(未设置)'} · 已添加 ${sourceModels.length} 个模型`
                                     : `${preset?.label || 'Custom'} · 默认模型：${source.model || '(未设置)'} · 已添加 ${sourceModels.length} 个模型`}
                                 </p>
                               </div>
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setDefaultAiSourceId(source.id);
-                                  setActiveAiSourceId(source.id);
-                                }}
-                                className={clsx(
-                                  'px-2 py-1 text-[11px] border rounded transition-colors',
-                                  isDefaultSource
-                                    ? 'border-amber-500/40 text-amber-600 bg-amber-500/10'
-                                    : 'border-border text-text-secondary hover:text-text-primary hover:bg-surface-secondary'
-                                )}
-                              >
-                                设为默认
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => handleDeleteAiSource(source.id)}
-                                className="p-1.5 text-text-tertiary hover:text-red-500 hover:bg-red-500/10 rounded transition-colors"
-                                title="删除模型源"
-                              >
-                                <Trash2 className="w-3.5 h-3.5" />
-                              </button>
+                              {isOfficialPlaceholder ? (
+                                <button
+                                  type="button"
+                                  onClick={() => setAiModelSubTab('login')}
+                                  className="px-2 py-1 text-[11px] border rounded transition-colors border-border text-text-secondary hover:text-text-primary hover:bg-surface-secondary"
+                                >
+                                  去登录
+                                </button>
+                              ) : (
+                                <>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setDefaultAiSourceId(source.id);
+                                      setActiveAiSourceId(source.id);
+                                    }}
+                                    className={clsx(
+                                      'px-2 py-1 text-[11px] border rounded transition-colors',
+                                      isDefaultSource
+                                        ? 'border-amber-500/40 text-amber-600 bg-amber-500/10'
+                                        : 'border-border text-text-secondary hover:text-text-primary hover:bg-surface-secondary'
+                                    )}
+                                  >
+                                    设为默认
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleDeleteAiSource(source.id)}
+                                    className="p-1.5 text-text-tertiary hover:text-red-500 hover:bg-red-500/10 rounded transition-colors"
+                                    title="删除模型源"
+                                  >
+                                    <Trash2 className="w-3.5 h-3.5" />
+                                  </button>
+                                </>
+                              )}
                             </div>
 
                             {isExpanded && (
                               <div className="p-3 space-y-3">
-                                {isOfficialSource ? (
+                                {isOfficialPlaceholder ? (
+                                  <div className="rounded border border-border bg-surface-secondary/30 px-3 py-3 text-[11px] text-text-secondary space-y-2">
+                                    <div className="font-medium text-text-primary">RedBox 官方托管模型源</div>
+                                    <p>
+                                      即使当前未登录，这个官方源也会固定显示在这里。登录后会自动同步官方聊天模型、图片模型、视频能力与托管凭据。
+                                    </p>
+                                    <button
+                                      type="button"
+                                      onClick={() => setAiModelSubTab('login')}
+                                      className="px-3 py-1.5 border border-border rounded text-xs hover:bg-surface-secondary transition-colors"
+                                    >
+                                      前往登录
+                                    </button>
+                                  </div>
+                                ) : isOfficialSource ? (
                                   <div className="rounded border border-emerald-500/20 bg-emerald-500/5 px-3 py-2 text-[11px] text-text-secondary">
                                     <div className="font-medium text-emerald-600">已登陆</div>
                                   </div>
@@ -3116,7 +3186,7 @@ export function Settings() {
 
                     <div className="rounded-xl border border-border bg-surface-secondary/20 p-3 space-y-3">
                       <div className="rounded-lg border border-border bg-surface-primary/70 p-3 text-xs text-text-secondary">
-                        生视频能力已固定为 <span className="font-medium text-text-primary">RedBox 官方视频源</span>。Endpoint 已锁定为官方地址，默认复用当前官方聊天配置的 API Key。
+                        由于各家视频api差异巨大，AI智能选择效果不佳，暂时仅支持RedBox官方源，其他厂商模型适配陆续开发中。
                       </div>
                       <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                         <div className="rounded-lg border border-border bg-surface-primary/70 p-3">
@@ -3132,9 +3202,6 @@ export function Settings() {
                           <div className="text-sm font-medium text-text-primary">{REDBOX_OFFICIAL_VIDEO_MODELS['first-last-frame']}</div>
                         </div>
                       </div>
-                      <p className="text-[11px] text-text-tertiary">
-                        RedClaw 与媒体库会按任务模式自动选择这 3 个官方模型之一，不再从自定义 AI 源中选择视频模型。
-                      </p>
                     </div>
                   </div>
 

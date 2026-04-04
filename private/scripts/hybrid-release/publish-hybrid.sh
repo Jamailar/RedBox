@@ -8,8 +8,8 @@ if [[ $# -lt 1 ]]; then
 fi
 
 TAG="$1"
-ROOT_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
-SCRIPT_DIR="$ROOT_DIR/scripts/hybrid-release"
+ROOT_DIR="$(cd "$(dirname "$0")/../../.." && pwd)"
+SCRIPT_DIR="$ROOT_DIR/private/scripts/hybrid-release"
 
 SKIP_WIN="${REDBOX_SKIP_WIN:-0}"
 SKIP_MAC="${REDBOX_SKIP_MAC:-0}"

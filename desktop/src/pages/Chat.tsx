@@ -132,6 +132,12 @@ const AUTO_SCROLL_BOTTOM_THRESHOLD_PX = 80;
 const STREAM_CHUNK_DEDUPE_WINDOW_MS = 120;
 const STREAM_UPDATE_INTERVAL_MS = 48;
 
+function isImeComposingEvent(event: React.KeyboardEvent<HTMLTextAreaElement>): boolean {
+  const synthetic = event as React.KeyboardEvent<HTMLTextAreaElement> & { isComposing?: boolean };
+  const native = event.nativeEvent as KeyboardEvent & { isComposing?: boolean; keyCode?: number };
+  return Boolean(native?.isComposing) || Boolean(synthetic.isComposing) || native?.keyCode === 229;
+}
+
 function consumeBufferedChunk(buffer: string, chunk: string): string {
   if (!buffer || !chunk) return buffer;
   if (buffer.startsWith(chunk)) {
@@ -281,6 +287,7 @@ function buildChatModelOptions(settings?: ChatSettingsSnapshot | null): ChatMode
 
   const options: ChatModelOption[] = [];
   const defaultSourceId = String(settings.default_ai_source_id || '').trim();
+  const prefersOfficialDefault = defaultSourceId.toLowerCase() === 'redbox_official_auto';
 
   try {
     const parsed = JSON.parse(String(settings.ai_sources_json || '[]')) as Array<Record<string, unknown>>;
@@ -325,7 +332,7 @@ function buildChatModelOptions(settings?: ChatSettingsSnapshot | null): ChatMode
   }
 
   const fallbackModel = String(settings.model_name || '').trim();
-  if (fallbackModel && modelSupportsChat(fallbackModel)) {
+  if (!prefersOfficialDefault && fallbackModel && modelSupportsChat(fallbackModel)) {
     options.push({
       key: `fallback::${fallbackModel}`,
       modelName: fallbackModel,
@@ -1945,7 +1952,7 @@ export function Chat({
                       syncInputHeight();
                     }}
                     onKeyDown={(e) => {
-                      if (e.key === 'Enter' && !e.shiftKey) {
+                      if (e.key === 'Enter' && !e.shiftKey && !isImeComposingEvent(e)) {
                         e.preventDefault();
                         handleSubmit(e as any);
                         if (inputRef.current) inputRef.current.style.height = 'auto';
@@ -2121,7 +2128,7 @@ export function Chat({
                         syncInputHeight();
                       }}
                       onKeyDown={(e) => {
-                        if (e.key === 'Enter' && !e.shiftKey) {
+                        if (e.key === 'Enter' && !e.shiftKey && !isImeComposingEvent(e)) {
                           e.preventDefault();
                           handleSubmit(e as any);
                           if (inputRef.current) inputRef.current.style.height = 'auto';

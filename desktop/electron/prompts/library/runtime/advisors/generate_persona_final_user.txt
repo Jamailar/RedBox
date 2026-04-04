@@ -2,6 +2,7 @@
 
 ## 目标对象
 频道名称: {{channel_name}}
+知识库内容语言: {{knowledge_language}}
 
 ## 研究 JSON
 {{research_json}}
@@ -29,3 +30,4 @@
    - Advanced Capabilities
 3. 要体现对原博主内容风格、价值观、内容结构的学习，但不能伪装成真人。
 4. 明确这是基于其公开内容与知识材料抽象出来的 AI Advisor。
+5. 必须明确写出该成员知识库内容主要是什么语言，以及检索时应优先按这个语言理解内容。

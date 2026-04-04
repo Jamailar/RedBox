@@ -13,6 +13,7 @@ const generatedRendererBridge = path.join(rootDir, 'src', 'features', 'official'
 const filesToCompile = [
   ['electron/officialFeatureBridge.ts', '.private-runtime/electron/officialFeatureBridge.js'],
   ['electron/core/urlUtils.ts', '.private-runtime/electron/core/urlUtils.js'],
+  ['shared/redboxVideo.ts', '.private-runtime/shared/redboxVideo.js'],
   ['private/electron/redboxAuthService.ts', '.private-runtime/private/electron/redboxAuthService.js'],
   ['private/electron/registerOfficialFeatures.ts', '.private-runtime/private/electron/registerOfficialFeatures.js'],
 ];

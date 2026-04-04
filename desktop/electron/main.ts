@@ -210,6 +210,8 @@ let redClawRunnerListenersAttached = false;
 let backgroundTaskRegistryListenersAttached = false;
 let advisorYoutubeRunnerListenersAttached = false;
 let assistantDaemonListenersAttached = false;
+let appShutdownInProgress = false;
+let appShutdownPromise: Promise<void> | null = null;
 const DOWNLOAD_RETRY_DELAYS_MS = [0, 600, 1600];
 const XHS_ASSET_REQUEST_HEADERS = {
   'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 RedBox/1.0',
@@ -248,6 +250,11 @@ const advisorAvatarLocalizationInFlight = new Set<string>();
 let localAssetProtocolsRegistered = false;
 const BROWSER_PLUGIN_BUNDLE_RELATIVE_PATH = path.join('.plugin-runtime', 'browser-extension');
 const BROWSER_PLUGIN_EXPORT_RELATIVE_PATH = path.join('integrations', 'browser-extension', 'redbox-capture');
+
+const appSingleInstanceLock = app.requestSingleInstanceLock();
+if (!appSingleInstanceLock) {
+  app.exit(0);
+}
 
 const getBundledBrowserPluginCandidateDirs = (): string[] => {
   const appPath = app.getAppPath();
@@ -641,8 +648,65 @@ function broadcastSettingsUpdated() {
   }
 }
 
+function stopHttpServer(): Promise<void> {
+  if (!httpServer) {
+    return Promise.resolve();
+  }
+  const server = httpServer;
+  httpServer = null;
+  return new Promise<void>((resolve) => {
+    try {
+      server.close(() => resolve());
+    } catch {
+      resolve();
+    }
+  });
+}
+
+async function shutdownBackgroundServices(): Promise<void> {
+  if (appShutdownPromise) {
+    return appShutdownPromise;
+  }
+
+  appShutdownPromise = (async () => {
+    const errors: Array<{ label: string; error: unknown }> = [];
+    const capture = async (label: string, task: () => Promise<unknown> | unknown) => {
+      try {
+        await task();
+      } catch (error) {
+        errors.push({ label, error });
+      }
+    };
+
+    fileWatcher.stop();
+    getMemoryMaintenanceService().stop();
+    getAdvisorYoutubeBackgroundRunner().stop();
+
+    await Promise.allSettled([
+      capture('http-server', () => stopHttpServer()),
+      capture('redclaw-runner', () => getRedClawBackgroundRunner().stop({ persist: false })),
+      capture('assistant-daemon', () => getAssistantDaemonService().dispose()),
+      capture('headless-workers', () => getHeadlessWorkerProcessManager().dispose()),
+      capture('session-bridge', () => getSessionBridgeService().stop()),
+    ]);
+
+    if (errors.length > 0) {
+      for (const item of errors) {
+        console.error(`[Shutdown] Failed to stop ${item.label}:`, item.error);
+      }
+    }
+  })();
+
+  return appShutdownPromise;
+}
+
 app.on('window-all-closed', async () => {
   if (process.platform !== 'darwin') {
+    if (process.platform === 'win32') {
+      app.quit();
+      win = null;
+      return;
+    }
     try {
       const [keepRedClawAlive, keepAdvisorYoutubeAlive, keepAssistantDaemonAlive] = await Promise.all([
         getRedClawBackgroundRunner().shouldKeepAliveWhenNoWindow(),
@@ -666,10 +730,32 @@ app.on('window-all-closed', async () => {
   }
 })
 
-app.on('before-quit', () => {
-  void getHeadlessWorkerProcessManager().dispose();
-  void getAssistantDaemonService().dispose();
-  void getSessionBridgeService().stop();
+app.on('before-quit', (event) => {
+  if (appShutdownInProgress) {
+    return;
+  }
+  appShutdownInProgress = true;
+  event.preventDefault();
+  void shutdownBackgroundServices()
+    .catch((error) => {
+      console.error('[Shutdown] Background shutdown failed:', error);
+    })
+    .finally(() => {
+      app.exit(0);
+    });
+});
+
+app.on('second-instance', () => {
+  const existingWindow = BrowserWindow.getAllWindows()[0];
+  if (existingWindow) {
+    if (existingWindow.isMinimized()) {
+      existingWindow.restore();
+    }
+    existingWindow.show();
+    existingWindow.focus();
+    return;
+  }
+  createWindow();
 });
 
 app.on('activate', () => {
@@ -4099,7 +4185,7 @@ async function saveAdvisorAvatar(advisorDir: string, avatarInput: string): Promi
   return avatarInput;
 }
 
-ipcMain.handle('advisors:create', async (_, data: { name: string; avatar: string; personality: string; systemPrompt: string; youtubeChannel?: { url: string; channelId: string } }) => {
+ipcMain.handle('advisors:create', async (_, data: { name: string; avatar: string; personality: string; systemPrompt: string; knowledgeLanguage?: string; youtubeChannel?: { url: string; channelId: string } }) => {
   const fs = require('fs/promises');
   const advisorId = `advisor_${Date.now()}`;
   const advisorDir = path.join(getAdvisorsDir(), advisorId);
@@ -4116,6 +4202,7 @@ ipcMain.handle('advisors:create', async (_, data: { name: string; avatar: string
       avatar: savedAvatar,
       personality: data.personality,
       systemPrompt: data.systemPrompt,
+      knowledgeLanguage: String(data.knowledgeLanguage || '').trim() || '中文',
       createdAt: new Date().toISOString()
     };
 
@@ -4138,7 +4225,7 @@ ipcMain.handle('advisors:create', async (_, data: { name: string; avatar: string
   }
 });
 
-ipcMain.handle('advisors:update', async (_, data: { id: string; name: string; avatar: string; personality: string; systemPrompt: string }) => {
+ipcMain.handle('advisors:update', async (_, data: { id: string; name: string; avatar: string; personality: string; systemPrompt: string; knowledgeLanguage?: string }) => {
   const fs = require('fs/promises');
   const advisorDir = path.join(getAdvisorsDir(), data.id);
   const configPath = path.join(advisorDir, 'config.json');
@@ -4162,7 +4249,8 @@ ipcMain.handle('advisors:update', async (_, data: { id: string; name: string; av
       name: data.name,
       avatar: newAvatar,
       personality: data.personality,
-      systemPrompt: data.systemPrompt
+      systemPrompt: data.systemPrompt,
+      knowledgeLanguage: String(data.knowledgeLanguage || '').trim() || existing.knowledgeLanguage || '中文',
     };
 
     await fs.writeFile(configPath, JSON.stringify(updated, null, 2), 'utf-8');
@@ -4396,12 +4484,14 @@ ipcMain.handle('advisors:generate-persona', async (_, {
   advisorId,
   channelName,
   channelDescription,
-  videoTitles
+  videoTitles,
+  knowledgeLanguage,
 }: {
   advisorId?: string;
   channelName: string;
   channelDescription: string;
-  videoTitles: string[]
+  videoTitles: string[];
+  knowledgeLanguage?: string;
 }) => {
   const settings = getSettings() as {
     api_endpoint?: string;
@@ -4427,6 +4517,7 @@ ipcMain.handle('advisors:generate-persona', async (_, {
       channelName,
       channelDescription,
       videoTitles,
+      knowledgeLanguage,
       apiKey: settings.api_key,
       baseURL: normalizeApiBaseUrl(settings.api_endpoint, 'https://api.openai.com/v1'),
       model,
@@ -5304,7 +5395,7 @@ ipcMain.handle('chatrooms:send', async (_, { roomId, message, context, clientMes
       ? room.advisorIds.map((id: unknown) => String(id || '').trim()).filter(Boolean)
       : [];
 
-    let advisorInfos: { id: string; name: string; avatar: string; systemPrompt: string; knowledgeDir: string }[] = [];
+    let advisorInfos: { id: string; name: string; avatar: string; systemPrompt: string; knowledgeDir: string; knowledgeLanguage?: string }[] = [];
 
     if (isSixHatsMode) {
       // 六顶思考帽模式：使用预定义的帽子角色
@@ -5314,6 +5405,7 @@ ipcMain.handle('chatrooms:send', async (_, { roomId, message, context, clientMes
         avatar: hat.avatar,
         systemPrompt: hat.systemPrompt,
         knowledgeDir: '', // 六顶思考帽不使用知识库
+        knowledgeLanguage: '',
       }));
     } else {
       // 普通模式：从智囊团加载顾问
@@ -5335,6 +5427,7 @@ ipcMain.handle('chatrooms:send', async (_, { roomId, message, context, clientMes
             avatar: advisor.avatar,
             systemPrompt: advisor.systemPrompt || '',
             knowledgeDir,
+            knowledgeLanguage: String(advisor.knowledgeLanguage || '').trim() || '中文',
           });
         } catch (err) {
           console.error(`Failed to load advisor ${advisorId}:`, err);

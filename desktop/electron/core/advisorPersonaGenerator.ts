@@ -57,6 +57,7 @@ export type AdvisorPersonaGenerationInput = {
     channelName: string;
     channelDescription: string;
     videoTitles: string[];
+    knowledgeLanguage?: string;
     apiKey: string;
     baseURL: string;
     model: string;
@@ -293,6 +294,7 @@ export const generateAdvisorPersonaDocument = async (input: AdvisorPersonaGenera
 
     const researchUserPrompt = loadAndRenderPrompt(RESEARCH_USER_PROMPT_PATH, {
         channel_name: input.channelName,
+        knowledge_language: String(input.knowledgeLanguage || '').trim() || '中文',
         channel_description: input.channelDescription || '(无频道描述)',
         video_titles: input.videoTitles.slice(0, MAX_VIDEO_TITLES).map((title, index) => `${index + 1}. ${title}`).join('\n') || '(无视频标题)',
         search_summary: renderSearchSummary(searchResults),
@@ -323,6 +325,7 @@ export const generateAdvisorPersonaDocument = async (input: AdvisorPersonaGenera
 
     const finalUserPrompt = loadAndRenderPrompt(FINAL_USER_PROMPT_PATH, {
         channel_name: input.channelName,
+        knowledge_language: String(input.knowledgeLanguage || '').trim() || '中文',
         research_json: JSON.stringify(research, null, 2),
         search_summary: renderSearchSummary(searchResults),
         advisor_knowledge_corpus: renderCorpus('Knowledge Evidence', knowledgeEvidence, '(无 advisor 知识文件)'),

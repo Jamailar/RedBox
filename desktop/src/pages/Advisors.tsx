@@ -9,6 +9,7 @@ interface Advisor {
     avatar: string;
     personality: string;
     systemPrompt: string;
+    knowledgeLanguage?: string;
     knowledgeFiles: string[];
     createdAt: string;
 }
@@ -248,6 +249,7 @@ export function Advisors() {
                                     <div className="flex-1 min-w-0">
                                         <div className="text-sm font-medium text-text-primary truncate">{advisor.name}</div>
                                         <div className="text-xs text-text-tertiary truncate">{advisor.personality}</div>
+                                        <div className="text-[11px] text-text-tertiary truncate">知识库语言：{advisor.knowledgeLanguage || '中文'}</div>
                                     </div>
                                 </div>
                             </button>
@@ -277,6 +279,7 @@ export function Advisors() {
                                 <div>
                                     <h1 className="text-lg font-semibold text-text-primary">{selectedAdvisor.name}</h1>
                                     <p className="text-xs text-text-tertiary">{selectedAdvisor.personality}</p>
+                                    <p className="text-[11px] text-text-tertiary mt-1">知识库语言：{selectedAdvisor.knowledgeLanguage || '中文'}</p>
                                 </div>
                             </div>
                             <div className="flex items-center gap-2">
@@ -936,6 +939,7 @@ function AdvisorModal({
     const [avatar, setAvatar] = useState(advisor?.avatar || AVATAR_OPTIONS[0]);
     const [personality, setPersonality] = useState(advisor?.personality || '');
     const [systemPrompt, setSystemPrompt] = useState(advisor?.systemPrompt || '');
+    const [knowledgeLanguage, setKnowledgeLanguage] = useState(advisor?.knowledgeLanguage || '中文');
 
     // yt-dlp 状态检查
     const [ytdlpStatus, setYtdlpStatus] = useState<{ installed: boolean; version?: string } | null>(null);
@@ -1032,7 +1036,7 @@ function AdvisorModal({
             };
         }
 
-        onSave({ name, avatar, personality, systemPrompt }, ytParams);
+        onSave({ name, avatar, personality, systemPrompt, knowledgeLanguage }, ytParams);
     };
 
     const handleOptimize = async () => {
@@ -1069,7 +1073,8 @@ function AdvisorModal({
                 advisorId: advisor?.id,
                 channelName: youtubeInfo.channelName,
                 channelDescription: youtubeInfo.channelDescription || '',
-                videoTitles: youtubeInfo.recentVideos?.map((v: { title: string }) => v.title) || []
+                videoTitles: youtubeInfo.recentVideos?.map((v: { title: string }) => v.title) || [],
+                knowledgeLanguage,
             }) as { success: boolean; prompt?: string; personality?: string; error?: string };
 
             if (result.success && result.prompt) {
@@ -1305,6 +1310,20 @@ function AdvisorModal({
                             placeholder="例如：擅长数据分析和增长策略"
                             className="w-full bg-surface-secondary border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-accent-primary"
                         />
+                    </div>
+
+                    <div>
+                        <label className="block text-xs font-medium text-text-secondary mb-1.5">知识库内容语言</label>
+                        <input
+                            type="text"
+                            value={knowledgeLanguage}
+                            onChange={(e) => setKnowledgeLanguage(e.target.value)}
+                            placeholder="例如：中文、英文、日文、意大利语"
+                            className="w-full bg-surface-secondary border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-accent-primary"
+                        />
+                        <p className="mt-1 text-[11px] text-text-tertiary">
+                            这个字段会直接影响成员检索自己知识库时的语言理解方式。
+                        </p>
                     </div>
 
                     {/* System Prompt */}

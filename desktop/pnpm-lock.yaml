@@ -50,6 +50,36 @@ importers:
       '@mozilla/readability':
         specifier: 0.6.0
         version: 0.6.0
+      '@protobufjs/aspromise':
+        specifier: ^1.1.2
+        version: 1.1.2
+      '@protobufjs/base64':
+        specifier: ^1.1.2
+        version: 1.1.2
+      '@protobufjs/codegen':
+        specifier: ^2.0.4
+        version: 2.0.4
+      '@protobufjs/eventemitter':
+        specifier: ^1.1.0
+        version: 1.1.0
+      '@protobufjs/fetch':
+        specifier: ^1.1.0
+        version: 1.1.0
+      '@protobufjs/float':
+        specifier: ^1.0.2
+        version: 1.0.2
+      '@protobufjs/inquire':
+        specifier: ^1.1.0
+        version: 1.1.0
+      '@protobufjs/path':
+        specifier: ^1.1.2
+        version: 1.1.2
+      '@protobufjs/pool':
+        specifier: ^1.1.0
+        version: 1.1.0
+      '@protobufjs/utf8':
+        specifier: ^1.1.0
+        version: 1.1.0
       '@types/glob':
         specifier: ^8.1.0
         version: 8.1.0
@@ -113,6 +143,9 @@ importers:
       jsdom:
         specifier: ^29.0.1
         version: 29.0.1
+      long:
+        specifier: ^5.3.2
+        version: 5.3.2
       lucide-react:
         specifier: ^0.300.0
         version: 0.300.0(react@18.3.1)
@@ -122,6 +155,9 @@ importers:
       openai:
         specifier: ^6.26.0
         version: 6.26.0(ws@8.19.0)(zod@3.25.76)
+      protobufjs:
+        specifier: ^7.5.4
+        version: 7.5.4
       qrcode:
         specifier: ^1.5.4
         version: 1.5.4

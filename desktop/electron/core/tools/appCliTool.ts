@@ -56,6 +56,15 @@ import {
     getAbsoluteMediaPath,
 } from '../mediaLibraryStore';
 import {
+    addAssetToVideoProjectPack,
+    addGeneratedAssetToVideoProjectPack,
+    createVideoProjectPack,
+    getVideoProjectPack,
+    listVideoProjectPacks,
+    updateVideoProjectBrief,
+    updateVideoProjectScript,
+} from '../videoProjectStore';
+import {
     listSubjectCategories,
     createSubjectCategory,
     updateSubjectCategory,
@@ -121,6 +130,14 @@ interface GeneratedImageCliResult {
         prompt?: string;
         createdAt: string;
     }>;
+    videoProject?: {
+        id: string;
+        title: string;
+        projectDir: string;
+        manifestPath: string;
+        scriptPath: string;
+        briefPath: string;
+    } | null;
 }
 
 interface GeneratedVideoCliResult {
@@ -148,6 +165,14 @@ interface GeneratedVideoCliResult {
         prompt?: string;
         createdAt: string;
     }>;
+    videoProject?: {
+        id: string;
+        title: string;
+        projectDir: string;
+        manifestPath: string;
+        scriptPath: string;
+        briefPath: string;
+    } | null;
 }
 
 const CONCURRENCY_SAFE_APP_CLI_ACTIONS = new Map<string, Set<string>>([
@@ -403,9 +428,11 @@ const APP_CLI_NAMESPACE_HELP: Record<string, { summary: string; actions: string[
         examples: ['image generate --prompt "..." --count 2'],
     },
     video: {
-        summary: 'Generate videos from text or reference images.',
-        actions: ['generate'],
+        summary: 'Create video project packs and generate videos.',
+        actions: ['generate', 'project-create', 'project-list', 'project-get', 'project-script', 'project-brief', 'project-asset-add'],
         examples: [
+            'video project-create --title "Jamba 酒吧短片" --duration 8 --aspect-ratio 16:9 --mode reference-guided',
+            'video project-script --id video_project_xxx',
             'video generate --prompt "海边日落镜头" --mode text-to-video --duration 8',
             'video generate --prompt "让这些参考图里的主体元素进入同一支短视频镜头" --mode reference-guided --reference-images "/abs/ref1.png,/abs/ref2.png,/abs/ref3.png"',
             'video generate --prompt "从清晨空房间过渡到夜晚亮灯房间" --mode first-last-frame --reference-images "/abs/first.png,/abs/last.png"',
@@ -1815,6 +1842,7 @@ export class AppCliTool extends DeclarativeTool<typeof AppCliParamsSchema> {
         }
 
         const referenceImages = dedupeList([...directReferenceImages, ...subjectReferenceImages], 4);
+        const videoProjectId = String(readFlag(parsed.flags, 'video-project-id') || payload.videoProjectId || '').trim();
         if (!generationMode && referenceImages.length > 0) {
             generationMode = 'reference-guided';
         }
@@ -1833,6 +1861,18 @@ export class AppCliTool extends DeclarativeTool<typeof AppCliParamsSchema> {
             size: readFlag(parsed.flags, 'size') || (payload.size as string | undefined),
             quality: readFlag(parsed.flags, 'quality') || (payload.quality as string | undefined),
         });
+        let videoProject = videoProjectId ? await getVideoProjectPack(videoProjectId) : null;
+        if (videoProjectId) {
+            for (const [index, asset] of result.assets.entries()) {
+                videoProject = await addGeneratedAssetToVideoProjectPack({
+                    projectId: videoProjectId,
+                    asset,
+                    kind: 'keyframe',
+                    label: result.assets.length > 1 ? `keyframe-${index + 1}` : 'keyframe',
+                    role: 'storyboard-keyframe',
+                });
+            }
+        }
         return {
             provider: result.provider,
             providerTemplate: result.providerTemplate,
@@ -1857,10 +1897,133 @@ export class AppCliTool extends DeclarativeTool<typeof AppCliParamsSchema> {
                 prompt: asset.prompt,
                 createdAt: asset.createdAt,
             })),
+            videoProject: videoProject ? {
+                id: videoProject.id,
+                title: videoProject.title,
+                projectDir: videoProject.projectDir,
+                manifestPath: path.join(videoProject.projectDir, 'manifest.json'),
+                scriptPath: path.join(videoProject.projectDir, videoProject.scriptPath),
+                briefPath: path.join(videoProject.projectDir, videoProject.briefPath),
+            } : null,
         } satisfies GeneratedImageCliResult;
     }
 
     private async handleVideo(parsed: ParsedCommand, payload: Record<string, unknown>) {
+        if (parsed.action === 'project-create') {
+            const manifest = await createVideoProjectPack({
+                title: requireString(readFlag(parsed.flags, 'title') || payload.title, 'title'),
+                brief: String(readFlag(parsed.flags, 'brief') || payload.brief || '').trim() || undefined,
+                script: typeof payload.script === 'string' ? payload.script : undefined,
+                mode: (() => {
+                    const value = String(readFlag(parsed.flags, 'mode') || payload.mode || '').trim().toLowerCase();
+                    if (value === 'text-to-video' || value === 'reference-guided' || value === 'first-last-frame' || value === 'continuation' || value === 'multi-video') {
+                        return value as 'text-to-video' | 'reference-guided' | 'first-last-frame' | 'continuation' | 'multi-video';
+                    }
+                    return undefined;
+                })(),
+                aspectRatio: String(readFlag(parsed.flags, 'aspect-ratio', 'ratio') || payload.aspectRatio || '').trim() || undefined,
+                durationSeconds: parseNumber(readFlag(parsed.flags, 'duration', 'seconds') || payload.durationSeconds || payload.seconds),
+                workItemId: String(readFlag(parsed.flags, 'work-item-id') || payload.workItemId || '').trim() || undefined,
+                metadata: payload.metadata && typeof payload.metadata === 'object' ? payload.metadata as Record<string, unknown> : undefined,
+            });
+            return {
+                id: manifest.id,
+                title: manifest.title,
+                status: manifest.status,
+                mode: manifest.mode,
+                aspectRatio: manifest.aspectRatio,
+                durationSeconds: manifest.durationSeconds,
+                projectDir: manifest.projectDir,
+                manifestPath: path.join(manifest.projectDir, 'manifest.json'),
+                scriptPath: path.join(manifest.projectDir, manifest.scriptPath),
+                briefPath: path.join(manifest.projectDir, manifest.briefPath),
+            };
+        }
+        if (parsed.action === 'project-list') {
+            const items = await listVideoProjectPacks(parseNumber(readFlag(parsed.flags, 'limit') || payload.limit) || 50);
+            return items.map((manifest) => ({
+                id: manifest.id,
+                title: manifest.title,
+                status: manifest.status,
+                mode: manifest.mode,
+                aspectRatio: manifest.aspectRatio,
+                durationSeconds: manifest.durationSeconds,
+                updatedAt: manifest.updatedAt,
+                projectDir: manifest.projectDir,
+                manifestPath: path.join(manifest.projectDir, 'manifest.json'),
+            }));
+        }
+        if (parsed.action === 'project-get') {
+            const id = requireString(readFlag(parsed.flags, 'id') || payload.id, 'id');
+            const manifest = await getVideoProjectPack(id);
+            if (!manifest) {
+                throw new Error('Video project not found');
+            }
+            return {
+                ...manifest,
+                manifestPath: path.join(manifest.projectDir, 'manifest.json'),
+                scriptPath: path.join(manifest.projectDir, manifest.scriptPath),
+                briefPath: path.join(manifest.projectDir, manifest.briefPath),
+            };
+        }
+        if (parsed.action === 'project-script') {
+            const id = requireString(readFlag(parsed.flags, 'id') || payload.id, 'id');
+            const script = typeof payload.content === 'string'
+                ? payload.content
+                : requireString(readFlag(parsed.flags, 'content') || payload.script, 'content');
+            const manifest = await updateVideoProjectScript({
+                projectId: id,
+                script,
+                status: 'ready',
+            });
+            return {
+                id: manifest.id,
+                title: manifest.title,
+                status: manifest.status,
+                scriptPath: path.join(manifest.projectDir, manifest.scriptPath),
+                updatedAt: manifest.updatedAt,
+            };
+        }
+        if (parsed.action === 'project-brief') {
+            const id = requireString(readFlag(parsed.flags, 'id') || payload.id, 'id');
+            const brief = typeof payload.content === 'string'
+                ? payload.content
+                : requireString(readFlag(parsed.flags, 'content') || payload.brief, 'content');
+            const manifest = await updateVideoProjectBrief({ projectId: id, brief });
+            return {
+                id: manifest.id,
+                title: manifest.title,
+                briefPath: path.join(manifest.projectDir, manifest.briefPath),
+                updatedAt: manifest.updatedAt,
+            };
+        }
+        if (parsed.action === 'project-asset-add') {
+            const id = requireString(readFlag(parsed.flags, 'id') || payload.id, 'id');
+            const sourcePath = requireString(readFlag(parsed.flags, 'path', 'source') || payload.sourcePath, 'sourcePath');
+            const kindRaw = String(readFlag(parsed.flags, 'kind') || payload.kind || '').trim().toLowerCase();
+            const kind = (() => {
+                if (kindRaw === 'reference-image' || kindRaw === 'voice-reference' || kindRaw === 'keyframe' || kindRaw === 'clip' || kindRaw === 'output' || kindRaw === 'other') {
+                    return kindRaw as 'reference-image' | 'voice-reference' | 'keyframe' | 'clip' | 'output' | 'other';
+                }
+                throw new Error('kind must be one of reference-image, voice-reference, keyframe, clip, output, other');
+            })();
+            const manifest = await addAssetToVideoProjectPack({
+                projectId: id,
+                sourcePath,
+                kind,
+                label: String(readFlag(parsed.flags, 'label') || payload.label || '').trim() || undefined,
+                role: String(readFlag(parsed.flags, 'role') || payload.role || '').trim() || undefined,
+            });
+            return {
+                id: manifest.id,
+                title: manifest.title,
+                updatedAt: manifest.updatedAt,
+                references: manifest.references.length,
+                keyframes: manifest.keyframes.length,
+                clips: manifest.clips.length,
+                outputs: manifest.outputs.length,
+            };
+        }
         if (parsed.action !== 'generate') {
             throw new Error(`Unsupported video action: ${parsed.action}`);
         }
@@ -1905,6 +2068,7 @@ export class AppCliTool extends DeclarativeTool<typeof AppCliParamsSchema> {
         const referenceImages = dedupeList([...directReferenceImages, ...subjectReferenceImages], 5);
         const explicitDrivingAudio = String(readFlag(parsed.flags, 'driving-audio', 'audio-url') || payload.drivingAudio || '').trim();
         const firstClip = String(readFlag(parsed.flags, 'first-clip', 'video-url') || payload.firstClip || '').trim();
+        const videoProjectId = String(readFlag(parsed.flags, 'video-project-id') || payload.videoProjectId || '').trim();
         const effectiveGenerationMode = inferVideoGenerationMode(generationMode, referenceImages);
         const subjectDrivingAudio = !explicitDrivingAudio && effectiveGenerationMode === 'reference-guided'
             ? String(matchedSubjects.find((subject) => subject.absoluteVoicePath)?.absoluteVoicePath || '').trim()
@@ -1925,6 +2089,18 @@ export class AppCliTool extends DeclarativeTool<typeof AppCliParamsSchema> {
             durationSeconds: parseNumber(readFlag(parsed.flags, 'duration', 'seconds') || payload.durationSeconds || payload.seconds),
             generateAudio: parseBoolean(readFlag(parsed.flags, 'audio', 'generate-audio') || payload.generateAudio),
         });
+        let videoProject = videoProjectId ? await getVideoProjectPack(videoProjectId) : null;
+        if (videoProjectId) {
+            for (const [index, asset] of result.assets.entries()) {
+                videoProject = await addGeneratedAssetToVideoProjectPack({
+                    projectId: videoProjectId,
+                    asset,
+                    kind: result.assets.length > 1 ? 'clip' : 'output',
+                    label: result.assets.length > 1 ? `clip-${index + 1}` : 'final-output',
+                    role: result.assets.length > 1 ? 'generated-clip' : 'final-video',
+                });
+            }
+        }
         return {
             provider: result.provider,
             model: result.model,
@@ -1950,6 +2126,14 @@ export class AppCliTool extends DeclarativeTool<typeof AppCliParamsSchema> {
                 prompt: asset.prompt,
                 createdAt: asset.createdAt,
             })),
+            videoProject: videoProject ? {
+                id: videoProject.id,
+                title: videoProject.title,
+                projectDir: videoProject.projectDir,
+                manifestPath: path.join(videoProject.projectDir, 'manifest.json'),
+                scriptPath: path.join(videoProject.projectDir, videoProject.scriptPath),
+                briefPath: path.join(videoProject.projectDir, videoProject.briefPath),
+            } : null,
         } satisfies GeneratedVideoCliResult;
     }
 

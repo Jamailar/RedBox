@@ -2193,9 +2193,9 @@ export class PiChatService {
 
   private appendGeneratedImagesMarkdown(content: string, images: GeneratedImagePreview[]): string {
     const normalized = String(content || '').trim();
-    const uniqueImages = images.filter((image, index, list) =>
-      list.findIndex((item) => item.id === image.id) === index
-    );
+    const uniqueImages = images
+      .filter((image, index, list) => list.findIndex((item) => item.id === image.id) === index)
+      .filter((image) => !normalized.includes(image.previewUrl));
     if (uniqueImages.length === 0) {
       return normalized;
     }
@@ -2231,9 +2231,9 @@ export class PiChatService {
 
   private appendGeneratedVideosMarkdown(content: string, videos: GeneratedVideoPreview[]): string {
     const normalized = String(content || '').trim();
-    const uniqueVideos = videos.filter((video, index, list) =>
-      list.findIndex((item) => item.id === video.id) === index
-    );
+    const uniqueVideos = videos
+      .filter((video, index, list) => list.findIndex((item) => item.id === video.id) === index)
+      .filter((video) => !normalized.includes(video.previewUrl));
     if (uniqueVideos.length === 0) {
       return normalized;
     }
@@ -3036,6 +3036,9 @@ export class PiChatService {
         '- 正式调用生视频工具前，必须先给用户一版视频脚本并等待确认；不要一上来直接生成视频。',
         '- 在脚本确认阶段，必须明确回显 `视频时长` 和 `视频比例`，让用户一起确认。',
         '- 视频脚本必须用 Markdown 表格展示，至少包含：`时间`、`画面`、`声音`、`景别` 四列。',
+        '- 对多镜头视频、长上下文视频、多人/多主体视频、需要分镜图或需要反复修改的视频，默认先创建视频项目包：`app_cli(command="video project-create --title ... --duration ... --aspect-ratio ... --mode ...")`。',
+        '- 视频项目包放在 `media/video-projects/<id>/` 下，至少要维护 `manifest.json`、`brief.md`、`script.md`。后续参考图、声音参考、关键帧、片段和成片都应尽量归档到同一个项目包里。',
+        '- 创建项目包后，应把用户需求写入 `brief.md`，把确认后的脚本表格写入 `script.md`，并在后续回复中优先基于项目包内资料推进，而不是反复依赖超长聊天上下文。',
         '- 除非用户有明确要求，否则脚本里的单个镜头通常控制在 1 到 3 秒，单个镜头最长不得超过 5 秒。',
         '- 如果用户要求修改视频方案，先改表格脚本，再等待确认，不要跳过确认直接重生。',
         '- 只有当用户明确确认脚本后，才调用 `app_cli(command="video generate ...")`。',
@@ -3048,7 +3051,13 @@ export class PiChatService {
         '- 当视频任务带有多张参考图或声音参考时，最终生成提示词必须先明确说明各参考资产的角色，例如“图1是人物主体，图2是场景氛围，音频1是人物声音参考”，再写镜头与动作描述。',
         '- 如果命中的主体带有声音参考，且当前视频模式支持音频条件输入，应优先把这条声音参考一并传入；不要擅自告诉用户“官方不支持上传声音参考”。',
         '- 只要本轮视频任务明确使用了主体库中的角色，就默认应当使用该角色的声音参考作为音频参考；除非用户明确要求不用，或明确指定使用别的声音。',
-        '- 如果脚本较复杂、镜头较多或稳定性风险较高，在脚本表格之后还应继续询问用户：是否需要先生成分镜图；如果先生成了分镜图，后续视频生成应优先使用基于图片的模式，涉及明确起止过渡时优先 `first-last-frame`。',
+        '- 只要脚本存在多镜头、命名角色、重要环境、连续动作或明显的一致性风险，在脚本表格之后都必须主动询问用户：是否需要先使用生图工具生成分镜图/关键帧；不要等用户自己提起这一步。',
+        '- 如果先生成了分镜图，后续视频生成应优先使用基于图片的模式，涉及明确起止过渡时优先 `first-last-frame`。',
+        '- 一旦进入“先生成分镜图”的流程，必须先生成一张核心环境图。核心环境图必须是整体视图，包含完整空间布局、关键环境元素、主体站位、主要道具和光线逻辑，用来作为后续关键帧的环境锚点。',
+        '- 使用生图工具生成视频关键帧时，必须先定义一份稳定的“人物锚点描述”和一份稳定的“环境锚点描述”，后续每一张关键帧都复用同一套描述语句，确保人物一致性和环境一致性。',
+        '- 关键帧必须逐张生成，不要一次性并发生成多张易漂移的分镜图。先生成核心环境图，再让后续关键帧把核心环境图作为参考图，只描述该镜头相对于基线发生的变化。',
+        '- 若已经创建视频项目包，调用 `image generate` 生成关键帧时应优先附带 `video-project-id`，让关键帧自动归档到项目包的 `keyframes/` 下。',
+        '- 若已经创建视频项目包，生成出的关键帧、视频片段和最终成片都应继续归档回该项目包，保持同一项目下的资产、脚本、参考资料一致。',
         '- 如果已经命中主体库且主体含图片，优先通过 `payload.subjectIds` 或 `referenceImages` 把主体图片传进生图工具。',
         '- 多图参考时，提示词必须明确写出“图1/图2/图3 各自代表什么”，例如：图1是人物主体，图2是商品主体，图3是场景氛围参考。',
         '- 若本轮生图调用有参考图，但工具返回 `referenceImageCount = 0`，不能宣称“已按参考图生成成功”，必须说明参考图没有真正带入。',

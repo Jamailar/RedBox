@@ -50,6 +50,8 @@ export interface AdvisorChatConfig {
     systemPrompt: string;
     /** 知识库目录 */
     knowledgeDir?: string;
+    /** 知识库内容语言 */
+    knowledgeLanguage?: string;
     /** 最大轮次 */
     maxTurns?: number;
     /** 温度参数 */
@@ -259,6 +261,18 @@ export class AdvisorChatService extends EventEmitter {
         const parts: string[] = [];
 
         parts.push(this.config.systemPrompt || `你是 ${this.config.advisorName}，一个专业的智囊团成员。`);
+
+        if (String(this.config.knowledgeLanguage || '').trim()) {
+            parts.push(`
+## 知识库语言约束
+
+你的知识库内容主要使用 **${String(this.config.knowledgeLanguage || '').trim()}**。
+
+要求：
+- 先按这个语言去理解、检索和匹配知识库内容。
+- 如果用户问题与知识库语言不一致，也不要假设知识库是中文；先按知识库原语言理解，再决定如何回答。
+- 引用或内化知识库信息时，优先忠实保留原语言语义，避免因为误判语言而检索不到内容。`);
+        }
 
         if (options.discussionTask) {
             parts.push(`

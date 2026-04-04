@@ -10,7 +10,12 @@
  * - room session
  * - task graph
  * - background task registry
- * - planner / reviewer 子代理
+ *
+ * 群聊发言保持轻量单代理路径：
+ * - 总监直接开场
+ * - 每位成员各自完成一次 agent 工作流
+ * - 总监直接总结
+ * 不再在群聊中默认插入 planner / reviewer 子代理。
  */
 
 import { EventEmitter } from 'events';
@@ -38,7 +43,7 @@ import { resolveScopedModelName, type ModelScope } from '../modelScopeSettings';
 import { normalizeApiBaseUrl } from '../urlUtils';
 import { getAgentRuntime } from '../ai/agentRuntime';
 import { getTaskGraphRuntime } from '../ai/taskGraphRuntime';
-import { runStructuredSubagent, type SubagentOutput } from '../ai/subagentRuntime';
+import type { SubagentOutput } from '../ai/subagentRuntime';
 import type { IntentRoute, RoleId } from '../ai/types';
 
 // ========== Types ==========
@@ -56,6 +61,7 @@ export interface AdvisorInfo {
     avatar: string;
     systemPrompt: string;
     knowledgeDir: string;
+    knowledgeLanguage?: string;
 }
 
 export interface DiscussionMessage {
@@ -191,53 +197,9 @@ export class DiscussionFlowService extends EventEmitter {
             text: '[chatroom] discussion orchestration started',
         });
 
-        let plannerOutput: SubagentOutput | null = null;
-        const shouldUseCoordinator = Boolean(routeAnalysis.shouldUseCoordinator);
-        const shouldRunPlanner = shouldUseCoordinator && (
-            params.advisors.length >= 4
-            || Boolean(params.fileContext)
-            || params.historyContext.length >= 6
-        );
-        if (shouldRunPlanner) {
-            runtime.startNode(task.id, 'plan', 'chatroom planner running');
-            await getBackgroundTaskRegistry().appendTurn(backgroundTask.id, {
-                source: 'thought',
-                text: '[chatroom] planner 正在生成讨论框架',
-            });
-            this.sendToFrontend('creative-chat:thinking', {
-                advisorId: DIRECTOR_ID,
-                advisorName: DIRECTOR_NAME,
-                advisorAvatar: DIRECTOR_AVATAR,
-                type: 'thinking_chunk',
-                content: '总监正在规划讨论结构...',
-            });
-            plannerOutput = await runStructuredSubagent({
-                llm: this.resolveLlmConfig(),
-                roleId: 'planner',
-                route: routeAnalysis.route,
-                runtimeMode: 'chatroom',
-                taskId: task.id,
-                userInput: [
-                    `讨论目标：${params.discussionGoal || params.roomName || params.userMessage}`,
-                    `用户问题：${params.userMessage}`,
-                    params.fileContext ? `当前文件：${params.fileContext.filePath}` : '',
-                    params.historyContext.length > 0 ? `历史摘要：\n${this.buildDiscussionHistoryText(params.historyContext.slice(-8))}` : '',
-                    `参与成员：${params.advisors.map((advisor) => advisor.name).join('、')}`,
-                ].filter(Boolean).join('\n\n'),
-                priorOutputs: [],
-            });
-            runtime.addCheckpoint(task.id, 'plan', plannerOutput.summary, plannerOutput);
-            runtime.addArtifact(task.id, {
-                type: 'plan',
-                label: `chatroom planner: ${plannerOutput.summary.slice(0, 120)}`,
-                metadata: plannerOutput.raw,
-            });
-            runtime.addTrace(task.id, 'chatroom.planner.completed', {
-                summary: plannerOutput.summary,
-                handoff: plannerOutput.handoff,
-            }, 'plan');
-            runtime.completeNode(task.id, 'plan', plannerOutput.summary);
-        } else if (runtime.getTask(task.id)?.graph.some((node) => node.type === 'plan')) {
+        const plannerOutput: SubagentOutput | null = null;
+        const shouldUseCoordinator = false;
+        if (runtime.getTask(task.id)?.graph.some((node) => node.type === 'plan')) {
             runtime.skipNode(task.id, 'plan', 'chatroom fast-path: director starts immediately');
         }
 
@@ -375,46 +337,7 @@ export class DiscussionFlowService extends EventEmitter {
         }
 
         if (task?.graph.some((node) => node.type === 'review')) {
-            runtime.startNode(params.taskId, 'review', 'reviewer validating discussion synthesis');
-            const reviewerInput = [
-                `原始问题：${params.userMessage}`,
-                params.discussionGoal ? `讨论目标：${params.discussionGoal}` : '',
-                params.fileContext ? `文件上下文：${params.fileContext.filePath}` : '',
-                '以下是本轮群聊发言摘要：',
-                params.conversationHistory.map((message) => {
-                    const speaker = message.role === 'director' ? '总监' : message.advisorName || '成员';
-                    return `【${speaker}】\n${message.content}`;
-                }).join('\n\n---\n\n'),
-                params.summaryMessage ? `总监总结：\n${params.summaryMessage}` : '',
-            ].filter(Boolean).join('\n\n');
-
-            const reviewOutput = await runStructuredSubagent({
-                llm: this.resolveLlmConfig(),
-                roleId: 'reviewer',
-                route: task?.route || {
-                    intent: 'discussion',
-                    goal: params.discussionGoal || params.userMessage,
-                    requiredCapabilities: ['review'],
-                    recommendedRole: 'reviewer',
-                    requiresHumanApproval: false,
-                    requiresLongRunningTask: false,
-                    requiresMultiAgent: true,
-                    confidence: 0.8,
-                    reasoning: 'chatroom discussion reviewer',
-                    source: 'rule',
-                },
-                runtimeMode: 'chatroom',
-                taskId: params.taskId,
-                userInput: reviewerInput,
-                priorOutputs: params.plannerOutput ? [params.plannerOutput] : [],
-            });
-            runtime.addCheckpoint(params.taskId, 'review', reviewOutput.summary, reviewOutput);
-            runtime.addArtifact(params.taskId, {
-                type: 'review-report',
-                label: `chatroom reviewer: ${reviewOutput.summary.slice(0, 120)}`,
-                metadata: reviewOutput.raw,
-            });
-            runtime.completeNode(params.taskId, 'review', reviewOutput.summary);
+            runtime.skipNode(params.taskId, 'review', 'chatroom fast-path: no reviewer in group discussion');
         }
 
         if (task?.graph.some((node) => node.type === 'save_artifact')) {
@@ -782,6 +705,7 @@ export class DiscussionFlowService extends EventEmitter {
             advisorAvatar: advisor.avatar,
             systemPrompt: this.enhanceSystemPrompt(advisor.systemPrompt, history, discussionGoal, fileContext, coordinationBrief, assignment),
             knowledgeDir: advisor.knowledgeDir,
+            knowledgeLanguage: advisor.knowledgeLanguage,
             maxTurns: 3,
             temperature: 0.7,
         };

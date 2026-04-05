@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import path from 'node:path';
 import fs from 'node:fs/promises';
+import { spawn } from 'node:child_process';
 import matter from 'gray-matter';
 import { ulid } from 'ulid';
 import { toAppAssetUrl } from '../localAssetManager';
@@ -426,8 +427,8 @@ const APP_CLI_NAMESPACE_HELP: Record<string, { summary: string; actions: string[
     },
     manuscripts: {
         summary: 'List, read, write, and organize manuscripts.',
-        actions: ['list', 'read', 'write', 'create', 'organize'],
-        examples: ['manuscripts list', 'manuscripts write --path "drafts/demo.md"'],
+        actions: ['list', 'read', 'write', 'create', 'organize', 'clips', 'clip-update', 'export'],
+        examples: ['manuscripts list', 'manuscripts write --path "drafts/demo.md"', 'manuscripts export --path "wander/demo.redvideo"'],
     },
     knowledge: {
         summary: 'List and search saved knowledge items.',
@@ -804,6 +805,269 @@ function normalizePackageTimeline(timeline: Record<string, unknown>) {
     return timeline;
 }
 
+const isProbablyFilePath = (value: string): boolean => {
+    if (!value) return false;
+    if (path.isAbsolute(value)) return true;
+    return value.includes('/') || value.includes('\\');
+};
+
+async function resolveFfmpegCommand(): Promise<string> {
+    const envPath = String(process.env.REDCONVERT_FFMPEG_PATH || process.env.FFMPEG_PATH || '').trim();
+    const candidates: string[] = [];
+    if (envPath) candidates.push(envPath.includes('app.asar') ? envPath.replace('app.asar', 'app.asar.unpacked') : envPath);
+
+    try {
+        // eslint-disable-next-line @typescript-eslint/no-var-requires
+        const ffmpegStaticPath = require('ffmpeg-static') as string | null;
+        if (ffmpegStaticPath) {
+            candidates.push(ffmpegStaticPath.includes('app.asar') ? ffmpegStaticPath.replace('app.asar', 'app.asar.unpacked') : ffmpegStaticPath);
+        }
+    } catch {
+        // ignore
+    }
+
+    if ((process as any).resourcesPath) {
+        const exeName = process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg';
+        candidates.push(path.join((process as any).resourcesPath, 'app.asar.unpacked', 'node_modules', 'ffmpeg-static', exeName));
+    }
+
+    for (const candidate of candidates) {
+        if (!candidate || !isProbablyFilePath(candidate)) continue;
+        try {
+            await fs.access(candidate);
+            return candidate;
+        } catch {
+            // keep trying
+        }
+    }
+
+    const allowSystemFallback = String(process.env.REDCONVERT_ALLOW_SYSTEM_FFMPEG || '').trim().toLowerCase();
+    if (allowSystemFallback === '1' || allowSystemFallback === 'true' || allowSystemFallback === 'yes') {
+        return 'ffmpeg';
+    }
+    throw new Error('Bundled ffmpeg not found. Please reinstall app/package to restore internal ffmpeg binary.');
+}
+
+async function runFfmpeg(args: string[]): Promise<void> {
+    const ffmpegCommand = await resolveFfmpegCommand();
+    await new Promise<void>((resolve, reject) => {
+        const child = spawn(ffmpegCommand, args, {
+            windowsHide: true,
+            stdio: ['ignore', 'ignore', 'pipe'],
+        });
+        let stderr = '';
+        child.stderr?.on('data', (chunk) => {
+            if (!chunk) return;
+            stderr += String(chunk);
+            if (stderr.length > 6000) stderr = stderr.slice(-6000);
+        });
+        child.once('error', reject);
+        child.once('close', (code) => {
+            if (code === 0) {
+                resolve();
+                return;
+            }
+            reject(new Error(`ffmpeg exited with code ${code}: ${stderr || '(no stderr)'}`));
+        });
+    });
+}
+
+function sanitizeExportBaseName(input: string): string {
+    const base = String(input || '').trim().replace(/[\\/:*?"<>|]+/g, '-').replace(/\s+/g, '-');
+    return base.replace(/-+/g, '-').replace(/^-+|-+$/g, '') || `export-${Date.now()}`;
+}
+
+function parseOutputSize(input: unknown, fallback: { width: number; height: number }): { width: number; height: number } {
+    const raw = String(input || '').trim();
+    const matched = raw.match(/^(\d{2,5})x(\d{2,5})$/i);
+    if (!matched) return fallback;
+    const width = Number(matched[1]);
+    const height = Number(matched[2]);
+    if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+        return fallback;
+    }
+    return { width, height };
+}
+
+function quoteConcatPath(filePath: string): string {
+    return `file '${String(filePath).replace(/'/g, `'\\''`)}'`;
+}
+
+async function exportVideoOrAudioPackage(params: {
+    packagePath: string;
+    relPath: string;
+    packageKind: 'video' | 'audio';
+    outputName?: string;
+    size?: string;
+}): Promise<Record<string, unknown>> {
+    const timeline = await readJsonFile<Record<string, unknown>>(getPackageTimelinePath(params.packagePath), createEmptyOtioTimeline(path.basename(params.packagePath)));
+    const clips = (buildTimelineClipSummaries(timeline) as Array<Record<string, unknown>>)
+        .filter((item: Record<string, unknown>) => item.enabled !== false)
+        .sort((a: Record<string, unknown>, b: Record<string, unknown>) => {
+            const trackCompare = String(a.track || '').localeCompare(String(b.track || ''));
+            if (trackCompare !== 0) return trackCompare;
+            return Number(a.order ?? 0) - Number(b.order ?? 0);
+        });
+
+    const targetTrack = params.packageKind === 'video' ? 'V1' : 'A1';
+    const exportableClips = clips.filter((item: Record<string, unknown>) => String(item.track || '').trim() === targetTrack);
+    if (exportableClips.length === 0) {
+        throw new Error(`No enabled clips found on track ${targetTrack}`);
+    }
+
+    const exportsDir = path.join(params.packagePath, 'exports');
+    await fs.mkdir(exportsDir, { recursive: true });
+    const tempDir = await fs.mkdtemp(path.join(exportsDir, '.render-'));
+    const skipped: Array<{ assetId: string; reason: string }> = [];
+
+    try {
+        const segmentPaths: string[] = [];
+        const size = parseOutputSize(params.size, params.packageKind === 'video' ? { width: 1280, height: 720 } : { width: 0, height: 0 });
+        for (let index = 0; index < exportableClips.length; index += 1) {
+            const clip = exportableClips[index];
+            const assetId = String(clip.assetId || '').trim();
+            const mediaPath = String(clip.mediaPath || '').trim();
+            if (!assetId || !mediaPath) {
+                skipped.push({ assetId: assetId || `clip-${index + 1}`, reason: 'missing mediaPath' });
+                continue;
+            }
+            const absolutePath = getAbsoluteMediaPath(mediaPath);
+            try {
+                await fs.access(absolutePath);
+            } catch {
+                skipped.push({ assetId, reason: 'source asset missing on disk' });
+                continue;
+            }
+
+            const clipDurationMs = parseNumber(clip.durationMs);
+            const trimInMs = Math.max(0, parseNumber(clip.trimInMs) || 0);
+            const segmentBase = path.join(tempDir, `segment-${String(index + 1).padStart(3, '0')}`);
+
+            if (params.packageKind === 'audio') {
+                const segmentPath = `${segmentBase}.mp3`;
+                const args = ['-y'];
+                if (trimInMs > 0) {
+                    args.push('-ss', (trimInMs / 1000).toFixed(3));
+                }
+                args.push('-i', absolutePath);
+                if (clipDurationMs && clipDurationMs > 0) {
+                    args.push('-t', (clipDurationMs / 1000).toFixed(3));
+                }
+                args.push(
+                    '-vn',
+                    '-ac', '2',
+                    '-ar', '44100',
+                    '-c:a', 'libmp3lame',
+                    '-b:a', '192k',
+                    segmentPath,
+                );
+                await runFfmpeg(args);
+                segmentPaths.push(segmentPath);
+                continue;
+            }
+
+            const kind = String(clip.assetKind || '').trim().toLowerCase();
+            const segmentPath = `${segmentBase}.mp4`;
+            if (kind === 'image') {
+                const durationSeconds = ((clipDurationMs && clipDurationMs > 0 ? clipDurationMs : 4000) / 1000).toFixed(3);
+                await runFfmpeg([
+                    '-y',
+                    '-loop', '1',
+                    '-i', absolutePath,
+                    '-t', durationSeconds,
+                    '-vf', `scale=${size.width}:${size.height}:force_original_aspect_ratio=decrease,pad=${size.width}:${size.height}:(ow-iw)/2:(oh-ih)/2,format=yuv420p`,
+                    '-r', '30',
+                    '-c:v', 'libx264',
+                    '-pix_fmt', 'yuv420p',
+                    '-an',
+                    segmentPath,
+                ]);
+                segmentPaths.push(segmentPath);
+                continue;
+            }
+
+            const args = ['-y'];
+            if (trimInMs > 0) {
+                args.push('-ss', (trimInMs / 1000).toFixed(3));
+            }
+            args.push('-i', absolutePath);
+            if (clipDurationMs && clipDurationMs > 0) {
+                args.push('-t', (clipDurationMs / 1000).toFixed(3));
+            }
+            args.push(
+                '-vf', `scale=${size.width}:${size.height}:force_original_aspect_ratio=decrease,pad=${size.width}:${size.height}:(ow-iw)/2:(oh-ih)/2,format=yuv420p`,
+                '-r', '30',
+                '-c:v', 'libx264',
+                '-preset', 'veryfast',
+                '-pix_fmt', 'yuv420p',
+                '-c:a', 'aac',
+                '-ar', '48000',
+                '-ac', '2',
+                segmentPath,
+            );
+            await runFfmpeg(args);
+            segmentPaths.push(segmentPath);
+        }
+
+        if (segmentPaths.length === 0) {
+            throw new Error('No clip could be rendered');
+        }
+
+        const extension = params.packageKind === 'video' ? 'mp4' : 'mp3';
+        const outputName = `${sanitizeExportBaseName(params.outputName || `${stripManuscriptExtension(path.basename(params.packagePath))}-rough-cut`)}.${extension}`;
+        const outputPath = path.join(exportsDir, outputName);
+
+        if (segmentPaths.length === 1) {
+            await fs.copyFile(segmentPaths[0], outputPath);
+        } else {
+            const concatListPath = path.join(tempDir, 'concat.txt');
+            await fs.writeFile(concatListPath, segmentPaths.map((item) => quoteConcatPath(item)).join('\n'), 'utf-8');
+            if (params.packageKind === 'audio') {
+                await runFfmpeg([
+                    '-y',
+                    '-f', 'concat',
+                    '-safe', '0',
+                    '-i', concatListPath,
+                    '-c:a', 'libmp3lame',
+                    '-b:a', '192k',
+                    outputPath,
+                ]);
+            } else {
+                await runFfmpeg([
+                    '-y',
+                    '-f', 'concat',
+                    '-safe', '0',
+                    '-i', concatListPath,
+                    '-c:v', 'libx264',
+                    '-preset', 'veryfast',
+                    '-pix_fmt', 'yuv420p',
+                    '-c:a', 'aac',
+                    '-ar', '48000',
+                    '-ac', '2',
+                    outputPath,
+                ]);
+            }
+        }
+
+        return {
+            success: true,
+            path: params.relPath,
+            packageKind: params.packageKind,
+            outputName,
+            outputPath,
+            outputUrl: toAppAssetUrl(outputPath),
+            renderedClipCount: segmentPaths.length,
+            skipped,
+        };
+    } finally {
+        try {
+            await fs.rm(tempDir, { recursive: true, force: true });
+        } catch {
+            // ignore cleanup
+        }
+    }
+}
+
 export class AppCliTool extends DeclarativeTool<typeof AppCliParamsSchema> {
     readonly name = 'app_cli';
     readonly displayName = 'App CLI';
@@ -932,6 +1196,36 @@ export class AppCliTool extends DeclarativeTool<typeof AppCliParamsSchema> {
                     display: 'manuscripts write',
                     data: {
                         kind: 'manuscript-write',
+                        ...info,
+                    },
+                };
+            }
+            if (parsed.namespace === 'manuscripts' && parsed.action === 'export') {
+                const info = result as {
+                    path?: string;
+                    packageKind?: string;
+                    outputPath?: string;
+                    outputUrl?: string;
+                    renderedClipCount?: number;
+                    skipped?: Array<{ assetId: string; reason: string }>;
+                };
+                const lines = [
+                    'Manuscript export completed.',
+                    `path=${info.path || ''}`,
+                    `kind=${info.packageKind || ''}`,
+                    `renderedClips=${info.renderedClipCount ?? 0}`,
+                    `outputPath=${info.outputPath || ''}`,
+                    `outputUrl=${info.outputUrl || ''}`,
+                ];
+                if (Array.isArray(info.skipped) && info.skipped.length > 0) {
+                    lines.push(`skipped=${info.skipped.length}`);
+                }
+                return {
+                    success: true,
+                    llmContent: lines.join('\n'),
+                    display: 'manuscripts export',
+                    data: {
+                        kind: 'manuscript-export',
                         ...info,
                     },
                 };
@@ -1498,6 +1792,26 @@ export class AppCliTool extends DeclarativeTool<typeof AppCliParamsSchema> {
                 assetId,
                 clips: buildTimelineClipSummaries(timeline),
             };
+        }
+
+        if (action === 'export') {
+            const relPath = normalizeRelativePath(requireString(readFlag(parsed.flags, 'path') || payload.path, 'path'));
+            const absolute = path.join(manuscriptsRoot, relPath);
+            const stats = await fs.stat(absolute);
+            if (!stats.isDirectory() || !isManuscriptPackageName(path.basename(absolute))) {
+                throw new Error('export 仅支持工程稿件目录');
+            }
+            const packageKind = getPackageKindFromFileName(path.basename(absolute));
+            if (packageKind !== 'video' && packageKind !== 'audio') {
+                throw new Error('当前 export 仅支持视频/音频工程稿件');
+            }
+            return exportVideoOrAudioPackage({
+                packagePath: absolute,
+                relPath,
+                packageKind,
+                outputName: readFlag(parsed.flags, 'output', 'output-name') || (payload.outputName as string | undefined),
+                size: readFlag(parsed.flags, 'size') || (payload.size as string | undefined),
+            });
         }
 
         if (action === 'write' || action === 'create') {

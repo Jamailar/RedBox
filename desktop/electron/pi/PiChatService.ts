@@ -3040,6 +3040,16 @@ export class PiChatService {
         `- 文件路径: ${metadata.associatedFilePath}`,
         '- 当用户要求分析/修改当前稿件时，优先围绕该文件操作。',
       );
+      const associatedFilePath = String(metadata.associatedFilePath || '').trim().toLowerCase();
+      if (associatedFilePath.endsWith('.redvideo') || associatedFilePath.endsWith('.redaudio')) {
+        promptParts.push(
+          '- 这是一个可编辑的音视频工程稿，不是普通 Markdown。',
+          '- 处理当前工程时，优先使用 `app_cli` 读取和修改工程结构，而不是只改脚本文本。',
+          '- 推荐顺序：先 `app_cli(command="manuscripts clips --path \\"...工程路径...\\"")` 查看片段，再用 `app_cli(command="manuscripts clip-update --path \\"...工程路径...\\" --asset-id ... --track ... --order ... --duration-ms ...")` 修改时间线。',
+          '- 如果用户要求输出真实剪辑结果，调用 `app_cli(command="manuscripts export --path \\"...工程路径...\\"")` 导出粗剪媒体文件。',
+          '- 修改时间线前，先检查 clips 和关联素材，不要盲目假设当前工程里已经有可用片段。',
+        );
+      }
     }
 
     if (metadata.isContextBound && metadata.contextContent) {

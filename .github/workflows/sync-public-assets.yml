@@ -1,0 +1,99 @@
+name: Sync Public Assets
+
+on:
+    push:
+        branches:
+            - '**'
+    workflow_dispatch:
+
+concurrency:
+    group: sync-public-assets-${{ github.ref }}
+    cancel-in-progress: true
+
+permissions:
+    contents: read
+
+jobs:
+    sync-public-assets:
+        runs-on: ubuntu-latest
+        env:
+            PUBLIC_REPOSITORY: Jamailar/RedBox
+            TARGET_BRANCH: main
+        steps:
+            - name: Checkout Private Repo
+              uses: actions/checkout@v4
+              with:
+                  path: private-repo
+
+            - name: Checkout Public Repo
+              uses: actions/checkout@v4
+              with:
+                  repository: ${{ env.PUBLIC_REPOSITORY }}
+                  token: ${{ secrets.PUBLIC_REPO_TOKEN }}
+                  path: public-repo
+                  fetch-depth: 0
+
+            - name: Prepare Target Branch
+              run: |
+                  set -euo pipefail
+
+                  cd public-repo
+
+                  if git ls-remote --exit-code --heads origin "$TARGET_BRANCH" >/dev/null 2>&1; then
+                    git fetch origin "$TARGET_BRANCH"
+                    git checkout -B "$TARGET_BRANCH" "origin/$TARGET_BRANCH"
+                  else
+                    git checkout -B "$TARGET_BRANCH"
+                  fi
+
+            - name: Sync README, Plugin and images
+              run: |
+                  set -euo pipefail
+
+                  sync_dir() {
+                    local src="$1"
+                    local dst="$2"
+
+                    if [ -d "$src" ]; then
+                      mkdir -p "$dst"
+                      rsync -av --delete "$src"/ "$dst"/
+                    else
+                      rm -rf "$dst"
+                    fi
+                  }
+
+                  find public-repo \
+                    -path 'public-repo/.git' -prune -o \
+                    -type f \( -iname 'readme*.md' \) -print0 | xargs -0r rm -f
+
+                  while IFS= read -r -d '' file; do
+                    rel_path="${file#private-repo/}"
+                    mkdir -p "public-repo/$(dirname "$rel_path")"
+                    cp "$file" "public-repo/$rel_path"
+                  done < <(
+                    find private-repo \
+                      -path 'private-repo/.git' -prune -o \
+                      -type f \( -iname 'readme*.md' \) -print0
+                  )
+
+                  sync_dir private-repo/Plugin public-repo/Plugin
+                  sync_dir private-repo/images public-repo/images
+
+            - name: Commit and Push
+              run: |
+                  set -euo pipefail
+
+                  cd public-repo
+                  git config user.name 'github-actions[bot]'
+                  git config user.email 'github-actions[bot]@users.noreply.github.com'
+
+                  git add -A
+
+                  if git diff --staged --quiet; then
+                    echo "No changes to sync"
+                    exit 0
+                  fi
+
+                  short_sha="$(printf '%s' "$GITHUB_SHA" | cut -c1-7)"
+                  git commit -m "chore: sync public assets from ${TARGET_BRANCH}@${short_sha}"
+                  git push origin "HEAD:${TARGET_BRANCH}"

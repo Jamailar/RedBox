@@ -17,6 +17,7 @@ import {
     Check
 } from 'lucide-react';
 import { clsx } from 'clsx';
+import { usePageRefresh } from '../hooks/usePageRefresh';
 
 interface ArchiveProfileRecord {
     id: string;
@@ -103,7 +104,7 @@ const formatDate = (sample: ArchiveSample) => {
     return Number.isNaN(date.valueOf()) ? '' : date.toISOString().slice(0, 10);
 };
 
-export function Archives() {
+export function Archives({ isActive = true }: { isActive?: boolean }) {
     const [profiles, setProfiles] = useState<ArchiveProfile[]>([]);
     const [samples, setSamples] = useState<ArchiveSample[]>([]);
     const [selectedProfileId, setSelectedProfileId] = useState('');
@@ -182,9 +183,18 @@ export function Archives() {
         }
     };
 
-    useEffect(() => {
-        loadProfiles();
-    }, []);
+    const refreshPage = async () => {
+        await loadProfiles();
+        if (selectedProfileId) {
+            await loadSamples(selectedProfileId);
+        }
+    };
+
+    usePageRefresh({
+        isActive,
+        refresh: refreshPage,
+        dataScopes: ['archives'],
+    });
 
     useEffect(() => {
         if (selectedProfileId) {

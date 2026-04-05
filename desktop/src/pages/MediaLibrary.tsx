@@ -3,6 +3,7 @@ import { ExternalLink, Link2, RefreshCw, Save, FolderOpen, ImagePlus, Sparkles, 
 import clsx from 'clsx';
 import { resolveAssetUrl } from '../utils/pathManager';
 import { REDBOX_OFFICIAL_VIDEO_BASE_URL, getRedBoxOfficialVideoModel } from '../../shared/redboxVideo';
+import { usePageRefresh } from '../hooks/usePageRefresh';
 
 type MediaAssetSource = 'generated' | 'planned' | 'imported';
 
@@ -189,7 +190,7 @@ function inferImageAspectFromSize(size: string): string {
     return bestDelta <= 0.04 ? best : '';
 }
 
-export function MediaLibrary() {
+export function MediaLibrary({ isActive = true }: { isActive?: boolean }) {
     const [assets, setAssets] = useState<MediaAsset[]>([]);
     const [manuscripts, setManuscripts] = useState<string[]>([]);
     const [loading, setLoading] = useState(true);
@@ -262,10 +263,6 @@ export function MediaLibrary() {
         }
     }, []);
 
-    useEffect(() => {
-        void loadData();
-    }, [loadData]);
-
     const loadSettings = useCallback(async () => {
         try {
             const s = await window.ipcRenderer.getSettings();
@@ -281,9 +278,16 @@ export function MediaLibrary() {
         }
     }, []);
 
-    useEffect(() => {
-        void loadSettings();
-    }, [loadSettings]);
+    const refreshPage = useCallback(async () => {
+        await Promise.all([loadData(), loadSettings()]);
+    }, [loadData, loadSettings]);
+
+    usePageRefresh({
+        isActive,
+        refresh: refreshPage,
+        dataScopes: ['media'],
+        triggerOnSettingsChange: true,
+    });
 
     useEffect(() => {
         if (!size) return;

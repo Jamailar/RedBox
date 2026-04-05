@@ -15,6 +15,7 @@ import {
     X,
 } from 'lucide-react';
 import { resolveAssetUrl } from '../utils/pathManager';
+import { usePageRefresh } from '../hooks/usePageRefresh';
 
 interface SubjectCategory {
     id: string;
@@ -140,7 +141,7 @@ function normalizeAttributes(attributes: SubjectAttribute[]): SubjectAttribute[]
         .filter((item) => item.key || item.value);
 }
 
-export function Subjects() {
+export function Subjects({ isActive = true }: { isActive?: boolean }) {
     const [categories, setCategories] = useState<SubjectCategory[]>([]);
     const [subjects, setSubjects] = useState<SubjectRecord[]>([]);
     const [loading, setLoading] = useState(true);
@@ -186,9 +187,11 @@ export function Subjects() {
         }
     }, []);
 
-    useEffect(() => {
-        void loadData();
-    }, [loadData]);
+    usePageRefresh({
+        isActive,
+        refresh: loadData,
+        dataScopes: ['subjects'],
+    });
 
     const categoryNameMap = useMemo(() => new Map(categories.map((item) => [item.id, item.name])), [categories]);
 

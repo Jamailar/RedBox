@@ -15,6 +15,7 @@ import {
 import { clsx } from 'clsx';
 import { Chat } from './Chat';
 import type { PendingChatMessage } from '../App';
+import { usePageRefresh } from '../hooks/usePageRefresh';
 
 const REDCLAW_CONTEXT_ID = 'redclaw-singleton';
 const REDCLAW_CONTEXT_TYPE = 'redclaw';
@@ -177,6 +178,7 @@ interface LongDraft {
 }
 
 interface RedClawProps {
+    isActive?: boolean;
     pendingMessage?: PendingChatMessage | null;
     onPendingMessageConsumed?: () => void;
     onNavigateWorkboard?: () => void;
@@ -354,7 +356,7 @@ function resultTone(result?: RunnerResult): string {
     return 'text-text-tertiary';
 }
 
-export function RedClaw({ pendingMessage, onPendingMessageConsumed, onNavigateWorkboard }: RedClawProps) {
+export function RedClaw({ isActive = true, pendingMessage, onPendingMessageConsumed, onNavigateWorkboard }: RedClawProps) {
     const [sessionId, setSessionId] = useState<string | null>(null);
     const [isSessionLoading, setIsSessionLoading] = useState(true);
     const [activeSpaceName, setActiveSpaceName] = useState<string>('默认空间');
@@ -475,29 +477,27 @@ export function RedClaw({ pendingMessage, onPendingMessageConsumed, onNavigateWo
         }
     }, []);
 
-    useEffect(() => {
-        void initSession();
-        void loadRunnerStatus(true);
-        void loadProjects();
-    }, [initSession, loadProjects, loadRunnerStatus]);
+    const refreshPage = useCallback(async () => {
+        await Promise.all([
+            initSession(),
+            loadRunnerStatus(true),
+            loadProjects(),
+            sidebarTab === 'skills' ? loadSkills() : Promise.resolve(),
+        ]);
+    }, [initSession, loadProjects, loadRunnerStatus, loadSkills, sidebarTab]);
 
-    useEffect(() => {
-        const onSpaceChanged = () => {
-            void initSession();
-            void loadRunnerStatus(true);
-            void loadProjects();
-            void loadSkills();
-        };
-        window.ipcRenderer.on('space:changed', onSpaceChanged);
-        return () => {
-            window.ipcRenderer.off('space:changed', onSpaceChanged);
-        };
-    }, [initSession, loadProjects, loadRunnerStatus, loadSkills]);
+    usePageRefresh({
+        isActive,
+        refresh: refreshPage,
+        triggerOnSettingsChange: true,
+        dataScopes: ['work', 'redclaw'],
+    });
 
     useEffect(() => {
         if (sidebarTab !== 'skills') return;
+        if (isSkillsLoading || skills.length > 0) return;
         void loadSkills();
-    }, [sidebarTab, loadSkills]);
+    }, [sidebarTab, isSkillsLoading, loadSkills, skills.length]);
 
     useEffect(() => {
         const onRunnerStatus = (_event: unknown, status: RunnerStatus) => {

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { AlertCircle, Bot, Clock3, Link2, ListTodo, Loader2, Play, RefreshCw, X } from 'lucide-react';
+import { usePageRefresh } from '../hooks/usePageRefresh';
 
 type WorkItem = Awaited<ReturnType<typeof window.ipcRenderer.work.list>>[number];
 
@@ -99,7 +100,7 @@ function resolveColumnKey(item: WorkItem): WorkColumnKey {
     return 'blocked';
 }
 
-export function Workboard() {
+export function Workboard({ isActive = true }: { isActive?: boolean }) {
     const [items, setItems] = useState<WorkItem[]>([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState('');
@@ -123,9 +124,11 @@ export function Workboard() {
         }
     }, []);
 
-    useEffect(() => {
-        void load();
-    }, [load]);
+    usePageRefresh({
+        isActive,
+        refresh: load,
+        dataScopes: ['work'],
+    });
 
     const grouped = useMemo(() => {
         const map = new Map<WorkColumnKey, WorkItem[]>();

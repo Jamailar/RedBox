@@ -58,6 +58,7 @@ export function usePageRefresh({
     useEffect(() => {
         if (mountedRef.current) return;
         mountedRef.current = true;
+        wasActiveRef.current = Boolean(isActive);
         if (triggerOnMount && isActive) {
             runRefresh(true);
         }

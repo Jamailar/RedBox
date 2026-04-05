@@ -345,14 +345,14 @@ function App() {
         {mountedViews.has('advisors') && (
           <div className={currentView === 'advisors' ? 'h-full min-h-0 flex flex-col' : 'hidden'}>
             <Suspense fallback={currentView === 'advisors' ? <ViewLoadingFallback /> : null}>
-              <AdvisorsPage />
+              <AdvisorsPage isActive={currentView === 'advisors'} />
             </Suspense>
           </div>
         )}
         {mountedViews.has('settings') && (
           <div className={currentView === 'settings' ? 'h-full min-h-0 flex flex-col' : 'hidden'}>
             <Suspense fallback={currentView === 'settings' ? <ViewLoadingFallback /> : null}>
-              <SettingsPage />
+              <SettingsPage isActive={currentView === 'settings'} />
             </Suspense>
           </div>
         )}
@@ -372,7 +372,7 @@ function App() {
         {mountedViews.has('archives') && (
           <div className={currentView === 'archives' ? 'h-full min-h-0 flex flex-col' : 'hidden'}>
             <Suspense fallback={currentView === 'archives' ? <ViewLoadingFallback /> : null}>
-              <ArchivesPage />
+              <ArchivesPage isActive={currentView === 'archives'} />
             </Suspense>
           </div>
         )}
@@ -382,6 +382,7 @@ function App() {
               <WanderPage
                 onNavigateToManuscript={navigateToManuscript}
                 onNavigateToRedClaw={navigateToRedClaw}
+                isActive={currentView === 'wander'}
               />
             </Suspense>
           </div>
@@ -393,6 +394,7 @@ function App() {
                 pendingMessage={pendingRedClawMessage}
                 onPendingMessageConsumed={clearPendingRedClawMessage}
                 onNavigateWorkboard={() => setCurrentView('workboard')}
+                isActive={currentView === 'redclaw'}
               />
             </Suspense>
           </div>
@@ -400,14 +402,14 @@ function App() {
         {mountedViews.has('subjects') && (
           <div className={currentView === 'subjects' ? 'h-full min-h-0 flex flex-col' : 'hidden'}>
             <Suspense fallback={currentView === 'subjects' ? <ViewLoadingFallback /> : null}>
-              <SubjectsPage />
+              <SubjectsPage isActive={currentView === 'subjects'} />
             </Suspense>
           </div>
         )}
         {mountedViews.has('media-library') && (
           <div className={currentView === 'media-library' ? 'h-full min-h-0 flex flex-col' : 'hidden'}>
             <Suspense fallback={currentView === 'media-library' ? <ViewLoadingFallback /> : null}>
-              <MediaLibraryPage />
+              <MediaLibraryPage isActive={currentView === 'media-library'} />
             </Suspense>
           </div>
         )}
@@ -421,7 +423,7 @@ function App() {
         {mountedViews.has('workboard') && (
           <div className={currentView === 'workboard' ? 'h-full min-h-0 flex flex-col' : 'hidden'}>
             <Suspense fallback={currentView === 'workboard' ? <ViewLoadingFallback /> : null}>
-              <WorkboardPage />
+              <WorkboardPage isActive={currentView === 'workboard'} />
             </Suspense>
           </div>
         )}

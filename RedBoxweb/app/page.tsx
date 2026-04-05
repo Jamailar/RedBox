@@ -1,362 +1,163 @@
-import Image from 'next/image';
-import Link from 'next/link';
-import { ArrowRight, Bot, Download, FolderArchive, ImagePlus, MessageSquarePlus, Sparkles, Workflow } from 'lucide-react';
-import { formatBytes, formatReleaseDate, getLatestManifest, pickPrimaryDownloadAssets } from './lib/downloads';
+import {
+    AudioLines,
+    Clapperboard,
+    FilePenLine,
+    ImagePlus,
+    Lightbulb,
+    Video,
+} from 'lucide-react';
+import { SiteHeader } from './components/SiteHeader';
 
 export const dynamic = 'force-dynamic';
 
-const workflowSteps = [
+const capabilities = [
     {
-        index: '01',
-        title: '先采集，再沉淀',
-        description: '通过浏览器插件把小红书、YouTube、网页链接和选中文字沉淀进本地知识库。',
-        icon: FolderArchive,
+        title: '灵感采集',
+        summary: '把选题、碎片灵感、素材方向和参考信息集中到同一个入口。',
+        icon: Lightbulb,
     },
     {
-        index: '02',
-        title: '漫步找选题',
-        description: '从知识库随机抽取素材，重组隐秘关联，把卡住的选题重新拉起来。',
-        icon: Sparkles,
+        title: 'AI 创作',
+        summary: '从结构、标题到正文与脚本，让内容从想法推进到可发布草稿。',
+        icon: FilePenLine,
     },
     {
-        index: '03',
-        title: 'RedClaw 执行',
-        description: '把创作、改写、配图、复盘交给单会话执行台，在一个线程内推进结果落盘。',
-        icon: Bot,
-    },
-];
-
-const featureCards = [
-    {
-        title: '知识库与稿件一体',
-        summary: '采集、检索、起草、补素材都在本地完成，减少“素材在一个地方、输出在另一个地方”的割裂。',
-        icon: Workflow,
+        title: 'AI 剪视频',
+        summary: '围绕短视频生产链做内容整理与加工，减少人工拼接成本。',
+        icon: Clapperboard,
     },
     {
-        title: '多角色协作',
-        summary: '聊天室、智囊团、RedClaw 分别承接脑暴、讨论与执行，不再把所有任务都塞进一个聊天框。',
-        icon: MessageSquarePlus,
+        title: 'AI 剪播客',
+        summary: '让长音频的提炼、裁切和包装不再停留在纯手工阶段。',
+        icon: AudioLines,
     },
     {
-        title: '封面与配图联动',
-        summary: '稿件和媒体素材一起管理，适合需要小红书封面、配图、发布包联动的创作流程。',
+        title: 'AI 生图',
+        summary: '封面、配图与视觉资产在同一个工作台里补齐，不再跳转多处。',
         icon: ImagePlus,
     },
+    {
+        title: 'AI 生视频',
+        summary: '把动态内容生成正式纳入整条内容工作流，而不是孤立的单点功能。',
+        icon: Video,
+    },
 ];
 
-const screenshots = [
-    {
-        src: '/screenshots/knowledge.png',
-        title: '知识库',
-        label: '采集后沉淀',
-    },
-    {
-        src: '/screenshots/wander.png',
-        title: '漫步',
-        label: '卡题时找灵感',
-    },
-    {
-        src: '/screenshots/redclaw.png',
-        title: 'RedClaw',
-        label: '下任务执行',
-    },
-    {
-        src: '/screenshots/manuscripts.png',
-        title: '稿件工作台',
-        label: '内容与媒体一起走',
-    },
-    {
-        src: '/screenshots/groupchat.png',
-        title: '聊天室',
-        label: '多人脑暴',
-    },
-    {
-        src: '/screenshots/cover.jpg',
-        title: '封面生成',
-        label: '视觉资产联动',
-    },
+const workflow = [
+    '先收集灵感、素材、选题方向',
+    '再让 AI 生成文案、脚本和内容骨架',
+    '继续扩展到视频、播客、图片与动态内容',
+    '最后统一整理、下载并推进交付',
 ];
 
 const faqs = [
     {
-        question: '下载为什么不是 GitHub 链接？',
-        answer: 'RedBoxweb 会把最新稳定版镜像到阿里云 OSS，再通过 OSS/CDN 提供下载，目的是在无法稳定访问 GitHub 的网络环境里也能拿到安装包。',
+        question: 'RedBox 更像什么产品？',
+        answer: '它不是单点的聊天机器人，也不是只做文案的写作器。RedBox 更接近一个面向自媒体创作者的 AI 全能工作台，把灵感、文字、音频、视频和视觉资产放到同一条生产链里。',
     },
     {
-        question: '官网会复刻桌面端功能吗？',
-        answer: '不会。这个站点只负责介绍产品与提供下载，真正的知识库、RedClaw、漫步和稿件工作流都仍在桌面端完成。',
+        question: '官网负责什么，桌面端负责什么？',
+        answer: '官网只负责介绍产品和提供下载。真正的灵感采集、AI 创作、AI 剪视频、AI 剪播客、AI 生图和 AI 生视频都在桌面端工作台内完成。',
     },
     {
-        question: '现在支持哪些平台？',
-        answer: '首版下载区固定展示 macOS Apple Silicon、macOS Intel 和 Windows x64 的最新稳定版安装包。',
+        question: '为什么下载链接不是直接 GitHub？',
+        answer: '因为很多用户无法稳定访问 GitHub Release。RedBoxweb 会把最新稳定版镜像到阿里云 OSS，再通过更快的链路提供下载。',
     },
 ];
 
 export default async function HomePage() {
-    const manifest = await getLatestManifest();
-    const downloads = pickPrimaryDownloadAssets(manifest);
-
     return (
-        <main className="relative overflow-hidden">
-            <div className="grain" />
+        <main className="app-shell">
+            <SiteHeader />
 
-            <section className="mx-auto flex min-h-screen w-full max-w-7xl flex-col gap-12 px-5 pb-16 pt-6 md:px-8 md:pt-8">
-                <header className="fade-up flex items-center justify-between rounded-full border border-[var(--line)] bg-[rgba(255,248,239,0.6)] px-4 py-3 backdrop-blur">
-                    <Link href="/" className="flex items-center gap-3">
-                        <span className="flex h-10 w-10 items-center justify-center rounded-full border border-[rgba(33,23,15,0.14)] bg-[rgba(255,252,246,0.95)] text-lg font-semibold text-[var(--accent-deep)]">
-                            R
-                        </span>
-                        <div>
-                            <div className="font-[family:var(--font-ui)] text-sm font-semibold tracking-[0.16em] text-[var(--accent-deep)] uppercase">
-                                RedBox
+            <section className="page-section hero-section">
+                <div className="container">
+                    <div className="hero-copy card">
+                        <span className="eyebrow">All-in-one Media Workflow</span>
+                        <h1 className="hero-title">
+                            从灵感到发布，
+                            <span>用一个工作台做完。</span>
+                        </h1>
+                        <p className="hero-summary">
+                            RedBox 面向自媒体创作者，把灵感采集、AI 创作、AI 剪视频、AI 剪播客、AI 生图、AI 生视频放进同一条生产链。
+                            你不需要再先找六个工具，再把它们勉强拼起来。
+                        </p>
+
+                        <div className="hero-notes">
+                            <div className="hero-note">
+                                <span>定位</span>
+                                <strong>不是单点 AI 工具，而是内容生产工作台</strong>
                             </div>
-                            <div className="text-xs text-[var(--muted)]">官网与下载镜像站</div>
-                        </div>
-                    </Link>
-
-                    <a
-                        href="#downloads"
-                        className="inline-flex items-center gap-2 rounded-full bg-[var(--accent)] px-4 py-2 text-sm font-semibold text-white transition hover:bg-[var(--accent-deep)]"
-                    >
-                        <Download className="h-4 w-4" />
-                        立即下载
-                    </a>
-                </header>
-
-                <div className="grid gap-7 lg:grid-cols-[1.08fr_0.92fr] lg:items-stretch">
-                    <div className="fade-up section-card soft-grid relative overflow-hidden rounded-[2rem] px-6 py-8 md:px-9 md:py-10">
-                        <div className="absolute -right-16 top-0 h-44 w-44 rounded-full bg-[rgba(217,72,31,0.16)] blur-3xl" />
-                        <div className="absolute bottom-0 left-8 h-36 w-36 rounded-full bg-[rgba(15,108,104,0.18)] blur-3xl" />
-                        <span className="eyebrow mb-5">
-                            <span className="h-2 w-2 rounded-full bg-[var(--accent)]" />
-                            Local-first AI content workstation
-                        </span>
-
-                        <div className="max-w-3xl">
-                            <h1 className="editorial-title text-[3.2rem] font-semibold text-[var(--ink)] sm:text-[4.3rem] lg:text-[5.6rem]">
-                                给小红书创作者的
-                                <span className="block text-[var(--accent-deep)]">本地 AI 工作台</span>
-                            </h1>
-                            <p className="mt-5 max-w-2xl text-base leading-8 text-[var(--muted)] md:text-lg">
-                                RedBox 把插件采集、知识库、漫步、RedClaw、稿件与配图协作串成一条本地创作链路。
-                                这个官网不复刻工作流，只做一件更务实的事：把最新版安装包稳定送到你手里。
-                            </p>
-                        </div>
-
-                        <div className="mt-9 flex flex-wrap items-center gap-4">
-                            <a
-                                href="#downloads"
-                                className="inline-flex items-center gap-2 rounded-full bg-[var(--ink)] px-5 py-3 text-sm font-semibold text-white transition hover:translate-y-[-1px]"
-                            >
-                                查看最新稳定版
-                                <ArrowRight className="h-4 w-4" />
-                            </a>
-                            <a
-                                href="https://github.com/Jamailar/RedBox"
-                                target="_blank"
-                                rel="noreferrer"
-                                className="inline-flex items-center gap-2 rounded-full border border-[var(--line)] px-5 py-3 text-sm font-semibold text-[var(--ink)] transition hover:bg-[rgba(255,248,240,0.8)]"
-                            >
-                                GitHub 仓库
-                            </a>
-                        </div>
-
-                        <div className="mt-10 grid gap-4 sm:grid-cols-3">
-                            {workflowSteps.map((item, index) => {
-                                const Icon = item.icon;
-                                return (
-                                    <article
-                                        key={item.title}
-                                        className={`fade-up delay-${Math.min(index + 1, 3)} rounded-[1.6rem] border border-[rgba(33,23,15,0.1)] bg-[rgba(255,250,244,0.78)] p-4`}
-                                    >
-                                        <div className="flex items-center justify-between">
-                                            <span className="font-[family:var(--font-ui)] text-xs font-bold tracking-[0.2em] text-[var(--accent-deep)] uppercase">
-                                                {item.index}
-                                            </span>
-                                            <span className="rounded-full bg-[rgba(15,108,104,0.12)] p-2 text-[var(--teal)]">
-                                                <Icon className="h-4 w-4" />
-                                            </span>
-                                        </div>
-                                        <h2 className="mt-4 text-lg font-semibold">{item.title}</h2>
-                                        <p className="mt-2 text-sm leading-7 text-[var(--muted)]">{item.description}</p>
-                                    </article>
-                                );
-                            })}
+                            <div className="hero-note">
+                                <span>适合对象</span>
+                                <strong>个人创作者、工作室、小团队、多媒介内容生产</strong>
+                            </div>
                         </div>
                     </div>
-
-                    <aside className="fade-up delay-1 section-card relative rounded-[2rem] p-5 md:p-6">
-                        <div className="absolute inset-x-6 top-6 flex items-center justify-between">
-                            <span className="eyebrow">Latest Stable</span>
-                            <span className="rounded-full border border-[rgba(33,23,15,0.12)] px-3 py-1 text-xs text-[var(--muted)]">
-                                镜像下载
-                            </span>
-                        </div>
-
-                        <div className="mt-20 rounded-[1.75rem] border border-[rgba(33,23,15,0.1)] bg-[rgba(255,250,244,0.9)] p-5">
-                            <div className="flex items-start justify-between gap-3">
-                                <div>
-                                    <div className="font-[family:var(--font-ui)] text-xs font-bold tracking-[0.18em] text-[var(--accent-deep)] uppercase">
-                                        当前版本
-                                    </div>
-                                    <div className="mt-2 text-3xl font-semibold">
-                                        {manifest?.tag || '镜像准备中'}
-                                    </div>
-                                </div>
-                                <Image
-                                    src="/redbox.jpg"
-                                    alt="RedBox"
-                                    width={84}
-                                    height={84}
-                                    className="rounded-[1.25rem] border border-[rgba(33,23,15,0.1)]"
-                                />
-                            </div>
-
-                            <div className="mt-5 grid gap-3 text-sm text-[var(--muted)] sm:grid-cols-2">
-                                <div>
-                                    <div className="text-xs uppercase tracking-[0.16em]">发布日期</div>
-                                    <div className="mt-1 text-base text-[var(--ink)]">
-                                        {manifest ? formatReleaseDate(manifest.publishedAt) : '等待首次同步'}
-                                    </div>
-                                </div>
-                                <div>
-                                    <div className="text-xs uppercase tracking-[0.16em]">下载来源</div>
-                                    <div className="mt-1 text-base text-[var(--ink)]">阿里云 OSS / CDN</div>
-                                </div>
-                            </div>
-
-                            <div id="downloads" className="mt-6 space-y-3">
-                                {[
-                                    {
-                                        label: 'macOS Apple Silicon',
-                                        meta: downloads.macArm64 ? formatBytes(downloads.macArm64.size) : '镜像准备中',
-                                        asset: downloads.macArm64,
-                                    },
-                                    {
-                                        label: 'macOS Intel',
-                                        meta: downloads.macX64 ? formatBytes(downloads.macX64.size) : '镜像准备中',
-                                        asset: downloads.macX64,
-                                    },
-                                    {
-                                        label: 'Windows x64',
-                                        meta: downloads.windowsX64 ? formatBytes(downloads.windowsX64.size) : '镜像准备中',
-                                        asset: downloads.windowsX64,
-                                    },
-                                ].map((item) => (
-                                    item.asset ? (
-                                        <a
-                                            key={item.label}
-                                            href={item.asset.publicUrl}
-                                            className="download-pill"
-                                        >
-                                            <span>
-                                                <span className="block text-base font-semibold">{item.label}</span>
-                                                <span className="mt-1 block text-sm text-[var(--muted)]">{item.asset.filename}</span>
-                                            </span>
-                                            <span className="text-right">
-                                                <span className="block text-sm font-semibold text-[var(--accent-deep)]">{item.meta}</span>
-                                                <span className="mt-1 inline-flex items-center gap-2 text-xs uppercase tracking-[0.14em] text-[var(--muted)]">
-                                                    直连下载
-                                                    <ArrowRight className="h-3.5 w-3.5" />
-                                                </span>
-                                            </span>
-                                        </a>
-                                    ) : (
-                                        <div key={item.label} className="download-pill opacity-70">
-                                            <span>
-                                                <span className="block text-base font-semibold">{item.label}</span>
-                                                <span className="mt-1 block text-sm text-[var(--muted)]">同步完成后这里会出现直链</span>
-                                            </span>
-                                            <span className="text-sm font-semibold text-[var(--muted)]">{item.meta}</span>
-                                        </div>
-                                    )
-                                ))}
-                            </div>
-
-                            <div className="mt-6 rounded-[1.35rem] bg-[rgba(33,23,15,0.04)] px-4 py-3 text-sm leading-7 text-[var(--muted)]">
-                                {manifest
-                                    ? `当前站点只展示最新稳定版 ${manifest.tag}。点击按钮后会直接进入 OSS/CDN 下载，不经过网站服务器中转。`
-                                    : '当前还没有可用镜像。服务端会在启动后立即检查 GitHub Release，并每 10 分钟轮询一次。'}
-                            </div>
-                        </div>
-
-                        <div className="mt-6 rounded-[1.75rem] border border-[rgba(33,23,15,0.1)] bg-[rgba(255,250,244,0.72)] p-5">
-                            <div className="text-sm font-semibold uppercase tracking-[0.18em] text-[var(--accent-deep)]">
-                                更新摘要
-                            </div>
-                            <div className="mt-3 whitespace-pre-line text-sm leading-7 text-[var(--muted)]">
-                                {manifest?.notes || '镜像生成后，这里会显示 GitHub 最新稳定版 release notes。'}
-                            </div>
-                        </div>
-                    </aside>
                 </div>
             </section>
 
-            <section className="mx-auto mt-2 w-full max-w-7xl px-5 pb-12 md:px-8">
-                <div className="grid gap-6 lg:grid-cols-[0.95fr_1.05fr]">
-                    <div className="section-card rounded-[2rem] p-6 md:p-8">
-                        <span className="eyebrow">Why RedBox</span>
-                        <h2 className="editorial-title mt-5 text-[2.25rem] font-semibold md:text-[3rem]">
-                            它不是“又一个 AI 聊天工具”
-                        </h2>
-                        <p className="mt-4 max-w-xl text-base leading-8 text-[var(--muted)]">
-                            RedBox 的重点不是把模型堆满，而是把创作者真正会反复切换的步骤接起来：素材采集、知识沉淀、选题发散、执行创作、封面配图与发布准备。
-                        </p>
+            <section id="capabilities" className="page-section">
+                <div className="container section-heading">
+                    <span className="eyebrow">Capabilities</span>
+                    <h2>六个 AI 模块，一条完整内容生产线。</h2>
+                    <p>
+                        RedBox 的重点不是只做文案，也不是只做视频。它解决的是创作者在文字、音频、视频和视觉资产之间频繁切换时，工具链过于分散的问题。
+                    </p>
+                </div>
 
-                        <div className="mt-7 space-y-4">
-                            {featureCards.map((item) => {
-                                const Icon = item.icon;
-                                return (
-                                    <article key={item.title} className="rounded-[1.5rem] border border-[rgba(33,23,15,0.1)] bg-[rgba(255,250,244,0.82)] p-4">
-                                        <div className="flex items-center gap-3">
-                                            <span className="rounded-full bg-[rgba(217,72,31,0.12)] p-2 text-[var(--accent-deep)]">
-                                                <Icon className="h-4 w-4" />
-                                            </span>
-                                            <h3 className="text-lg font-semibold">{item.title}</h3>
-                                        </div>
-                                        <p className="mt-3 text-sm leading-7 text-[var(--muted)]">{item.summary}</p>
-                                    </article>
-                                );
-                            })}
-                        </div>
+                <div className="container capability-grid">
+                    {capabilities.map((item) => {
+                        const Icon = item.icon;
+                        return (
+                            <article key={item.title} className="card capability-card">
+                                <div className="capability-card__head">
+                                    <span className="capability-card__index">{item.title}</span>
+                                    <span className="capability-card__icon">
+                                        <Icon className="h-5 w-5" />
+                                    </span>
+                                </div>
+                                <p className="capability-card__title">{item.title}</p>
+                                <p className="capability-card__summary">{item.summary}</p>
+                            </article>
+                        );
+                    })}
+                </div>
+            </section>
+
+            <section id="workflow" className="page-section workflow-section">
+                <div className="container workflow-layout">
+                    <div className="workflow-copy">
+                        <span className="eyebrow">Workflow</span>
+                        <h2>内容不是单次生成，而是连续加工。</h2>
+                        <p>
+                            很多产品只覆盖一个步骤。RedBox 更关注整段内容路径，从灵感入口开始，持续推进到创作、媒体加工与交付。
+                        </p>
                     </div>
 
-                    <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-                        {screenshots.map((item, index) => (
-                            <article
-                                key={item.title}
-                                className={`screenshot-card fade-up delay-${Math.min(index % 3, 3)}`}
-                            >
-                                <div className="relative aspect-[4/3]">
-                                    <Image src={item.src} alt={item.title} fill sizes="(max-width: 768px) 100vw, 33vw" />
-                                </div>
-                                <div className="px-4 py-4">
-                                    <div className="text-xs uppercase tracking-[0.16em] text-[var(--accent-deep)]">{item.label}</div>
-                                    <div className="mt-2 text-lg font-semibold">{item.title}</div>
-                                </div>
+                    <div className="workflow-list">
+                        {workflow.map((item, index) => (
+                            <article key={item} className="card workflow-item">
+                                <div className="workflow-item__index">{String(index + 1).padStart(2, '0')}</div>
+                                <div className="workflow-item__text">{item}</div>
                             </article>
                         ))}
                     </div>
                 </div>
             </section>
 
-            <section className="mx-auto w-full max-w-7xl px-5 pb-18 md:px-8">
-                <div className="section-card grid gap-7 rounded-[2rem] px-6 py-8 md:px-8 lg:grid-cols-[0.8fr_1.2fr]">
-                    <div>
+            <section className="page-section faq-section">
+                <div className="container faq-shell card">
+                    <div className="section-heading section-heading--compact">
                         <span className="eyebrow">FAQ</span>
-                        <h2 className="editorial-title mt-5 text-[2.2rem] font-semibold md:text-[3rem]">
-                            先把下载问题讲清楚
-                        </h2>
-                        <p className="mt-4 max-w-md text-base leading-8 text-[var(--muted)]">
-                            这个站点的核心职责就是“介绍产品”和“把安装包稳定交付出去”，所以 FAQ 也只围绕这两件事展开。
-                        </p>
+                        <h2>先把产品边界讲清楚。</h2>
                     </div>
 
-                    <div className="space-y-4">
+                    <div className="faq-list">
                         {faqs.map((item) => (
-                            <article key={item.question} className="rounded-[1.4rem] border border-[rgba(33,23,15,0.1)] bg-[rgba(255,250,244,0.82)] p-5">
-                                <h3 className="text-lg font-semibold">{item.question}</h3>
-                                <p className="mt-3 text-sm leading-7 text-[var(--muted)]">{item.answer}</p>
+                            <article key={item.question} className="faq-item">
+                                <h3>{item.question}</h3>
+                                <p>{item.answer}</p>
                             </article>
                         ))}
                     </div>

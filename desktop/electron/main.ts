@@ -223,8 +223,30 @@ let redClawRunnerListenersAttached = false;
 let backgroundTaskRegistryListenersAttached = false;
 let advisorYoutubeRunnerListenersAttached = false;
 let assistantDaemonListenersAttached = false;
+let workItemStoreListenersAttached = false;
 let appShutdownInProgress = false;
 let appShutdownPromise: Promise<void> | null = null;
+
+function emitRendererDataChanged(scope: string, payload: Record<string, unknown> = {}) {
+  for (const browserWindow of BrowserWindow.getAllWindows()) {
+    if (browserWindow.isDestroyed()) continue;
+    browserWindow.webContents.send('data:changed', {
+      scope,
+      ...payload,
+    });
+  }
+}
+
+function attachWorkItemStoreListeners() {
+  if (workItemStoreListenersAttached) return;
+  workItemStoreListenersAttached = true;
+  getWorkItemStore().on('work-item-updated', (item: { id?: string } | null | undefined) => {
+    emitRendererDataChanged('work', {
+      action: 'store-update',
+      entityId: String(item?.id || '').trim() || undefined,
+    });
+  });
+}
 
 async function getRedClawBackgroundRunnerLazy() {
   const module = await import('./core/redclawBackgroundRunner');
@@ -806,6 +828,7 @@ async function checkForAppUpdate(force = false, forceNotify = false): Promise<Ap
 }
 
 function createWindow() {
+  attachWorkItemStoreListeners();
   const iconPath = path.join(app.getAppPath(), 'redbox.png');
   const devIconPath = path.join(process.cwd(), 'desktop', 'redbox.png');
   const resolvedIconPath = app.isPackaged ? iconPath : devIconPath;
@@ -1988,13 +2011,15 @@ ipcMain.handle('work:update', async (_event, payload?: {
   if (!id) {
     throw new Error('work item id is required');
   }
-  return getWorkItemStore().updateWorkItem(id, {
+  const updated = await getWorkItemStore().updateWorkItem(id, {
     title: payload?.title,
     description: payload?.description === null ? '' : payload?.description,
     status: payload?.status,
     priority: payload?.priority,
     summary: payload?.summary === null ? null : payload?.summary,
   });
+  emitRendererDataChanged('work', { action: 'update', entityId: id });
+  return updated;
 });
 
 ipcMain.handle('tasks:resume', async (_event, payload?: { taskId?: string }) => {
@@ -3015,6 +3040,7 @@ ipcMain.handle('media:import-files', async () => {
 
     const imported = await importMediaFiles(picker.filePaths);
     const enriched = await Promise.all(imported.map((asset) => enrichMediaAsset(asset)));
+    emitRendererDataChanged('media', { action: 'import' });
     return {
       success: true,
       imported: enriched,
@@ -3032,6 +3058,7 @@ ipcMain.handle('media:update', async (_, payload: { assetId: string; projectId?:
       return { success: false, error: 'assetId is required' };
     }
     const updated = await updateMediaAssetMetadata(payload);
+    emitRendererDataChanged('media', { action: 'update', entityId: payload.assetId });
     return { success: true, asset: await enrichMediaAsset(updated) };
   } catch (error) {
     console.error('Failed to update media asset:', error);
@@ -3045,6 +3072,7 @@ ipcMain.handle('media:delete', async (_, { assetId }: { assetId: string }) => {
       return { success: false, error: 'assetId is required' };
     }
     const deleted = await deleteMediaAsset(assetId);
+    emitRendererDataChanged('media', { action: 'delete', entityId: assetId });
     return { success: true, deleted };
   } catch (error) {
     console.error('Failed to delete media asset:', error);
@@ -3073,6 +3101,7 @@ ipcMain.handle('media:bind', async (_, {
       manuscriptPath: normalizedManuscriptPath,
       role,
     });
+    emitRendererDataChanged('media', { action: 'bind', entityId: assetId });
     return { success: true, asset: await enrichMediaAsset(updated) };
   } catch (error) {
     console.error('Failed to bind media asset:', error);
@@ -3152,6 +3181,7 @@ ipcMain.handle('subjects:create', async (_, payload: {
 }) => {
   try {
     const subject = await createSubject(payload || { name: '' });
+    emitRendererDataChanged('subjects', { action: 'create', entityId: subject.id });
     return { success: true, subject };
   } catch (error) {
     console.error('Failed to create subject:', error);
@@ -3174,6 +3204,7 @@ ipcMain.handle('subjects:update', async (_, payload: {
       return { success: false, error: 'id is required' };
     }
     const subject = await updateSubject(payload);
+    emitRendererDataChanged('subjects', { action: 'update', entityId: payload.id });
     return { success: true, subject };
   } catch (error) {
     console.error('Failed to update subject:', error);
@@ -3187,6 +3218,7 @@ ipcMain.handle('subjects:delete', async (_, { id }: { id: string }) => {
       return { success: false, error: 'id is required' };
     }
     await deleteSubject(id);
+    emitRendererDataChanged('subjects', { action: 'delete', entityId: id });
     return { success: true };
   } catch (error) {
     console.error('Failed to delete subject:', error);
@@ -3217,6 +3249,7 @@ ipcMain.handle('subjects:categories:list', async () => {
 ipcMain.handle('subjects:categories:create', async (_, { name }: { name: string }) => {
   try {
     const category = await createSubjectCategory(name);
+    emitRendererDataChanged('subjects', { action: 'category-create', entityId: category.id });
     return { success: true, category };
   } catch (error) {
     console.error('Failed to create subject category:', error);
@@ -3227,6 +3260,7 @@ ipcMain.handle('subjects:categories:create', async (_, { name }: { name: string 
 ipcMain.handle('subjects:categories:update', async (_, payload: { id: string; name: string }) => {
   try {
     const category = await updateSubjectCategory(payload);
+    emitRendererDataChanged('subjects', { action: 'category-update', entityId: payload.id });
     return { success: true, category };
   } catch (error) {
     console.error('Failed to update subject category:', error);
@@ -3237,6 +3271,7 @@ ipcMain.handle('subjects:categories:update', async (_, payload: { id: string; na
 ipcMain.handle('subjects:categories:delete', async (_, { id }: { id: string }) => {
   try {
     await deleteSubjectCategory(id);
+    emitRendererDataChanged('subjects', { action: 'category-delete', entityId: id });
     return { success: true };
   } catch (error) {
     console.error('Failed to delete subject category:', error);
@@ -3426,6 +3461,7 @@ ipcMain.handle('image-gen:generate', async (_, {
       aspectRatio,
     });
     const assets = await Promise.all(result.assets.map((asset) => enrichMediaAsset(asset)));
+    emitRendererDataChanged('media', { action: 'generate-image' });
     return { success: true, assets };
   } catch (error) {
     console.error('Failed to generate images:', error);
@@ -3487,6 +3523,7 @@ ipcMain.handle('video-gen:generate', async (_, {
       firstClip,
     });
     const assets = await Promise.all(result.assets.map((asset) => enrichMediaAsset(asset)));
+    emitRendererDataChanged('media', { action: 'generate-video' });
     return { success: true, assets };
   } catch (error) {
     console.error('Failed to generate videos:', error);
@@ -4607,6 +4644,7 @@ ipcMain.handle('advisors:create', async (_, data: { name: string; avatar: string
 
     await fs.writeFile(path.join(advisorDir, 'config.json'), JSON.stringify(config, null, 2), 'utf-8');
     win?.webContents.send('advisors:changed', { action: 'create', advisorId });
+    emitRendererDataChanged('advisors', { action: 'create', entityId: advisorId });
     return { success: true, id: advisorId };
   } catch (error) {
     console.error('Failed to create advisor:', error);
@@ -4644,6 +4682,7 @@ ipcMain.handle('advisors:update', async (_, data: { id: string; name: string; av
 
     await fs.writeFile(configPath, JSON.stringify(updated, null, 2), 'utf-8');
     win?.webContents.send('advisors:changed', { action: 'update', advisorId: data.id });
+    emitRendererDataChanged('advisors', { action: 'update', entityId: data.id });
     return { success: true };
   } catch (error) {
     console.error('Failed to update advisor:', error);
@@ -4683,6 +4722,7 @@ ipcMain.handle('advisors:delete', async (_, advisorId: string) => {
   try {
     await fs.rm(advisorDir, { recursive: true, force: true });
     win?.webContents.send('advisors:changed', { action: 'delete', advisorId });
+    emitRendererDataChanged('advisors', { action: 'delete', entityId: advisorId });
     return { success: true };
   } catch (error) {
     console.error('Failed to delete advisor:', error);
@@ -9104,7 +9144,7 @@ ipcMain.handle('archives:create', async (_, data: {
   toneTags?: string[];
 }) => {
   const id = `archive_${Date.now()}`;
-  return createArchiveProfile({
+  const created = createArchiveProfile({
     id,
     name: data.name,
     platform: data.platform || '',
@@ -9113,6 +9153,8 @@ ipcMain.handle('archives:create', async (_, data: {
     audience: data.audience || '',
     tone_tags: data.toneTags || []
   });
+  emitRendererDataChanged('archives', { action: 'create', entityId: id });
+  return created;
 });
 
 ipcMain.handle('archives:update', async (_, data: {
@@ -9124,7 +9166,7 @@ ipcMain.handle('archives:update', async (_, data: {
   audience?: string;
   toneTags?: string[];
 }) => {
-  return updateArchiveProfile({
+  const updated = updateArchiveProfile({
     id: data.id,
     name: data.name,
     platform: data.platform || '',
@@ -9133,10 +9175,13 @@ ipcMain.handle('archives:update', async (_, data: {
     audience: data.audience || '',
     tone_tags: data.toneTags || []
   });
+  emitRendererDataChanged('archives', { action: 'update', entityId: data.id });
+  return updated;
 });
 
 ipcMain.handle('archives:delete', async (_, profileId: string) => {
   deleteArchiveProfile(profileId);
+  emitRendererDataChanged('archives', { action: 'delete', entityId: profileId });
   return { success: true };
 });
 
@@ -9158,7 +9203,7 @@ ipcMain.handle('archives:samples:create', async (_, data: {
   const tags = data.tags && data.tags.length > 0
     ? data.tags
     : extractTagsFromText(data.title || '', data.content || '');
-  return createArchiveSample({
+  const created = createArchiveSample({
     id,
     profile_id: data.profileId,
     title: data.title || '',
@@ -9171,6 +9216,8 @@ ipcMain.handle('archives:samples:create', async (_, data: {
     sample_date: data.sampleDate || new Date().toISOString().slice(0, 10),
     is_featured: data.isFeatured ? 1 : 0
   });
+  emitRendererDataChanged('archives', { action: 'sample-create', entityId: id });
+  return created;
 
   // Index the new sample
   // Fetch profile to get platform info
@@ -9240,11 +9287,13 @@ ipcMain.handle('archives:samples:update', async (_, data: {
 
   indexManager.addToQueue(normalizeArchiveSample(sampleObj, profile));
 
+  emitRendererDataChanged('archives', { action: 'sample-update', entityId: data.id });
   return result;
 });
 
 ipcMain.handle('archives:samples:delete', async (_, sampleId: string) => {
   deleteArchiveSample(sampleId);
+  emitRendererDataChanged('archives', { action: 'sample-delete', entityId: sampleId });
   return { success: true };
 });
 

@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback, useMemo } from 'react';
 import { Users, Plus, Pencil, Trash2, Upload, FileText, X, Check, Sparkles, Database, RefreshCw, ChevronDown, ChevronUp, AlertCircle, Download } from 'lucide-react';
 import { clsx } from 'clsx';
 import { hasRenderableAssetUrl, resolveAssetUrl } from '../utils/pathManager';
+import { usePageRefresh } from '../hooks/usePageRefresh';
 
 interface Advisor {
     id: string;
@@ -24,7 +25,7 @@ const isRenderableAvatarUrl = (value: string): boolean => {
     return hasRenderableAssetUrl(value);
 };
 
-export function Advisors() {
+export function Advisors({ isActive = true }: { isActive?: boolean }) {
     const [advisors, setAdvisors] = useState<Advisor[]>([]);
     const [selectedAdvisor, setSelectedAdvisor] = useState<Advisor | null>(null);
     const [isLoading, setIsLoading] = useState(true);
@@ -94,9 +95,11 @@ export function Advisors() {
         };
     }, [selectedAdvisor, loadAdvisors]);
 
-    useEffect(() => {
-        loadAdvisors();
-    }, [loadAdvisors]);
+    usePageRefresh({
+        isActive,
+        refresh: loadAdvisors,
+        dataScopes: ['advisors'],
+    });
 
     const handleCreate = () => {
         setEditingAdvisor(null);

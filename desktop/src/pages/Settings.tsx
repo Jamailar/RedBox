@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ComponentType, type SetStateAction } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ComponentType, type SetStateAction } from 'react';
 import { Save, RefreshCw, AlertCircle, FolderOpen, Wrench, Download, LayoutGrid, Cpu, Database, Trash2, Eye, EyeOff, FlaskConical, Info, Brain, Plus, Star, ChevronDown, Check } from 'lucide-react';
 import clsx from 'clsx';
 import { useFeatureFlags } from '../hooks/useFeatureFlags';
@@ -65,15 +65,38 @@ import {
   REDBOX_OFFICIAL_VIDEO_MODELS,
 } from '../../shared/redboxVideo';
 import { hasOfficialAiPanel, loadOfficialAiPanelModule, type OfficialAiPanelProps } from '../features/official';
-import {
-  ExperimentalSettingsSection,
-  GeneralSettingsSection,
-  KnowledgeSettingsSection,
-  MemorySettingsSection,
-  SettingsSaveBar,
-  ToolsSettingsSection,
-} from './settings/SettingsSections';
-import { ProjectSettingsSection, type WorkspaceSpace } from './settings/ProjectSettingsSection';
+import { SettingsSaveBar } from './settings/SettingsSaveBar';
+import type { WorkspaceSpace } from './settings/ProjectSettingsSection';
+
+const GeneralSettingsSection = lazy(async () => {
+  const module = await import('./settings/SettingsSections');
+  return { default: module.GeneralSettingsSection };
+});
+
+const MemorySettingsSection = lazy(async () => {
+  const module = await import('./settings/SettingsSections');
+  return { default: module.MemorySettingsSection };
+});
+
+const KnowledgeSettingsSection = lazy(async () => {
+  const module = await import('./settings/SettingsSections');
+  return { default: module.KnowledgeSettingsSection };
+});
+
+const ToolsSettingsSection = lazy(async () => {
+  const module = await import('./settings/SettingsSections');
+  return { default: module.ToolsSettingsSection };
+});
+
+const ExperimentalSettingsSection = lazy(async () => {
+  const module = await import('./settings/SettingsSections');
+  return { default: module.ExperimentalSettingsSection };
+});
+
+const ProjectSettingsSection = lazy(async () => {
+  const module = await import('./settings/ProjectSettingsSection');
+  return { default: module.ProjectSettingsSection };
+});
 
 const MIN_CHAT_MAX_TOKENS = 1024;
 const DEFAULT_CHAT_MAX_TOKENS = 262144;
@@ -269,7 +292,7 @@ const sanitizeChatMaxTokensInput = (value: string, fallback: number): string => 
   return String(Math.floor(parsed));
 };
 
-export function Settings() {
+export function Settings({ isActive = true }: { isActive?: boolean }) {
   const [activeTab, setActiveTab] = useState<SettingsTab>('ai');
   const { flags, updateFlag } = useFeatureFlags();
   const [formData, setFormData] = useState({
@@ -831,6 +854,13 @@ export function Settings() {
       setAiModelSubTab('custom');
       return;
     }
+    if (activeTab !== 'ai' || aiModelSubTab !== 'login') {
+      return;
+    }
+    if (OfficialAiPanelComponent) {
+      setOfficialAiPanelEnabled(true);
+      return;
+    }
     let canceled = false;
     void loadOfficialAiPanelModule().then((module) => {
       if (canceled) return;
@@ -844,7 +874,7 @@ export function Settings() {
     return () => {
       canceled = true;
     };
-  }, []);
+  }, [OfficialAiPanelComponent, activeTab, aiModelSubTab]);
 
   const isDashscopeImageTemplate = useMemo(() => {
     const template = inferImageTemplateByProvider(formData.image_provider, formData.image_provider_template);
@@ -884,7 +914,7 @@ export function Settings() {
   );
 
   const displayedAiSources = useMemo<AiSourceConfig[]>(() => {
-    if (!officialAiPanelEnabled || hasOfficialManagedSource) {
+    if (!hasOfficialAiPanel || hasOfficialManagedSource) {
       return aiSources;
     }
     return [
@@ -901,7 +931,7 @@ export function Settings() {
       },
       ...aiSources,
     ];
-  }, [aiSources, hasOfficialManagedSource, officialAiPanelEnabled]);
+  }, [aiSources, hasOfficialManagedSource]);
 
   const getLocalGuideForSource = useCallback((source?: AiSourceConfig | null): LocalAiGuide | null => {
     if (!source) return null;
@@ -967,6 +997,7 @@ export function Settings() {
       window.ipcRenderer.off('youtube:install-progress', handleProgress);
     };
   }, []);
+
 
   useEffect(() => {
     if (activeTab !== 'general') {
@@ -2660,6 +2691,12 @@ export function Settings() {
     { id: 'experimental', label: '实验性功能', icon: FlaskConical },
   ] as const;
 
+  const sectionFallback = (
+    <div className="rounded-xl border border-border bg-surface-secondary/20 p-4 text-sm text-text-tertiary">
+      正在加载设置面板...
+    </div>
+  );
+
   return (
     <div className="flex h-full bg-background text-text-primary">
       {/* Sidebar */}
@@ -2687,48 +2724,52 @@ export function Settings() {
 
             {/* General Tab */}
             {activeTab === 'general' && (
-              <GeneralSettingsSection
-                appVersion={appVersion}
-                formData={formData}
-                setFormData={setFormData}
-                recentDebugLogs={recentDebugLogs}
-                isDebugLogsLoading={isDebugLogsLoading}
-                handleRefreshDebugLogs={loadRecentDebugLogs}
-                handleOpenDebugLogDir={openDebugLogDirectory}
-                handleVersionTap={handleVersionTap}
-                assistantDaemonStatus={assistantDaemonStatus}
-                assistantDaemonDraft={assistantDaemonDraft}
-                setAssistantDaemonDraft={setAssistantDaemonDraft}
-                assistantDaemonLogs={assistantDaemonLogs}
-                assistantDaemonBusy={assistantDaemonBusy}
-                assistantDaemonWeixinLogin={assistantDaemonWeixinLogin}
-                assistantDaemonWeixinLoginBusy={assistantDaemonWeixinLoginBusy}
-                handleReloadAssistantDaemonStatus={loadAssistantDaemonStatus}
-                handleSaveAssistantDaemonConfig={handleSaveAssistantDaemonConfig}
-                handleStartAssistantDaemon={handleStartAssistantDaemon}
-                handleStopAssistantDaemon={handleStopAssistantDaemon}
-                handleStartAssistantDaemonWeixinLogin={handleStartAssistantDaemonWeixinLogin}
-                handleCheckAssistantDaemonWeixinLogin={handleCheckAssistantDaemonWeixinLogin}
-                handleClearAssistantDaemonWeixinLogin={handleClearAssistantDaemonWeixinLogin}
-              />
+              <Suspense fallback={sectionFallback}>
+                <GeneralSettingsSection
+                  appVersion={appVersion}
+                  formData={formData}
+                  setFormData={setFormData}
+                  recentDebugLogs={recentDebugLogs}
+                  isDebugLogsLoading={isDebugLogsLoading}
+                  handleRefreshDebugLogs={loadRecentDebugLogs}
+                  handleOpenDebugLogDir={openDebugLogDirectory}
+                  handleVersionTap={handleVersionTap}
+                  assistantDaemonStatus={assistantDaemonStatus}
+                  assistantDaemonDraft={assistantDaemonDraft}
+                  setAssistantDaemonDraft={setAssistantDaemonDraft}
+                  assistantDaemonLogs={assistantDaemonLogs}
+                  assistantDaemonBusy={assistantDaemonBusy}
+                  assistantDaemonWeixinLogin={assistantDaemonWeixinLogin}
+                  assistantDaemonWeixinLoginBusy={assistantDaemonWeixinLoginBusy}
+                  handleReloadAssistantDaemonStatus={loadAssistantDaemonStatus}
+                  handleSaveAssistantDaemonConfig={handleSaveAssistantDaemonConfig}
+                  handleStartAssistantDaemon={handleStartAssistantDaemon}
+                  handleStopAssistantDaemon={handleStopAssistantDaemon}
+                  handleStartAssistantDaemonWeixinLogin={handleStartAssistantDaemonWeixinLogin}
+                  handleCheckAssistantDaemonWeixinLogin={handleCheckAssistantDaemonWeixinLogin}
+                  handleClearAssistantDaemonWeixinLogin={handleClearAssistantDaemonWeixinLogin}
+                />
+              </Suspense>
             )}
 
             {activeTab === 'project' && (
-              <ProjectSettingsSection
-                spaces={spaces}
-                activeSpaceId={activeSpaceId}
-                workspaceRoot={formData.workspace_dir}
-                isLoading={isSpacesLoading}
-                isSwitching={isSwitchingSpace}
-                onRefresh={() => {
-                  void loadSpaces();
-                }}
-                onCreate={openCreateProjectDialog}
-                onRename={openRenameProjectDialog}
-                onSwitch={(spaceId) => {
-                  void handleSwitchSpace(spaceId);
-                }}
-              />
+              <Suspense fallback={sectionFallback}>
+                <ProjectSettingsSection
+                  spaces={spaces}
+                  activeSpaceId={activeSpaceId}
+                  workspaceRoot={formData.workspace_dir}
+                  isLoading={isSpacesLoading}
+                  isSwitching={isSwitchingSpace}
+                  onRefresh={() => {
+                    void loadSpaces();
+                  }}
+                  onCreate={openCreateProjectDialog}
+                  onRename={openRenameProjectDialog}
+                  onSwitch={(spaceId) => {
+                    void handleSwitchSpace(spaceId);
+                  }}
+                />
+              </Suspense>
             )}
 
             {/* AI Tab */}
@@ -2752,7 +2793,7 @@ export function Settings() {
                       >
                         自定义
                       </button>
-                      {officialAiPanelEnabled && (
+                      {hasOfficialAiPanel && (
                         <button
                           type="button"
                           onClick={() => setAiModelSubTab('login')}
@@ -3470,7 +3511,7 @@ export function Settings() {
                   </div>
                   </>
                   )}
-                  {aiModelSubTab === 'login' && officialAiPanelEnabled && (
+                  {aiModelSubTab === 'login' && hasOfficialAiPanel && (
                     <div className="space-y-4">
                       {OfficialAiPanelComponent ? (
                         <OfficialAiPanelComponent onReloadSettings={reloadCustomAiSettings} />
@@ -3488,40 +3529,45 @@ export function Settings() {
 
             {/* Memory Tab */}
             {activeTab === 'memory' && (
-              <MemorySettingsSection
-                newMemoryType={newMemoryType}
-                setNewMemoryType={setNewMemoryType}
-                newMemoryContent={newMemoryContent}
-                setNewMemoryContent={setNewMemoryContent}
-                handleAddMemory={handleAddMemory}
-                isMemoryLoading={isMemoryLoading}
-                memories={memories}
-                archivedMemories={archivedMemories}
-                memoryHistory={memoryHistory}
-                maintenanceStatus={memoryMaintenanceStatus}
-                onRunMaintenance={handleRunMemoryMaintenance}
-                memorySearchQuery={memorySearchQuery}
-                setMemorySearchQuery={setMemorySearchQuery}
-                includeArchivedInSearch={includeArchivedInSearch}
-                setIncludeArchivedInSearch={setIncludeArchivedInSearch}
-                memorySearchResults={memorySearchResults}
-                isMemorySearching={isMemorySearching}
-                onSearchMemories={handleSearchMemories}
-                handleDeleteMemory={handleDeleteMemory}
-              />
+              <Suspense fallback={sectionFallback}>
+                <MemorySettingsSection
+                  newMemoryType={newMemoryType}
+                  setNewMemoryType={setNewMemoryType}
+                  newMemoryContent={newMemoryContent}
+                  setNewMemoryContent={setNewMemoryContent}
+                  handleAddMemory={handleAddMemory}
+                  isMemoryLoading={isMemoryLoading}
+                  memories={memories}
+                  archivedMemories={archivedMemories}
+                  memoryHistory={memoryHistory}
+                  maintenanceStatus={memoryMaintenanceStatus}
+                  onRunMaintenance={handleRunMemoryMaintenance}
+                  memorySearchQuery={memorySearchQuery}
+                  setMemorySearchQuery={setMemorySearchQuery}
+                  includeArchivedInSearch={includeArchivedInSearch}
+                  setIncludeArchivedInSearch={setIncludeArchivedInSearch}
+                  memorySearchResults={memorySearchResults}
+                  isMemorySearching={isMemorySearching}
+                  onSearchMemories={handleSearchMemories}
+                  handleDeleteMemory={handleDeleteMemory}
+                />
+              </Suspense>
             )}
 
             {/* Knowledge Tab */}
             {activeTab === 'knowledge' && (
-              <KnowledgeSettingsSection
-                vectorStats={vectorStats}
-                handleRebuildIndex={handleRebuildIndex}
-                isRebuilding={isRebuilding}
-              />
+              <Suspense fallback={sectionFallback}>
+                <KnowledgeSettingsSection
+                  vectorStats={vectorStats}
+                  handleRebuildIndex={handleRebuildIndex}
+                  isRebuilding={isRebuilding}
+                />
+              </Suspense>
             )}
 
             {/* Tools Tab */}
             {activeTab === 'tools' && (
+              <Suspense fallback={sectionFallback}>
               <ToolsSettingsSection
                 isSyncingMcp={isSyncingMcp}
                 handleDiscoverAndImportMcp={handleDiscoverAndImportMcp}
@@ -3588,14 +3634,17 @@ export function Settings() {
                 handleCancelRuntimeTask={handleCancelRuntimeTask}
                 handleCancelBackgroundTask={handleCancelBackgroundTask}
               />
+              </Suspense>
             )}
 
             {/* Experimental Tab */}
             {activeTab === 'experimental' && (
-              <ExperimentalSettingsSection
-                flags={flags}
-                updateFlag={updateFlag}
-              />
+              <Suspense fallback={sectionFallback}>
+                <ExperimentalSettingsSection
+                  flags={flags}
+                  updateFlag={updateFlag}
+                />
+              </Suspense>
             )}
 
             {/* Global Save Actions (Visible on all tabs usually, but maybe better inside the form only if relevant) */}

@@ -1,8 +1,9 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { RefreshCw, Sparkles, History, X, Trash2, PenLine, Dices, Lightbulb, FileText, Play } from 'lucide-react';
 import { clsx } from 'clsx';
 import { resolveAssetUrl } from '../utils/pathManager';
 import type { AuthoringTaskHints } from '../utils/redclawAuthoring';
+import { usePageRefresh } from '../hooks/usePageRefresh';
 
 interface WanderItem {
   id: string;
@@ -32,6 +33,7 @@ interface WanderHistoryRecord {
 }
 
 interface WanderProps {
+  isActive?: boolean;
   onNavigateToManuscript?: (filePath: string) => void;
   onNavigateToRedClaw?: (payload: {
     content: string;
@@ -52,7 +54,7 @@ interface WanderProps {
   }) => void;
 }
 
-export function Wander({ onNavigateToManuscript, onNavigateToRedClaw }: WanderProps) {
+export function Wander({ isActive = true, onNavigateToManuscript, onNavigateToRedClaw }: WanderProps) {
   const [items, setItems] = useState<WanderItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [multiChoiceEnabled, setMultiChoiceEnabled] = useState(false);
@@ -335,9 +337,10 @@ export function Wander({ onNavigateToManuscript, onNavigateToRedClaw }: WanderPr
     }
   };
 
-  // 初始化：加载最新的历史记录
-  useEffect(() => {
-    (async () => {
+  const refreshPage = useCallback(async () => {
+      if (phase === 'running' || loading) {
+        return;
+      }
       try {
         const settings = await window.ipcRenderer.getSettings();
         setMultiChoiceEnabled(Boolean(settings?.wander_deep_think_enabled));
@@ -346,10 +349,19 @@ export function Wander({ onNavigateToManuscript, onNavigateToRedClaw }: WanderPr
       }
 
       const list = await loadHistoryList();
+      if (list.length > 0 && currentHistoryId) {
+        const currentRecord = list.find((item) => item.id === currentHistoryId);
+        if (currentRecord) {
+          loadHistory(currentRecord);
+          return;
+        }
+      }
+      if (list.length > 0 && parsedResult) {
+        return;
+      }
       if (list.length > 0) {
         loadHistory(list[0]);
       } else {
-        // 没有历史时强制回到初始态，避免状态残留导致无法开始第一次漫步
         setPhase('idle');
         setShowFinal(false);
         setParsedResult(null);
@@ -357,8 +369,13 @@ export function Wander({ onNavigateToManuscript, onNavigateToRedClaw }: WanderPr
         setItems([]);
         setCurrentHistoryId(null);
       }
-    })();
-  }, []);
+  }, [currentHistoryId, loading, parsedResult, phase]);
+
+  usePageRefresh({
+    isActive,
+    refresh: refreshPage,
+    triggerOnSettingsChange: true,
+  });
 
   useEffect(() => {
     const handleWanderProgress = (_event: unknown, payload?: unknown) => {

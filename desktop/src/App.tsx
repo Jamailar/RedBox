@@ -155,6 +155,7 @@ function App() {
   const clipboardPollingRef = useRef(false);
   const capturedYouTubeSetRef = useRef<Set<string>>(new Set());
   const viewHistoryRef = useRef<ViewType[]>(['manuscripts']);
+  const clipboardCaptureEnabled = currentView === 'knowledge';
 
   useEffect(() => {
     viewHistoryRef.current = [...viewHistoryRef.current.filter((item) => item !== currentView), currentView];
@@ -258,6 +259,10 @@ function App() {
   }, [captureStatus, clipboardCandidate, enqueueYoutubeFromClipboard]);
 
   useEffect(() => {
+    if (!clipboardCaptureEnabled) {
+      (window as unknown as { __redboxGlobalClipboardWatcher?: boolean }).__redboxGlobalClipboardWatcher = false;
+      return;
+    }
     (window as unknown as { __redboxGlobalClipboardWatcher?: boolean }).__redboxGlobalClipboardWatcher = true;
     let intervalId: number | null = null;
     const bootTimerId = window.setTimeout(() => {
@@ -297,7 +302,7 @@ function App() {
         window.clearInterval(intervalId);
       }
     };
-  }, [captureStatus, isCapturePromptOpen]);
+  }, [captureStatus, clipboardCaptureEnabled, isCapturePromptOpen]);
 
   return (
     <>

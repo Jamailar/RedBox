@@ -13,7 +13,6 @@ import {
     Grid2X2,
     Image as ImageIcon,
     ImagePlus,
-    MessageSquare,
     Plus,
     RefreshCw,
     Search,
@@ -26,8 +25,6 @@ import clsx from 'clsx';
 import { resolveAssetUrl } from '../utils/pathManager';
 import type { PendingChatMessage } from '../App';
 import { REDBOX_OFFICIAL_VIDEO_BASE_URL, getRedBoxOfficialVideoModel } from '../../shared/redboxVideo';
-import { EditableTrackTimeline } from '../components/manuscripts/EditableTrackTimeline';
-import { AudioWaveformPreview } from '../components/manuscripts/AudioWaveformPreview';
 import {
     ARTICLE_DRAFT_EXTENSION,
     AUDIO_DRAFT_EXTENSION,
@@ -40,8 +37,11 @@ import {
 const LegacyManuscriptsWorkspace = lazy(async () => ({
     default: (await import('./LegacyManuscriptsWorkspace')).Manuscripts,
 }));
-const ChatWorkspace = lazy(async () => ({
-    default: (await import('./Chat')).Chat,
+const VideoDraftWorkbench = lazy(async () => ({
+    default: (await import('../components/manuscripts/VideoDraftWorkbench')).VideoDraftWorkbench,
+}));
+const AudioDraftWorkbench = lazy(async () => ({
+    default: (await import('../components/manuscripts/AudioDraftWorkbench')).AudioDraftWorkbench,
 }));
 
 type DraftFilter = 'all' | 'drafts' | 'media' | 'image' | 'video' | 'audio' | 'folders';
@@ -170,17 +170,6 @@ function ensureDraftFileName(baseName: string, kind: CreateKind | 'unknown'): st
     return ensureManuscriptFileName(baseName, extension as typeof VIDEO_DRAFT_EXTENSION | typeof AUDIO_DRAFT_EXTENSION | '.md');
 }
 
-function formatTimelineMillis(input: unknown): string {
-    const numeric = typeof input === 'number' ? input : Number(input);
-    if (!Number.isFinite(numeric) || numeric <= 0) return '未设置';
-    if (numeric < 1000) return `${Math.round(numeric)}ms`;
-    const seconds = numeric / 1000;
-    if (seconds < 60) return `${seconds.toFixed(seconds >= 10 ? 0 : 1)}s`;
-    const minutes = Math.floor(seconds / 60);
-    const remainSeconds = Math.round(seconds % 60);
-    return `${minutes}m ${remainSeconds}s`;
-}
-
 interface ManuscriptsProps {
     pendingFile?: string | null;
     onFileConsumed?: () => void;
@@ -225,17 +214,6 @@ const VIDEO_GENERATION_MODE_OPTIONS = [
     { value: 'reference-guided', label: '参考图视频' },
     { value: 'first-last-frame', label: '首尾帧视频' },
 ] as const;
-
-const VIDEO_EDITING_SHORTCUTS = [
-    { label: '生成字幕', text: '请为当前视频工程规划字幕策略，并说明下一步如何生成和对齐字幕。' },
-];
-
-const AUDIO_EDITING_SHORTCUTS = [
-    { label: '去停顿', text: '请检查当前音频工程，给出去停顿和压缩冗余停顿的剪辑方案。' },
-    { label: '提取精华', text: '请从当前音频工程中提取最值得保留的高价值片段，并建议重组顺序。' },
-    { label: '整理口播', text: '请把当前音频工程整理成更清晰的口播结构，说明章节和过渡如何调整。' },
-    { label: '导出方案', text: '请基于当前音频工程，给出最合适的导出版本和交付建议。' },
-];
 
 const readFileAsDataUrl = (file: File): Promise<string> => new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -1296,366 +1274,56 @@ export function Manuscripts({ pendingFile, onFileConsumed, onNavigateToRedClaw, 
                     </div>
                 </div>
                 {isVideoDraft ? (
-                    <div className="flex-1 min-h-0 grid grid-cols-[320px_minmax(0,1fr)_380px] grid-rows-[minmax(0,1fr)_270px] bg-[#171717] text-white">
-                        <div className="min-h-0 border-r border-b border-white/10 bg-[#1f1f1f]">
-                            <div className="flex h-full min-h-0 flex-col">
-                                <div className="border-b border-white/10 px-4 py-3">
-                                    <div className="flex items-center gap-4 text-sm">
-                                        {['素材', '脚本', 'AI生成'].map((item, index) => (
-                                            <div key={item} className={clsx('font-medium', index === 0 ? 'text-cyan-300' : 'text-white/55')}>
-                                                {item}
-                                            </div>
-                                        ))}
-                                    </div>
-                                </div>
-                                <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
-                                    <button
-                                        type="button"
-                                        onClick={() => {
-                                            setBindAssetRole('asset');
-                                            setIsBindAssetModalOpen(true);
-                                        }}
-                                        className="flex w-full items-center justify-center gap-2 rounded-2xl border border-dashed border-white/15 bg-white/[0.04] px-4 py-5 text-sm text-white/80 hover:border-cyan-400/40 hover:bg-white/[0.06]"
-                                    >
-                                        <Plus className="h-4 w-4" />
-                                        导入 / 关联素材
-                                    </button>
-                                    <div className="mt-4 text-xs font-medium uppercase tracking-[0.22em] text-white/35">素材</div>
-                                    <div className="mt-3 space-y-3">
-                                        {(packagePreviewAssets.length > 0 ? packagePreviewAssets : [primaryVideoAsset].filter(Boolean)).map((asset, index) => {
-                                            if (!asset) return null;
-                                            const kind = inferAssetKind(asset);
-                                            return (
-                                                <div key={asset.id || index} className="rounded-2xl border border-white/10 bg-white/[0.04] p-3">
-                                                    <div className="overflow-hidden rounded-xl bg-black/30">
-                                                        {kind === 'video' ? (
-                                                            <video
-                                                                src={resolveAssetUrl(asset.previewUrl || asset.relativePath || '')}
-                                                                className="h-28 w-full object-cover"
-                                                                muted
-                                                                playsInline
-                                                            />
-                                                        ) : (
-                                                            <img
-                                                                src={resolveAssetUrl(asset.previewUrl || asset.relativePath || '')}
-                                                                alt={asset.title || asset.id}
-                                                                className="h-28 w-full object-cover"
-                                                            />
-                                                        )}
-                                                    </div>
-                                                    <div className="mt-3 flex items-center justify-between gap-2">
-                                                        <div className="min-w-0">
-                                                            <div className="truncate text-sm font-medium text-white">{asset.title || asset.relativePath || asset.id}</div>
-                                                            <div className="mt-1 text-xs text-white/45">{kind === 'video' ? '视频素材' : kind === 'image' ? '图片/关键帧' : '素材'}</div>
-                                                        </div>
-                                                        <div className="rounded-full border border-white/10 px-2 py-1 text-[10px] text-white/55">
-                                                            {asset.id === primaryVideoAsset?.id ? '预览中' : '已关联'}
-                                                        </div>
-                                                    </div>
-                                                </div>
-                                            );
-                                        })}
-                                        {packagePreviewAssets.length === 0 && !primaryVideoAsset && (
-                                            <div className="rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-5 text-sm text-white/55">
-                                                还没有关联素材。先导入视频、图片或关键帧。
-                                            </div>
-                                        )}
-                                    </div>
-                                    <div className="mt-6 flex items-center justify-between">
-                                        <div className="text-xs font-medium uppercase tracking-[0.22em] text-white/35">脚本</div>
-                                        <div className="text-xs text-white/40">{isSavingEditorBody ? '保存中...' : editorBodyDirty ? '待保存' : '已保存'}</div>
-                                    </div>
-                                    <textarea
-                                        value={editorBody}
-                                        onChange={(event) => {
-                                            setEditorBody(event.target.value);
-                                            setEditorBodyDirty(true);
-                                        }}
-                                        placeholder="在这里写视频脚本、镜头安排、剪辑目标和导出要求。"
-                                        className="mt-3 h-64 w-full resize-none rounded-2xl border border-white/10 bg-[#141414] px-4 py-4 text-sm leading-7 text-white outline-none placeholder:text-white/30"
-                                    />
-                                </div>
-                            </div>
-                        </div>
-                        <div className="min-h-0 border-r border-b border-white/10 bg-[#111111]">
-                            <div className="flex h-full min-h-0 flex-col px-5 py-4">
-                                <div className="flex items-center justify-between text-sm text-white/65">
-                                    <span>预览</span>
-                                    <span>{timelineClipCount} 个片段</span>
-                                </div>
-                                <div className="mt-4 flex-1 overflow-hidden rounded-[24px] border border-white/10 bg-[#1b1b1b]">
-                                    {primaryVideoAsset ? (
-                                        inferAssetKind(primaryVideoAsset) === 'video' ? (
-                                            <video
-                                                src={resolveAssetUrl(primaryVideoAsset.previewUrl || primaryVideoAsset.relativePath || '')}
-                                                className="h-full w-full object-contain"
-                                                controls
-                                                playsInline
-                                            />
-                                        ) : (
-                                            <img
-                                                src={resolveAssetUrl(primaryVideoAsset.previewUrl || primaryVideoAsset.relativePath || '')}
-                                                alt={primaryVideoAsset.title || currentDescriptor.title}
-                                                className="h-full w-full object-contain"
-                                            />
-                                        )
-                                    ) : (
-                                        <div className="flex h-full items-center justify-center text-center text-white/55">
-                                            <div>
-                                                <Clapperboard className="mx-auto h-10 w-10 text-white/35" />
-                                                <div className="mt-3 text-sm">还没有可预览的视频素材</div>
-                                                <div className="mt-1 text-xs text-white/35">先在左侧导入或关联视频、图片或关键帧</div>
-                                            </div>
-                                        </div>
-                                    )}
-                                </div>
-                                <div className="mt-4 grid grid-cols-4 gap-3">
-                                    {[
-                                        { label: '素材', value: `${packageAssets.length}` },
-                                        { label: '轨道', value: `${timelineTrackNames.length}` },
-                                        { label: '片段', value: `${timelineClipCount}` },
-                                        { label: '状态', value: packageAssets.length > 0 ? '编辑中' : '待整理' },
-                                    ].map((stat) => (
-                                        <div key={stat.label} className="rounded-2xl border border-white/10 bg-white/[0.04] px-3 py-3">
-                                            <div className="text-[11px] text-white/35">{stat.label}</div>
-                                            <div className="mt-1 text-sm font-medium text-white">{stat.value}</div>
-                                        </div>
-                                    ))}
-                                </div>
-                            </div>
-                        </div>
-                        <div className="row-span-2 min-h-0 border-l border-white/10 bg-[#131313] text-white">
-                            <div className="flex h-full min-h-0 flex-col">
-                                <div className="border-b border-white/10 px-5 py-4">
-                                    <div className="flex items-center gap-2 text-sm font-medium text-white">
-                                        <MessageSquare className="h-4 w-4 text-cyan-400" />
-                                        视频剪辑助手
-                                    </div>
-                                    <div className="mt-1 text-xs leading-5 text-white/45">右侧对话区负责给方案、检查时间线、推动粗剪和成片流程。</div>
-                                </div>
-                                <div className="min-h-0 flex-1 overflow-hidden">
-                                    {editorChatSessionId ? (
-                                        <Suspense fallback={<div className="h-full flex items-center justify-center text-white/45">AI 会话加载中...</div>}>
-                                            <ChatWorkspace
-                                                fixedSessionId={editorChatSessionId}
-                                                defaultCollapsed={true}
-                                                showClearButton={true}
-                                                fixedSessionBannerText=""
-                                                showWelcomeShortcuts={false}
-                                                showComposerShortcuts={true}
-                                                shortcuts={VIDEO_EDITING_SHORTCUTS}
-                                                welcomeShortcuts={VIDEO_EDITING_SHORTCUTS}
-                                                welcomeTitle="视频剪辑助手"
-                                                welcomeSubtitle="围绕当前视频工程做粗剪、调序、trim、字幕和导出建议"
-                                                contentLayout="default"
-                                                contentWidthPreset="narrow"
-                                                allowFileUpload={true}
-                                                messageWorkflowPlacement="bottom"
-                                                messageWorkflowVariant="compact"
-                                                messageWorkflowEmphasis="default"
-                                                surfaceTone="dark"
-                                            />
-                                        </Suspense>
-                                    ) : (
-                                        <div className="h-full flex items-center justify-center px-6 text-center text-sm text-white/45">正在初始化视频剪辑会话...</div>
-                                    )}
-                                </div>
-                            </div>
-                        </div>
-                        <div className="col-span-2 min-h-0 border-r border-white/10 bg-[#151515] px-5 py-4">
-                            <EditableTrackTimeline
-                                filePath={editorFile}
-                                clips={timelineClips}
-                                fallbackTracks={timelineTrackNames}
-                                accent="cyan"
-                                emptyLabel="拖入素材到时间轴开始排布镜头"
-                                onPackageStateChange={(state) => setPackageState(state as PackageState)}
-                            />
-                        </div>
-                    </div>
+                    <Suspense fallback={<div className="h-full flex items-center justify-center text-white/45">视频工作台加载中...</div>}>
+                        <VideoDraftWorkbench
+                            title={currentDescriptor.title}
+                            editorFile={editorFile}
+                            packageAssets={packageAssets}
+                            packagePreviewAssets={packagePreviewAssets}
+                            primaryVideoAsset={primaryVideoAsset}
+                            timelineClipCount={timelineClipCount}
+                            timelineTrackNames={timelineTrackNames}
+                            timelineClips={timelineClips}
+                            editorBody={editorBody}
+                            editorBodyDirty={editorBodyDirty}
+                            isSavingEditorBody={isSavingEditorBody}
+                            editorChatSessionId={editorChatSessionId}
+                            onEditorBodyChange={(value) => {
+                                setEditorBody(value);
+                                setEditorBodyDirty(true);
+                            }}
+                            onOpenBindAssets={() => {
+                                setBindAssetRole('asset');
+                                setIsBindAssetModalOpen(true);
+                            }}
+                            onPackageStateChange={(state) => setPackageState(state as PackageState)}
+                        />
+                    </Suspense>
                 ) : isAudioDraft ? (
-                    <div className="flex-1 min-h-0 grid grid-cols-[320px_minmax(0,1fr)_380px] grid-rows-[minmax(0,1fr)_270px] bg-[#171717] text-white">
-                        <div className="min-h-0 border-r border-b border-white/10 bg-[#1f1f1f]">
-                            <div className="flex h-full min-h-0 flex-col">
-                                <div className="border-b border-white/10 px-4 py-3">
-                                    <div className="flex items-center gap-4 text-sm">
-                                        {['素材', '章节', '脚本'].map((item, index) => (
-                                            <div key={item} className={clsx('font-medium', index === 0 ? 'text-emerald-300' : 'text-white/55')}>
-                                                {item}
-                                            </div>
-                                        ))}
-                                    </div>
-                                </div>
-                                <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
-                                    <button
-                                        type="button"
-                                        onClick={() => {
-                                            setBindAssetRole('asset');
-                                            setIsBindAssetModalOpen(true);
-                                        }}
-                                        className="flex w-full items-center justify-center gap-2 rounded-2xl border border-dashed border-white/15 bg-white/[0.04] px-4 py-5 text-sm text-white/80 hover:border-emerald-400/40 hover:bg-white/[0.06]"
-                                    >
-                                        <Plus className="h-4 w-4" />
-                                        导入 / 关联音频
-                                    </button>
-                                    <div className="mt-4 text-xs font-medium uppercase tracking-[0.22em] text-white/35">素材</div>
-                                    <div className="mt-3 space-y-3">
-                                        {(packagePreviewAssets.length > 0 ? packagePreviewAssets : [primaryAudioAsset].filter(Boolean)).map((asset, index) => {
-                                            if (!asset) return null;
-                                            return (
-                                                <div key={asset.id || index} className="rounded-2xl border border-white/10 bg-white/[0.04] p-3">
-                                                    <div className="rounded-xl border border-white/8 bg-black/20 px-3 py-4">
-                                                        <div className="flex items-center gap-2 text-white/75">
-                                                            <AudioLines className="h-4 w-4" />
-                                                            <span className="text-sm">音频素材</span>
-                                                        </div>
-                                                        <div className="mt-4 flex h-12 items-end gap-1.5">
-                                                            {Array.from({ length: 26 }).map((_, barIndex) => (
-                                                                <div
-                                                                    key={barIndex}
-                                                                    className="flex-1 rounded-full bg-[linear-gradient(180deg,rgba(255,255,255,0.92),rgba(16,185,129,0.22))]"
-                                                                    style={{ height: `${20 + (((barIndex * 29) % 62))}%` }}
-                                                                />
-                                                            ))}
-                                                        </div>
-                                                    </div>
-                                                    <div className="mt-3 flex items-center justify-between gap-2">
-                                                        <div className="min-w-0">
-                                                            <div className="truncate text-sm font-medium text-white">{asset.title || asset.relativePath || asset.id}</div>
-                                                            <div className="mt-1 text-xs text-white/45">已关联音频</div>
-                                                        </div>
-                                                        <div className="rounded-full border border-white/10 px-2 py-1 text-[10px] text-white/55">
-                                                            {asset.id === primaryAudioAsset?.id ? '预览中' : '已关联'}
-                                                        </div>
-                                                    </div>
-                                                </div>
-                                            );
-                                        })}
-                                        {packagePreviewAssets.length === 0 && !primaryAudioAsset && (
-                                            <div className="rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-5 text-sm text-white/55">
-                                                还没有关联音频素材。先导入录音、配乐或口播原始文件。
-                                            </div>
-                                        )}
-                                    </div>
-                                    <div className="mt-6 text-xs font-medium uppercase tracking-[0.22em] text-white/35">章节</div>
-                                    <div className="mt-3 space-y-2">
-                                        {(timelineClips.length > 0 ? timelineClips : ['开场口播', '主体信息', '结尾收束'].map((name, index) => ({ name, order: index, track: 'A1', enabled: true }))).slice(0, 4).map((item: any, index) => (
-                                            <div key={`${String(item.assetId || item.name)}-${index}`} className="rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3">
-                                                <div className="flex items-center justify-between gap-3">
-                                                    <div className="min-w-0">
-                                                        <div className="truncate text-sm font-medium text-white">{String(item.name || `片段 ${index + 1}`)}</div>
-                                                        <div className="mt-1 text-[11px] text-white/40">{String(item.track || 'A1')} · {formatTimelineMillis(item.durationMs)}</div>
-                                                    </div>
-                                                    <div className="text-[11px] text-white/40">{item.enabled === false ? '禁用' : '启用'}</div>
-                                                </div>
-                                            </div>
-                                        ))}
-                                    </div>
-                                    <div className="mt-6 flex items-center justify-between">
-                                        <div className="text-xs font-medium uppercase tracking-[0.22em] text-white/35">脚本</div>
-                                        <div className="text-xs text-white/40">{isSavingEditorBody ? '保存中...' : editorBodyDirty ? '待保存' : '已保存'}</div>
-                                    </div>
-                                    <textarea
-                                        value={editorBody}
-                                        onChange={(event) => {
-                                            setEditorBody(event.target.value);
-                                            setEditorBodyDirty(true);
-                                        }}
-                                        placeholder="在这里编辑音频结构、章节摘要、停顿处理和导出备注。"
-                                        className="mt-3 h-56 w-full resize-none rounded-2xl border border-white/10 bg-[#141414] px-4 py-4 text-sm leading-7 text-white outline-none placeholder:text-white/30"
-                                    />
-                                </div>
-                            </div>
-                        </div>
-                        <div className="min-h-0 border-r border-b border-white/10 bg-[#111111]">
-                            <div className="flex h-full min-h-0 flex-col px-5 py-4">
-                                <div className="flex items-center justify-between text-sm text-white/65">
-                                    <span>波形预览</span>
-                                    <span>{timelineClipCount} 个片段</span>
-                                </div>
-                                <div className="mt-4 rounded-[24px] border border-white/10 bg-[#1b1b1b] p-4">
-                                    {primaryAudioAsset && inferAssetKind(primaryAudioAsset) === 'audio' ? (
-                                        <audio
-                                            src={resolveAssetUrl(primaryAudioAsset.previewUrl || primaryAudioAsset.relativePath || '')}
-                                            controls
-                                            className="w-full"
-                                        />
-                                    ) : (
-                                        <div className="flex items-center gap-3 text-white/55">
-                                            <AudioLines className="h-5 w-5" />
-                                            <span className="text-sm">还没有可预览的音频素材</span>
-                                        </div>
-                                    )}
-                                </div>
-                                <div className="mt-4 flex-1 min-h-0">
-                                    <AudioWaveformPreview
-                                        src={primaryAudioAsset ? resolveAssetUrl(primaryAudioAsset.previewUrl || primaryAudioAsset.relativePath || '') : null}
-                                    />
-                                </div>
-                                <div className="mt-4 grid grid-cols-4 gap-3">
-                                    {[
-                                        { label: '素材', value: `${packageAssets.length}` },
-                                        { label: '章节', value: `${timelineClipCount}` },
-                                        { label: '轨道', value: `${timelineTrackNames.length}` },
-                                        { label: '状态', value: packageAssets.length > 0 ? '编辑中' : '待整理' },
-                                    ].map((stat) => (
-                                        <div key={stat.label} className="rounded-2xl border border-white/10 bg-white/[0.04] px-3 py-3">
-                                            <div className="text-[11px] text-white/35">{stat.label}</div>
-                                            <div className="mt-1 text-sm font-medium text-white">{stat.value}</div>
-                                        </div>
-                                    ))}
-                                </div>
-                            </div>
-                        </div>
-                        <div className="row-span-2 min-h-0 border-l border-white/10 bg-[#131313] text-white">
-                            <div className="flex h-full min-h-0 flex-col">
-                                <div className="border-b border-white/10 px-5 py-4">
-                                    <div className="flex items-center gap-2 text-sm font-medium text-white">
-                                        <MessageSquare className="h-4 w-4 text-emerald-400" />
-                                        音频剪辑助手
-                                    </div>
-                                    <div className="mt-1 text-xs leading-5 text-white/45">右侧对话区负责章节整理、去停顿、精华提取和导出建议。</div>
-                                </div>
-                                <div className="min-h-0 flex-1 overflow-hidden">
-                                    {editorChatSessionId ? (
-                                        <Suspense fallback={<div className="h-full flex items-center justify-center text-white/45">AI 会话加载中...</div>}>
-                                            <ChatWorkspace
-                                                fixedSessionId={editorChatSessionId}
-                                                defaultCollapsed={true}
-                                                showClearButton={true}
-                                                fixedSessionBannerText=""
-                                                showWelcomeShortcuts={false}
-                                                showComposerShortcuts={true}
-                                                shortcuts={AUDIO_EDITING_SHORTCUTS}
-                                                welcomeShortcuts={AUDIO_EDITING_SHORTCUTS}
-                                                welcomeTitle="音频剪辑助手"
-                                                welcomeSubtitle="围绕当前音频工程做章节整理、停顿清理和精华提取"
-                                                contentLayout="default"
-                                                contentWidthPreset="narrow"
-                                                allowFileUpload={true}
-                                                messageWorkflowPlacement="bottom"
-                                                messageWorkflowVariant="compact"
-                                                messageWorkflowEmphasis="default"
-                                                surfaceTone="dark"
-                                            />
-                                        </Suspense>
-                                    ) : (
-                                        <div className="h-full flex items-center justify-center px-6 text-center text-sm text-white/45">正在初始化音频剪辑会话...</div>
-                                    )}
-                                </div>
-                            </div>
-                        </div>
-                        <div className="col-span-2 min-h-0 border-r border-white/10 bg-[#151515] px-5 py-4">
-                            <EditableTrackTimeline
-                                filePath={editorFile}
-                                clips={timelineClips}
-                                fallbackTracks={timelineTrackNames}
-                                accent="emerald"
-                                emptyLabel="拖入音频片段到时间轴开始整理章节"
-                                onPackageStateChange={(state) => setPackageState(state as PackageState)}
-                            />
-                        </div>
-                    </div>
+                    <Suspense fallback={<div className="h-full flex items-center justify-center text-white/45">音频工作台加载中...</div>}>
+                        <AudioDraftWorkbench
+                            editorFile={editorFile}
+                            packageAssets={packageAssets}
+                            packagePreviewAssets={packagePreviewAssets}
+                            primaryAudioAsset={primaryAudioAsset}
+                            timelineClipCount={timelineClipCount}
+                            timelineTrackNames={timelineTrackNames}
+                            timelineClips={timelineClips}
+                            editorBody={editorBody}
+                            editorBodyDirty={editorBodyDirty}
+                            isSavingEditorBody={isSavingEditorBody}
+                            editorChatSessionId={editorChatSessionId}
+                            onEditorBodyChange={(value) => {
+                                setEditorBody(value);
+                                setEditorBodyDirty(true);
+                            }}
+                            onOpenBindAssets={() => {
+                                setBindAssetRole('asset');
+                                setIsBindAssetModalOpen(true);
+                            }}
+                            onPackageStateChange={(state) => setPackageState(state as PackageState)}
+                        />
+                    </Suspense>
                 ) : isRichPostDraft ? (
                     <div className="flex-1 min-h-0 grid grid-cols-[minmax(0,1fr)_420px]">
                         <div className="min-h-0">

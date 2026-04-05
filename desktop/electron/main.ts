@@ -100,15 +100,8 @@ import {
   saveCoverTemplateImage,
   type CoverAsset,
 } from './core/coverStudioStore';
-import { getRedClawBackgroundRunner } from './core/redclawBackgroundRunner';
-import { getAdvisorYoutubeBackgroundRunner, getDefaultAdvisorYoutubeChannelConfig } from './core/advisorYoutubeRunner';
 import { loadOfficialFeatureModule } from './officialFeatureBridge';
-import { getMemoryMaintenanceService } from './core/memoryMaintenanceService';
-import { getBackgroundTaskRegistry } from './core/backgroundTaskRegistry';
-import { getHeadlessWorkerProcessManager } from './core/headlessWorkerProcessManager';
-import { getAssistantDaemonService } from './core/assistantDaemonService';
 import { applyGlobalNetworkProxy } from './core/networkProxy';
-import { getSessionBridgeService } from './core/sessionBridgeService';
 import {
   getDebugLogDirectory,
   getRecentDebugLogs,
@@ -232,6 +225,70 @@ let advisorYoutubeRunnerListenersAttached = false;
 let assistantDaemonListenersAttached = false;
 let appShutdownInProgress = false;
 let appShutdownPromise: Promise<void> | null = null;
+
+async function getRedClawBackgroundRunnerLazy() {
+  const module = await import('./core/redclawBackgroundRunner');
+  return module.getRedClawBackgroundRunner();
+}
+
+async function getAdvisorYoutubeRunnerLazy() {
+  const module = await import('./core/advisorYoutubeRunner');
+  return module.getAdvisorYoutubeBackgroundRunner();
+}
+
+async function getDefaultAdvisorYoutubeChannelConfigLazy(input?: unknown) {
+  const module = await import('./core/advisorYoutubeRunner');
+  return module.getDefaultAdvisorYoutubeChannelConfig(input as Parameters<typeof module.getDefaultAdvisorYoutubeChannelConfig>[0]);
+}
+
+async function getMemoryMaintenanceServiceLazy() {
+  const module = await import('./core/memoryMaintenanceService');
+  return module.getMemoryMaintenanceService();
+}
+
+async function getBackgroundTaskRegistryLazy() {
+  const module = await import('./core/backgroundTaskRegistry');
+  return module.getBackgroundTaskRegistry();
+}
+
+async function getAssistantDaemonServiceLazy() {
+  const module = await import('./core/assistantDaemonService');
+  return module.getAssistantDaemonService();
+}
+
+async function getSessionBridgeServiceLazy() {
+  const module = await import('./core/sessionBridgeService');
+  return module.getSessionBridgeService();
+}
+
+async function getHeadlessWorkerProcessManagerLazy() {
+  const module = await import('./core/headlessWorkerProcessManager');
+  return module.getHeadlessWorkerProcessManager();
+}
+
+async function shouldAutoStartAssistantDaemonAcrossSpaces(): Promise<boolean> {
+  const knownSpaceIds = Array.from(new Set([
+    ...listSpaces().map((item) => item.id),
+    getActiveSpaceId(),
+  ].filter(Boolean)));
+  for (const spaceId of knownSpaceIds) {
+    const configPath = path.join(getWorkspacePathsForSpace(spaceId).redclaw, 'assistant-daemon.json');
+    try {
+      const raw = await fs.readFile(configPath, 'utf-8');
+      const parsed = JSON.parse(raw) as {
+        enabled?: boolean;
+        autoStart?: boolean;
+      };
+      if (Boolean(parsed?.enabled) && parsed?.autoStart !== false) {
+        return true;
+      }
+    } catch {
+      // ignore missing or malformed configs; the daemon service validates on demand
+    }
+  }
+  return false;
+}
+
 const appStartupEpochMs = Date.now();
 const startupPhaseMarks = new Map<string, number>();
 const DOWNLOAD_RETRY_DELAYS_MS = [0, 600, 1600];
@@ -825,15 +882,15 @@ async function shutdownBackgroundServices(): Promise<void> {
     };
 
     fileWatcher.stop();
-    getMemoryMaintenanceService().stop();
-    getAdvisorYoutubeBackgroundRunner().stop();
+    (await getMemoryMaintenanceServiceLazy()).stop();
+    (await getAdvisorYoutubeRunnerLazy()).stop();
 
     await Promise.allSettled([
       capture('http-server', () => stopHttpServer()),
-      capture('redclaw-runner', () => getRedClawBackgroundRunner().stop({ persist: false })),
-      capture('assistant-daemon', () => getAssistantDaemonService().dispose()),
-      capture('headless-workers', () => getHeadlessWorkerProcessManager().dispose()),
-      capture('session-bridge', () => getSessionBridgeService().stop()),
+      capture('redclaw-runner', async () => (await getRedClawBackgroundRunnerLazy()).stop({ persist: false })),
+      capture('assistant-daemon', async () => (await getAssistantDaemonServiceLazy()).dispose()),
+      capture('headless-workers', async () => (await getHeadlessWorkerProcessManagerLazy()).dispose()),
+      capture('session-bridge', async () => (await getSessionBridgeServiceLazy()).stop()),
     ]);
 
     if (errors.length > 0) {
@@ -855,9 +912,9 @@ app.on('window-all-closed', async () => {
     }
     try {
       const [keepRedClawAlive, keepAdvisorYoutubeAlive, keepAssistantDaemonAlive] = await Promise.all([
-        getRedClawBackgroundRunner().shouldKeepAliveWhenNoWindow(),
-        getAdvisorYoutubeBackgroundRunner().shouldKeepAliveWhenNoWindow(),
-        getAssistantDaemonService().shouldKeepAliveWhenNoWindow(),
+        (await getRedClawBackgroundRunnerLazy()).shouldKeepAliveWhenNoWindow(),
+        (await getAdvisorYoutubeRunnerLazy()).shouldKeepAliveWhenNoWindow(),
+        (await getAssistantDaemonServiceLazy()).shouldKeepAliveWhenNoWindow(),
       ]);
       if (keepRedClawAlive || keepAdvisorYoutubeAlive || keepAssistantDaemonAlive) {
         console.log('[BackgroundRunner] Keep app alive in background (no window).', {
@@ -1373,15 +1430,15 @@ async function refreshForSpaceChange() {
 
   const { vectorStore } = await import('./core/vector/VectorStore');
   await vectorStore.refreshCache();
-  await getRedClawBackgroundRunner().reloadForWorkspaceChange();
-  await getMemoryMaintenanceService().reloadForWorkspaceChange();
-  await getAssistantDaemonService().reloadForWorkspaceChange();
+  await (await getRedClawBackgroundRunnerLazy()).reloadForWorkspaceChange();
+  await (await getMemoryMaintenanceServiceLazy()).reloadForWorkspaceChange();
+  await (await getAssistantDaemonServiceLazy()).reloadForWorkspaceChange();
 
   win?.webContents.send('space:changed', { activeSpaceId: getActiveSpaceId() });
 }
 
 async function initializeRedClawBackgroundRunner() {
-  const runner = getRedClawBackgroundRunner();
+  const runner = await getRedClawBackgroundRunnerLazy();
   if (!redClawRunnerListenersAttached) {
     runner.on('status', (status) => {
       win?.webContents.send('redclaw:runner-status', status);
@@ -1398,7 +1455,7 @@ async function initializeRedClawBackgroundRunner() {
 }
 
 async function initializeBackgroundTaskRegistry() {
-  const registry = getBackgroundTaskRegistry();
+  const registry = await getBackgroundTaskRegistryLazy();
   if (!backgroundTaskRegistryListenersAttached) {
     registry.on('task-updated', (task) => {
       win?.webContents.send('background:task-updated', task);
@@ -1408,7 +1465,7 @@ async function initializeBackgroundTaskRegistry() {
 }
 
 async function initializeAssistantDaemon() {
-  const daemon = getAssistantDaemonService();
+  const daemon = await getAssistantDaemonServiceLazy();
   if (!assistantDaemonListenersAttached) {
     daemon.on('status', (status) => {
       win?.webContents.send('assistant:daemon-status', status);
@@ -1422,7 +1479,7 @@ async function initializeAssistantDaemon() {
 }
 
 async function initializeSessionBridge() {
-  await getSessionBridgeService().start();
+  await (await getSessionBridgeServiceLazy()).start();
 }
 
 let startupCoreServicesPromise: Promise<void> | null = null;
@@ -1539,13 +1596,15 @@ app.whenReady().then(async () => {
       void (async () => {
         markStartupPhase('background-phase-2-start');
         try {
-          await initializeAssistantDaemon();
+          if (await shouldAutoStartAssistantDaemonAcrossSpaces()) {
+            await initializeAssistantDaemon();
+          }
         } catch (e) {
           console.error('[AssistantDaemon] Init failed:', e);
         }
 
         try {
-          getMemoryMaintenanceService().start();
+          (await getMemoryMaintenanceServiceLazy()).start();
         } catch (e) {
           console.error('[MemoryMaintenance] Init failed:', e);
         }
@@ -1558,7 +1617,7 @@ app.whenReady().then(async () => {
         markStartupPhase('background-phase-3-start');
         try {
           initializeTaskQueueWithExecutors();
-          const advisorYoutubeRunner = getAdvisorYoutubeBackgroundRunner();
+          const advisorYoutubeRunner = await getAdvisorYoutubeRunnerLazy();
           if (!advisorYoutubeRunnerListenersAttached) {
             advisorYoutubeRunner.on('progress', ({ advisorId, progress }) => {
               win?.webContents.send('advisors:download-progress', { advisorId, progress });
@@ -2203,31 +2262,31 @@ ipcMain.handle('memory:search', async (_, payload?: { query?: string; includeArc
 });
 
 ipcMain.handle('memory:maintenance-status', async () => {
-  return getMemoryMaintenanceService().getStatus();
+  return (await getMemoryMaintenanceServiceLazy()).getStatus();
 });
 
 ipcMain.handle('memory:maintenance-run', async () => {
-  return getMemoryMaintenanceService().runNow();
+  return (await getMemoryMaintenanceServiceLazy()).runNow();
 });
 
 ipcMain.handle('background-tasks:list', async () => {
-  return getBackgroundTaskRegistry().listTasks();
+  return (await getBackgroundTaskRegistryLazy()).listTasks();
 });
 
 ipcMain.handle('background-tasks:get', async (_, payload?: { taskId?: string }) => {
-  return getBackgroundTaskRegistry().getTask(String(payload?.taskId || ''));
+  return (await getBackgroundTaskRegistryLazy()).getTask(String(payload?.taskId || ''));
 });
 
 ipcMain.handle('background-tasks:cancel', async (_, payload?: { taskId?: string }) => {
-  return getBackgroundTaskRegistry().cancelTask(String(payload?.taskId || ''));
+  return (await getBackgroundTaskRegistryLazy()).cancelTask(String(payload?.taskId || ''));
 });
 
 ipcMain.handle('background-workers:get-pool-state', async () => {
-  return getHeadlessWorkerProcessManager().getPoolSnapshot();
+  return (await getHeadlessWorkerProcessManagerLazy()).getPoolSnapshot();
 });
 
 ipcMain.handle('assistant:daemon-status', async () => {
-  return getAssistantDaemonService().getStatus();
+  return (await getAssistantDaemonServiceLazy()).getStatus();
 });
 
 ipcMain.handle('assistant:daemon-start', async (_, payload: {
@@ -2264,7 +2323,7 @@ ipcMain.handle('assistant:daemon-start', async (_, payload: {
   };
 } = {}) => {
   try {
-    return await getAssistantDaemonService().start(payload);
+    return await (await getAssistantDaemonServiceLazy()).start(payload);
   } catch (error) {
     return { success: false, error: String(error) };
   }
@@ -2272,7 +2331,7 @@ ipcMain.handle('assistant:daemon-start', async (_, payload: {
 
 ipcMain.handle('assistant:daemon-stop', async () => {
   try {
-    return await getAssistantDaemonService().stop();
+    return await (await getAssistantDaemonServiceLazy()).stop();
   } catch (error) {
     return { success: false, error: String(error) };
   }
@@ -2313,7 +2372,7 @@ ipcMain.handle('assistant:daemon-set-config', async (_, payload: {
   };
 } = {}) => {
   try {
-    return await getAssistantDaemonService().setConfig(payload);
+    return await (await getAssistantDaemonServiceLazy()).setConfig(payload);
   } catch (error) {
     return { success: false, error: String(error) };
   }
@@ -2324,7 +2383,7 @@ ipcMain.handle('assistant:daemon-weixin-login-start', async (_, payload: {
   force?: boolean;
 } = {}) => {
   try {
-    return await getAssistantDaemonService().startWeixinLogin(payload);
+    return await (await getAssistantDaemonServiceLazy()).startWeixinLogin(payload);
   } catch (error) {
     return {
       success: false,
@@ -2339,7 +2398,7 @@ ipcMain.handle('assistant:daemon-weixin-login-wait', async (_, payload: {
   timeoutMs?: number;
 } = {}) => {
   try {
-    return await getAssistantDaemonService().waitForWeixinLogin(payload);
+    return await (await getAssistantDaemonServiceLazy()).waitForWeixinLogin(payload);
   } catch (error) {
     return {
       success: false,
@@ -2351,19 +2410,19 @@ ipcMain.handle('assistant:daemon-weixin-login-wait', async (_, payload: {
 
 ipcMain.handle('session-bridge:status', async () => {
   await ensureSessionBridgeStarted();
-  return getSessionBridgeService().getStatus();
+  return (await getSessionBridgeServiceLazy()).getStatus();
 });
 
 ipcMain.handle('session-bridge:list-sessions', async () => {
   await ensureSessionBridgeStarted();
-  return getSessionBridgeService().listSessions();
+  return (await getSessionBridgeServiceLazy()).listSessions();
 });
 
 ipcMain.handle('session-bridge:get-session', async (_, payload?: { sessionId?: string }) => {
   await ensureSessionBridgeStarted();
   const sessionId = String(payload?.sessionId || '').trim();
   if (!sessionId) return null;
-  return getSessionBridgeService().getSessionSnapshot(sessionId);
+  return (await getSessionBridgeServiceLazy()).getSessionSnapshot(sessionId);
 });
 
 ipcMain.handle('session-bridge:create-session', async (_, payload?: {
@@ -2373,7 +2432,7 @@ ipcMain.handle('session-bridge:create-session', async (_, payload?: {
   metadata?: Record<string, unknown>;
 }) => {
   await ensureSessionBridgeStarted();
-  return getSessionBridgeService().createSession(payload);
+  return (await getSessionBridgeServiceLazy()).createSession(payload);
 });
 
 ipcMain.handle('session-bridge:send-message', async (_, payload?: {
@@ -2386,13 +2445,13 @@ ipcMain.handle('session-bridge:send-message', async (_, payload?: {
   if (!sessionId || !message) {
     return { accepted: false, error: 'sessionId and message are required' };
   }
-  return getSessionBridgeService().sendSessionMessage(sessionId, message);
+  return (await getSessionBridgeServiceLazy()).sendSessionMessage(sessionId, message);
 });
 
 ipcMain.handle('session-bridge:list-permissions', async (_, payload?: { sessionId?: string }) => {
   await ensureSessionBridgeStarted();
   const sessionId = String(payload?.sessionId || '').trim();
-  return getSessionBridgeService().listPermissionRequests(sessionId || undefined);
+  return (await getSessionBridgeServiceLazy()).listPermissionRequests(sessionId || undefined);
 });
 
 ipcMain.handle('session-bridge:resolve-permission', async (_, payload?: {
@@ -2406,7 +2465,7 @@ ipcMain.handle('session-bridge:resolve-permission', async (_, payload?: {
   }
   await ensureSessionBridgeStarted();
   const { ToolConfirmationOutcome } = require('./core/toolRegistry');
-  return getSessionBridgeService().resolvePermissionRequest(
+  return (await getSessionBridgeServiceLazy()).resolvePermissionRequest(
     requestId,
     outcome === ToolConfirmationOutcome.ProceedAlways
       ? ToolConfirmationOutcome.ProceedAlways
@@ -2756,7 +2815,7 @@ ipcMain.handle('redclaw:open-project', async (_, { projectDir }: { projectDir: s
 });
 
 ipcMain.handle('redclaw:runner-status', async () => {
-  return getRedClawBackgroundRunner().getStatus();
+  return (await getRedClawBackgroundRunnerLazy()).getStatus();
 });
 
 ipcMain.handle('redclaw:runner-start', async (_, payload: {
@@ -2768,7 +2827,7 @@ ipcMain.handle('redclaw:runner-start', async (_, payload: {
   heartbeatIntervalMinutes?: number;
 } = {}) => {
   try {
-    return await getRedClawBackgroundRunner().start(payload);
+    return await (await getRedClawBackgroundRunnerLazy()).start(payload);
   } catch (error) {
     return { success: false, error: String(error) };
   }
@@ -2776,7 +2835,7 @@ ipcMain.handle('redclaw:runner-start', async (_, payload: {
 
 ipcMain.handle('redclaw:runner-stop', async () => {
   try {
-    return await getRedClawBackgroundRunner().stop();
+    return await (await getRedClawBackgroundRunnerLazy()).stop();
   } catch (error) {
     return { success: false, error: String(error) };
   }
@@ -2784,7 +2843,7 @@ ipcMain.handle('redclaw:runner-stop', async () => {
 
 ipcMain.handle('redclaw:runner-run-now', async (_, payload: { projectId?: string } = {}) => {
   try {
-    return await getRedClawBackgroundRunner().runNow(payload.projectId);
+    return await (await getRedClawBackgroundRunnerLazy()).runNow(payload.projectId);
   } catch (error) {
     return { success: false, error: String(error) };
   }
@@ -2796,7 +2855,7 @@ ipcMain.handle('redclaw:runner-set-project', async (_, payload: {
   prompt?: string;
 }) => {
   try {
-    return await getRedClawBackgroundRunner().setProjectState(payload);
+    return await (await getRedClawBackgroundRunnerLazy()).setProjectState(payload);
   } catch (error) {
     return { success: false, error: String(error) };
   }
@@ -2814,7 +2873,7 @@ ipcMain.handle('redclaw:runner-set-config', async (_, payload: {
   heartbeatPrompt?: string;
 } = {}) => {
   try {
-    return await getRedClawBackgroundRunner().setRunnerConfig(payload);
+    return await (await getRedClawBackgroundRunnerLazy()).setRunnerConfig(payload);
   } catch (error) {
     return { success: false, error: String(error) };
   }
@@ -2822,7 +2881,7 @@ ipcMain.handle('redclaw:runner-set-config', async (_, payload: {
 
 ipcMain.handle('redclaw:runner-list-scheduled', async () => {
   try {
-    const tasks = getRedClawBackgroundRunner().listScheduledTasks();
+    const tasks = (await getRedClawBackgroundRunnerLazy()).listScheduledTasks();
     return { success: true, tasks };
   } catch (error) {
     return { success: false, error: String(error), tasks: [] };
@@ -2841,7 +2900,7 @@ ipcMain.handle('redclaw:runner-add-scheduled', async (_, payload: {
   enabled?: boolean;
 }) => {
   try {
-    const task = await getRedClawBackgroundRunner().addScheduledTask(payload);
+    const task = await (await getRedClawBackgroundRunnerLazy()).addScheduledTask(payload);
     return { success: true, task };
   } catch (error) {
     return { success: false, error: String(error) };
@@ -2850,7 +2909,7 @@ ipcMain.handle('redclaw:runner-add-scheduled', async (_, payload: {
 
 ipcMain.handle('redclaw:runner-remove-scheduled', async (_, payload: { taskId: string }) => {
   try {
-    const status = await getRedClawBackgroundRunner().removeScheduledTask(payload?.taskId || '');
+    const status = await (await getRedClawBackgroundRunnerLazy()).removeScheduledTask(payload?.taskId || '');
     return { success: true, status };
   } catch (error) {
     return { success: false, error: String(error) };
@@ -2859,7 +2918,7 @@ ipcMain.handle('redclaw:runner-remove-scheduled', async (_, payload: { taskId: s
 
 ipcMain.handle('redclaw:runner-set-scheduled-enabled', async (_, payload: { taskId: string; enabled: boolean }) => {
   try {
-    const task = await getRedClawBackgroundRunner().setScheduledTaskEnabled(payload?.taskId || '', Boolean(payload?.enabled));
+    const task = await (await getRedClawBackgroundRunnerLazy()).setScheduledTaskEnabled(payload?.taskId || '', Boolean(payload?.enabled));
     return { success: true, task };
   } catch (error) {
     return { success: false, error: String(error) };
@@ -2868,7 +2927,7 @@ ipcMain.handle('redclaw:runner-set-scheduled-enabled', async (_, payload: { task
 
 ipcMain.handle('redclaw:runner-run-scheduled-now', async (_, payload: { taskId: string }) => {
   try {
-    const status = await getRedClawBackgroundRunner().runScheduledTaskNow(payload?.taskId || '');
+    const status = await (await getRedClawBackgroundRunnerLazy()).runScheduledTaskNow(payload?.taskId || '');
     return { success: true, status };
   } catch (error) {
     return { success: false, error: String(error) };
@@ -2877,7 +2936,7 @@ ipcMain.handle('redclaw:runner-run-scheduled-now', async (_, payload: { taskId: 
 
 ipcMain.handle('redclaw:runner-list-long-cycle', async () => {
   try {
-    const tasks = getRedClawBackgroundRunner().listLongCycleTasks();
+    const tasks = (await getRedClawBackgroundRunnerLazy()).listLongCycleTasks();
     return { success: true, tasks };
   } catch (error) {
     return { success: false, error: String(error), tasks: [] };
@@ -2894,7 +2953,7 @@ ipcMain.handle('redclaw:runner-add-long-cycle', async (_, payload: {
   enabled?: boolean;
 }) => {
   try {
-    const task = await getRedClawBackgroundRunner().addLongCycleTask(payload);
+    const task = await (await getRedClawBackgroundRunnerLazy()).addLongCycleTask(payload);
     return { success: true, task };
   } catch (error) {
     return { success: false, error: String(error) };
@@ -2903,7 +2962,7 @@ ipcMain.handle('redclaw:runner-add-long-cycle', async (_, payload: {
 
 ipcMain.handle('redclaw:runner-remove-long-cycle', async (_, payload: { taskId: string }) => {
   try {
-    const status = await getRedClawBackgroundRunner().removeLongCycleTask(payload?.taskId || '');
+    const status = await (await getRedClawBackgroundRunnerLazy()).removeLongCycleTask(payload?.taskId || '');
     return { success: true, status };
   } catch (error) {
     return { success: false, error: String(error) };
@@ -2912,7 +2971,7 @@ ipcMain.handle('redclaw:runner-remove-long-cycle', async (_, payload: { taskId: 
 
 ipcMain.handle('redclaw:runner-set-long-cycle-enabled', async (_, payload: { taskId: string; enabled: boolean }) => {
   try {
-    const task = await getRedClawBackgroundRunner().setLongCycleTaskEnabled(payload?.taskId || '', Boolean(payload?.enabled));
+    const task = await (await getRedClawBackgroundRunnerLazy()).setLongCycleTaskEnabled(payload?.taskId || '', Boolean(payload?.enabled));
     return { success: true, task };
   } catch (error) {
     return { success: false, error: String(error) };
@@ -2921,7 +2980,7 @@ ipcMain.handle('redclaw:runner-set-long-cycle-enabled', async (_, payload: { tas
 
 ipcMain.handle('redclaw:runner-run-long-cycle-now', async (_, payload: { taskId: string }) => {
   try {
-    const status = await getRedClawBackgroundRunner().runLongCycleTaskNow(payload?.taskId || '');
+    const status = await (await getRedClawBackgroundRunnerLazy()).runLongCycleTaskNow(payload?.taskId || '');
     return { success: true, status };
   } catch (error) {
     return { success: false, error: String(error) };
@@ -4538,7 +4597,7 @@ ipcMain.handle('advisors:create', async (_, data: { name: string; avatar: string
 
     // If YouTube channel provided, save it
     if (data.youtubeChannel) {
-      config.youtubeChannel = getDefaultAdvisorYoutubeChannelConfig({
+      config.youtubeChannel = await getDefaultAdvisorYoutubeChannelConfigLazy({
         url: data.youtubeChannel.url,
         channelId: data.youtubeChannel.channelId,
         lastRefreshed: new Date().toISOString()
@@ -5035,7 +5094,7 @@ ipcMain.handle('advisors:update-youtube-settings', async (_event, payload: {
   try {
     const configRaw = await fs.readFile(configPath, 'utf-8');
     const config = JSON.parse(configRaw);
-    config.youtubeChannel = getDefaultAdvisorYoutubeChannelConfig({
+    config.youtubeChannel = await getDefaultAdvisorYoutubeChannelConfigLazy({
       ...config.youtubeChannel,
       ...payload?.settings,
     });
@@ -5049,7 +5108,7 @@ ipcMain.handle('advisors:update-youtube-settings', async (_event, payload: {
 
 ipcMain.handle('advisors:youtube-runner-status', async () => {
   try {
-    return { success: true, status: getAdvisorYoutubeBackgroundRunner().getStatus() };
+    return { success: true, status: (await getAdvisorYoutubeRunnerLazy()).getStatus() };
   } catch (error) {
     return { success: false, error: String(error) };
   }
@@ -5057,7 +5116,7 @@ ipcMain.handle('advisors:youtube-runner-status', async () => {
 
 ipcMain.handle('advisors:youtube-runner-run-now', async (_event, payload: { advisorId?: string } = {}) => {
   try {
-    return await getAdvisorYoutubeBackgroundRunner().runNow(payload?.advisorId);
+    return await (await getAdvisorYoutubeRunnerLazy()).runNow(payload?.advisorId);
   } catch (error) {
     return { success: false, processed: 0, error: String(error) };
   }
@@ -5092,7 +5151,7 @@ ipcMain.handle('advisors:download-youtube-subtitles', async (event, { channelUrl
     const configRaw = await fs.readFile(configPath, 'utf-8');
     const config = JSON.parse(configRaw);
     config.videos = videos;
-    config.youtubeChannel = getDefaultAdvisorYoutubeChannelConfig({
+    config.youtubeChannel = await getDefaultAdvisorYoutubeChannelConfigLazy({
       ...config.youtubeChannel,
       lastRefreshed: new Date().toISOString()
     });
@@ -5228,7 +5287,7 @@ ipcMain.handle('advisors:refresh-videos', async (event, { advisorId, limit = 50 
     ];
 
     config.videos = mergedVideos;
-    config.youtubeChannel = getDefaultAdvisorYoutubeChannelConfig({
+    config.youtubeChannel = await getDefaultAdvisorYoutubeChannelConfigLazy({
       ...config.youtubeChannel,
       lastRefreshed: new Date().toISOString(),
     });
@@ -5252,7 +5311,7 @@ ipcMain.handle('advisors:get-videos', async (_, { advisorId }: { advisorId: stri
     return {
       success: true,
       videos: config.videos || [],
-      youtubeChannel: config.youtubeChannel ? getDefaultAdvisorYoutubeChannelConfig(config.youtubeChannel) : null,
+      youtubeChannel: config.youtubeChannel ? await getDefaultAdvisorYoutubeChannelConfigLazy(config.youtubeChannel) : null,
     };
   } catch (error) {
     return { success: false, error: String(error) };

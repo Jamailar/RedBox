@@ -1,18 +1,22 @@
-import { useEffect, useState, useCallback, useMemo } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { Users, Plus, Pencil, Trash2, Upload, FileText, X, Check, Sparkles, Database, RefreshCw, ChevronDown, ChevronUp, AlertCircle, Download } from 'lucide-react';
 import { clsx } from 'clsx';
 import { hasRenderableAssetUrl, resolveAssetUrl } from '../utils/pathManager';
 import { usePageRefresh } from '../hooks/usePageRefresh';
 
-interface Advisor {
+interface AdvisorSummary {
     id: string;
     name: string;
     avatar: string;
     personality: string;
-    systemPrompt: string;
     knowledgeLanguage?: string;
-    knowledgeFiles: string[];
     createdAt: string;
+    hasYoutubeChannel?: boolean;
+}
+
+interface AdvisorDetail extends AdvisorSummary {
+    systemPrompt: string;
+    knowledgeFiles: string[];
 }
 
 const AVATAR_OPTIONS = ['🧠', '💡', '📊', '🎨', '📝', '🔍', '💼', '🎯', '🌟', '🚀'];
@@ -26,38 +30,49 @@ const isRenderableAvatarUrl = (value: string): boolean => {
 };
 
 export function Advisors({ isActive = true }: { isActive?: boolean }) {
-    const [advisors, setAdvisors] = useState<Advisor[]>([]);
-    const [selectedAdvisor, setSelectedAdvisor] = useState<Advisor | null>(null);
+    const [advisors, setAdvisors] = useState<AdvisorSummary[]>([]);
+    const [selectedAdvisorId, setSelectedAdvisorId] = useState<string | null>(null);
+    const [selectedAdvisor, setSelectedAdvisor] = useState<AdvisorDetail | null>(null);
     const [isLoading, setIsLoading] = useState(true);
+    const [isDetailLoading, setIsDetailLoading] = useState(false);
     const [isModalOpen, setIsModalOpen] = useState(false);
 
-    const [editingAdvisor, setEditingAdvisor] = useState<Advisor | null>(null);
+    const [editingAdvisor, setEditingAdvisor] = useState<AdvisorDetail | null>(null);
     const [downloadStatus, setDownloadStatus] = useState<{ advisorId: string; progress: string } | null>(null);
     const [isSystemPromptExpanded, setIsSystemPromptExpanded] = useState(false); // 默认折叠
     const [isOptimizingPrompt, setIsOptimizingPrompt] = useState(false); // AI优化状态
+    const [isVideoSectionExpanded, setIsVideoSectionExpanded] = useState(false);
 
     // Indexing status
     const [indexingStatus, setIndexingStatus] = useState<any>(null);
+    const selectedAdvisorSummary = advisors.find((advisor) => advisor.id === selectedAdvisorId) || null;
 
     useEffect(() => {
+        if (!selectedAdvisorId) {
+            setIndexingStatus(null);
+            return;
+        }
         const handleIndexingStatus = (_: unknown, status: any) => {
             setIndexingStatus(status);
         };
         window.ipcRenderer.on('indexing:status', handleIndexingStatus);
 
-        // Initial fetch
         window.ipcRenderer.invoke('indexing:get-stats').then(setIndexingStatus);
 
         return () => {
             window.ipcRenderer.off('indexing:status', handleIndexingStatus);
         };
-    }, []);
+    }, [selectedAdvisorId]);
 
     const loadAdvisors = useCallback(async () => {
         setIsLoading(true);
         try {
-            const list = await window.ipcRenderer.invoke('advisors:list') as Advisor[];
+            const list = await window.ipcRenderer.invoke('advisors:list') as AdvisorSummary[];
             setAdvisors(list || []);
+            setSelectedAdvisorId((prev) => {
+                if (!prev) return prev;
+                return list.some((advisor) => advisor.id === prev) ? prev : null;
+            });
         } catch (e) {
             console.error('Failed to load advisors:', e);
         } finally {
@@ -65,25 +80,34 @@ export function Advisors({ isActive = true }: { isActive?: boolean }) {
         }
     }, []);
 
+    const loadAdvisorDetail = useCallback(async (advisorId: string) => {
+        setIsDetailLoading(true);
+        try {
+            const result = await window.ipcRenderer.invoke('advisors:get', advisorId) as { success: boolean; advisor?: AdvisorDetail; error?: string };
+            if (result.success && result.advisor) {
+                setSelectedAdvisor(result.advisor);
+                setIsVideoSectionExpanded(Boolean(result.advisor.hasYoutubeChannel));
+            } else {
+                setSelectedAdvisor(null);
+            }
+        } catch (e) {
+            console.error('Failed to load advisor detail:', e);
+            setSelectedAdvisor(null);
+        } finally {
+            setIsDetailLoading(false);
+        }
+    }, []);
+
     // Listen for download progress
     useEffect(() => {
         const handleDownloadProgress = (_event: unknown, data: { advisorId: string; progress: string }) => {
             setDownloadStatus(data);
-            // 检测下载完成（新架构会发送"下载完成！"消息）
             if (data.progress.includes('下载完成') || data.progress.includes('下载失败')) {
-                // 刷新 advisor 列表以更新 knowledgeFiles
-                setTimeout(() => {
-                    loadAdvisors().then(() => {
-                        // 如果当前选中的是这个 advisor，更新 selectedAdvisor
-                        setAdvisors(prev => {
-                            const updated = prev.find(a => a.id === data.advisorId);
-                            if (updated && selectedAdvisor?.id === data.advisorId) {
-                                setSelectedAdvisor(updated);
-                            }
-                            return prev;
-                        });
-                    });
-                    // 清除下载状态显示
+                setTimeout(async () => {
+                    await loadAdvisors();
+                    if (selectedAdvisorId === data.advisorId) {
+                        await loadAdvisorDetail(data.advisorId);
+                    }
                     setTimeout(() => setDownloadStatus(null), 3000);
                 }, 1000);
             }
@@ -93,20 +117,38 @@ export function Advisors({ isActive = true }: { isActive?: boolean }) {
         return () => {
             window.ipcRenderer.off('advisors:download-progress', handleDownloadProgress);
         };
-    }, [selectedAdvisor, loadAdvisors]);
+    }, [selectedAdvisorId, loadAdvisors, loadAdvisorDetail]);
+
+    const refreshPage = useCallback(async () => {
+        await loadAdvisors();
+        if (selectedAdvisorId) {
+            await loadAdvisorDetail(selectedAdvisorId);
+        }
+    }, [loadAdvisors, loadAdvisorDetail, selectedAdvisorId]);
 
     usePageRefresh({
         isActive,
-        refresh: loadAdvisors,
+        refresh: refreshPage,
         dataScopes: ['advisors'],
     });
+
+    useEffect(() => {
+        if (!selectedAdvisorId) {
+            setSelectedAdvisor(null);
+            setIsVideoSectionExpanded(false);
+            return;
+        }
+        setSelectedAdvisor(null);
+        setIsVideoSectionExpanded(false);
+        void loadAdvisorDetail(selectedAdvisorId);
+    }, [selectedAdvisorId, loadAdvisorDetail]);
 
     const handleCreate = () => {
         setEditingAdvisor(null);
         setIsModalOpen(true);
     };
 
-    const handleEdit = (advisor: Advisor) => {
+    const handleEdit = (advisor: AdvisorDetail) => {
         setEditingAdvisor(advisor);
         setIsModalOpen(true);
     };
@@ -116,7 +158,8 @@ export function Advisors({ isActive = true }: { isActive?: boolean }) {
         try {
             await window.ipcRenderer.invoke('advisors:delete', advisorId);
             await loadAdvisors();
-            if (selectedAdvisor?.id === advisorId) {
+            if (selectedAdvisorId === advisorId) {
+                setSelectedAdvisorId(null);
                 setSelectedAdvisor(null);
             }
         } catch (e) {
@@ -125,7 +168,7 @@ export function Advisors({ isActive = true }: { isActive?: boolean }) {
     };
 
     const handleSaveAdvisor = async (
-        data: Omit<Advisor, 'id' | 'createdAt' | 'knowledgeFiles'>,
+        data: Omit<AdvisorDetail, 'id' | 'createdAt' | 'knowledgeFiles' | 'hasYoutubeChannel'>,
         youtubeParams?: { url: string; count: number; channelId?: string }
     ) => {
         try {
@@ -157,6 +200,10 @@ export function Advisors({ isActive = true }: { isActive?: boolean }) {
 
             setIsModalOpen(false);
             await loadAdvisors();
+            if (newId) {
+                setSelectedAdvisorId(newId);
+                await loadAdvisorDetail(newId);
+            }
         } catch (e) {
             console.error('Failed to save advisor:', e);
         }
@@ -167,11 +214,7 @@ export function Advisors({ isActive = true }: { isActive?: boolean }) {
             const result = await window.ipcRenderer.invoke('advisors:upload-knowledge', advisorId);
             if (result) {
                 await loadAdvisors();
-                // Refresh selected advisor
-                // Note: state update is async, we need to be careful. Better to re-fetch list and find.
-                const list = await window.ipcRenderer.invoke('advisors:list') as Advisor[];
-                const updated = list.find(a => a.id === advisorId);
-                if (updated) setSelectedAdvisor(updated);
+                await loadAdvisorDetail(advisorId);
             }
         } catch (e) {
             console.error('Failed to upload knowledge:', e);
@@ -183,6 +226,9 @@ export function Advisors({ isActive = true }: { isActive?: boolean }) {
         try {
             await window.ipcRenderer.invoke('advisors:delete-knowledge', { advisorId, fileName });
             await loadAdvisors();
+            if (selectedAdvisorId === advisorId) {
+                await loadAdvisorDetail(advisorId);
+            }
         } catch (e) {
             console.error('Failed to delete knowledge file:', e);
         }
@@ -228,10 +274,10 @@ export function Advisors({ isActive = true }: { isActive?: boolean }) {
                         advisors.map((advisor) => (
                             <button
                                 key={advisor.id}
-                                onClick={() => setSelectedAdvisor(advisor)}
+                                onClick={() => setSelectedAdvisorId(advisor.id)}
                                 className={clsx(
                                     "w-full text-left p-3 rounded-xl transition-all",
-                                    selectedAdvisor?.id === advisor.id
+                                    selectedAdvisorId === advisor.id
                                         ? "bg-accent-primary/10 border border-accent-primary/30 shadow-sm"
                                         : "hover:bg-surface-primary border border-transparent"
                                 )}
@@ -263,37 +309,44 @@ export function Advisors({ isActive = true }: { isActive?: boolean }) {
 
             {/* Advisor Detail */}
             <div className="flex-1 flex flex-col min-w-0">
-                {selectedAdvisor ? (
+                {selectedAdvisorId ? (
                     <>
                         <div className="px-6 py-4 border-b border-border flex items-center justify-between">
+                            {(selectedAdvisor || selectedAdvisorSummary) ? (
                             <div className="flex items-center gap-4">
                                 <div className={clsx(
                                     "w-14 h-14 rounded-full flex items-center justify-center text-2xl overflow-hidden shrink-0",
-                                    isRenderableAvatarUrl(selectedAdvisor.avatar)
+                                    isRenderableAvatarUrl((selectedAdvisor || selectedAdvisorSummary)!.avatar)
                                         ? "bg-transparent border border-border"
-                                        : AVATAR_COLORS[parseInt(selectedAdvisor.id.slice(-1), 16) % AVATAR_COLORS.length]
+                                        : AVATAR_COLORS[parseInt((selectedAdvisor || selectedAdvisorSummary)!.id.slice(-1), 16) % AVATAR_COLORS.length]
                                 )}>
-                                    {isRenderableAvatarUrl(selectedAdvisor.avatar) ? (
-                                        <img src={resolveAssetUrl(selectedAdvisor.avatar)} alt={selectedAdvisor.name} className="w-full h-full object-cover" />
+                                    {isRenderableAvatarUrl((selectedAdvisor || selectedAdvisorSummary)!.avatar) ? (
+                                        <img src={resolveAssetUrl((selectedAdvisor || selectedAdvisorSummary)!.avatar)} alt={(selectedAdvisor || selectedAdvisorSummary)!.name} className="w-full h-full object-cover" />
                                     ) : (
-                                        selectedAdvisor.avatar
+                                        (selectedAdvisor || selectedAdvisorSummary)!.avatar
                                     )}
                                 </div>
                                 <div>
-                                    <h1 className="text-lg font-semibold text-text-primary">{selectedAdvisor.name}</h1>
-                                    <p className="text-xs text-text-tertiary">{selectedAdvisor.personality}</p>
-                                    <p className="text-[11px] text-text-tertiary mt-1">知识库语言：{selectedAdvisor.knowledgeLanguage || '中文'}</p>
+                                    <h1 className="text-lg font-semibold text-text-primary">{(selectedAdvisor || selectedAdvisorSummary)!.name}</h1>
+                                    <p className="text-xs text-text-tertiary">{(selectedAdvisor || selectedAdvisorSummary)!.personality}</p>
+                                    <p className="text-[11px] text-text-tertiary mt-1">知识库语言：{(selectedAdvisor || selectedAdvisorSummary)!.knowledgeLanguage || '中文'}</p>
                                 </div>
                             </div>
+                            ) : (
+                            <div className="space-y-2">
+                                <div className="h-6 w-32 rounded bg-surface-secondary/70 animate-pulse" />
+                                <div className="h-4 w-48 rounded bg-surface-secondary/50 animate-pulse" />
+                            </div>
+                            )}
                             <div className="flex items-center gap-2">
                                 <button
-                                    onClick={() => handleEdit(selectedAdvisor)}
+                                    onClick={() => selectedAdvisor && handleEdit(selectedAdvisor)}
                                     className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-text-secondary hover:text-accent-primary border border-border rounded-md"
                                 >
                                     <Pencil className="w-3 h-3" /> 编辑
                                 </button>
                                 <button
-                                    onClick={() => handleDelete(selectedAdvisor.id)}
+                                    onClick={() => selectedAdvisor && handleDelete(selectedAdvisor.id)}
                                     className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-red-500 border border-border rounded-md hover:bg-red-50"
                                 >
                                     <Trash2 className="w-3 h-3" /> 删除
@@ -302,6 +355,14 @@ export function Advisors({ isActive = true }: { isActive?: boolean }) {
                         </div>
 
                         <div className="flex-1 overflow-auto p-6 space-y-6">
+                            {isDetailLoading && !selectedAdvisor ? (
+                                <div className="space-y-4">
+                                    <div className="h-28 rounded-xl border border-border bg-surface-secondary/40 animate-pulse" />
+                                    <div className="h-48 rounded-xl border border-border bg-surface-secondary/30 animate-pulse" />
+                                    <div className="h-56 rounded-xl border border-border bg-surface-secondary/20 animate-pulse" />
+                                </div>
+                            ) : selectedAdvisor ? (
+                            <>
                             {/* System Prompt - 可折叠 */}
                             <section>
                                 <div className="flex items-center justify-between mb-2">
@@ -482,8 +543,27 @@ export function Advisors({ isActive = true }: { isActive?: boolean }) {
                                 )}
                             </section>
 
-                            {/* Video Management Section - Only for YouTube-imported advisors */}
-                            <VideoManagement advisorId={selectedAdvisor.id} />
+                            {selectedAdvisor.hasYoutubeChannel && (
+                                <section>
+                                    <button
+                                        onClick={() => setIsVideoSectionExpanded((prev) => !prev)}
+                                        className="flex items-center gap-2 text-sm font-medium text-text-primary hover:text-accent-primary transition-colors"
+                                    >
+                                        <Database className="w-4 h-4 text-accent-primary" />
+                                        视频管理
+                                        {isVideoSectionExpanded ? (
+                                            <ChevronUp className="w-4 h-4 text-text-tertiary" />
+                                        ) : (
+                                            <ChevronDown className="w-4 h-4 text-text-tertiary" />
+                                        )}
+                                    </button>
+                                    {isVideoSectionExpanded && (
+                                        <VideoManagement advisorId={selectedAdvisor.id} />
+                                    )}
+                                </section>
+                            )}
+                            </>
+                        ) : null}
                         </div>
                     </>
                 ) : (
@@ -933,8 +1013,8 @@ function AdvisorModal({
     onSave,
     onClose
 }: {
-    advisor: Advisor | null;
-    onSave: (data: Omit<Advisor, 'id' | 'createdAt' | 'knowledgeFiles'>, youtubeParams?: { url: string; count: number; channelId?: string }) => void;
+    advisor: AdvisorDetail | null;
+    onSave: (data: Omit<AdvisorDetail, 'id' | 'createdAt' | 'knowledgeFiles' | 'hasYoutubeChannel'>, youtubeParams?: { url: string; count: number; channelId?: string }) => void;
     onClose: () => void;
 }) {
     const [mode, setMode] = useState<'manual' | 'youtube'>(advisor ? 'manual' : 'manual');

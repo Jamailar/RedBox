@@ -6,7 +6,6 @@ import fsSync from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { app } from 'electron';
-import * as lark from '@larksuiteoapi/node-sdk';
 import { getWorkspacePaths, getWorkspacePathsForSpace, listSpaces } from '../db';
 import { getBackgroundTaskRegistry } from './backgroundTaskRegistry';
 import { getHeadlessAgentRunner } from './headlessAgentRunner';
@@ -14,6 +13,11 @@ import {
   releaseBackgroundRuntimeLock,
   tryAcquireBackgroundRuntimeLock,
 } from './backgroundRuntimeLock';
+import type {
+  Client as LarkClient,
+  EventDispatcher as LarkEventDispatcher,
+  WSClient as LarkWSClient,
+} from '@larksuiteoapi/node-sdk';
 
 type AssistantChannelProvider = 'feishu' | 'weixin' | 'relay';
 type DaemonLockState = 'owner' | 'passive';
@@ -580,6 +584,8 @@ type SpaceAssistantConfigEntry = {
   config: AssistantDaemonConfig;
 };
 
+type LarkModule = typeof import('@larksuiteoapi/node-sdk');
+
 export class AssistantDaemonService extends EventEmitter {
   private config: AssistantDaemonConfig = { ...DEFAULT_CONFIG };
   private isLoaded = false;
@@ -593,10 +599,18 @@ export class AssistantDaemonService extends EventEmitter {
   private readonly peerQueues = new Map<string, Promise<AssistantDaemonProcessResult>>();
   private readonly inFlightKeys = new Set<string>();
   private readonly recentMessageIds = new Map<string, number>();
-  private readonly feishuClients = new Map<string, lark.Client>();
-  private readonly feishuEventDispatchers = new Map<string, lark.EventDispatcher>();
-  private readonly feishuWsClients = new Map<string, lark.WSClient>();
+  private larkModulePromise: Promise<LarkModule> | null = null;
+  private readonly feishuClients = new Map<string, LarkClient>();
+  private readonly feishuEventDispatchers = new Map<string, LarkEventDispatcher>();
+  private readonly feishuWsClients = new Map<string, LarkWSClient>();
   private readonly weixinSidecars = new Map<string, ChildProcessWithoutNullStreams>();
+
+  private async getLarkModule(): Promise<LarkModule> {
+    if (!this.larkModulePromise) {
+      this.larkModulePromise = import('@larksuiteoapi/node-sdk');
+    }
+    return this.larkModulePromise;
+  }
 
   private getConfigPath(): string {
     return path.join(getWorkspacePaths().redclaw, 'assistant-daemon.json');
@@ -1086,7 +1100,7 @@ export class AssistantDaemonService extends EventEmitter {
     return false;
   }
 
-  private getFeishuClient(spaceId: string, config: AssistantDaemonConfig): lark.Client {
+  private async getFeishuClient(spaceId: string, config: AssistantDaemonConfig): Promise<LarkClient> {
     const existing = this.feishuClients.get(spaceId);
     if (existing) {
       return existing;
@@ -1094,6 +1108,7 @@ export class AssistantDaemonService extends EventEmitter {
     if (!config.feishu.appId || !config.feishu.appSecret) {
       throw new Error('Feishu appId/appSecret is not configured');
     }
+    const lark = await this.getLarkModule();
     const client = new lark.Client({
       appId: config.feishu.appId,
       appSecret: config.feishu.appSecret,
@@ -1102,11 +1117,12 @@ export class AssistantDaemonService extends EventEmitter {
     return client;
   }
 
-  private getFeishuEventDispatcher(spaceId: string, config: AssistantDaemonConfig): lark.EventDispatcher {
+  private async getFeishuEventDispatcher(spaceId: string, config: AssistantDaemonConfig): Promise<LarkEventDispatcher> {
     const existing = this.feishuEventDispatchers.get(spaceId);
     if (existing) {
       return existing;
     }
+    const lark = await this.getLarkModule();
     const dispatcher = new lark.EventDispatcher({
       verificationToken: config.feishu.verificationToken,
       encryptKey: config.feishu.encryptKey,
@@ -1135,6 +1151,7 @@ export class AssistantDaemonService extends EventEmitter {
     if (this.feishuWsClients.get(spaceId)) {
       return;
     }
+    const lark = await this.getLarkModule();
     const wsClient = new lark.WSClient({
       appId: config.feishu.appId as string,
       appSecret: config.feishu.appSecret as string,
@@ -1144,7 +1161,7 @@ export class AssistantDaemonService extends EventEmitter {
     this.feishuWsClients.set(spaceId, wsClient);
     try {
       await wsClient.start({
-        eventDispatcher: this.getFeishuEventDispatcher(spaceId, config),
+        eventDispatcher: await this.getFeishuEventDispatcher(spaceId, config),
       });
       this.emitLog('info', 'Feishu websocket listener started.', {
         spaceId,
@@ -1485,6 +1502,7 @@ export class AssistantDaemonService extends EventEmitter {
     req: http.IncomingMessage,
     res: http.ServerResponse,
   ): Promise<void> {
+    const lark = await this.getLarkModule();
     const challenge = lark.generateChallenge(body.json, {
       encryptKey: config.feishu.encryptKey || '',
     });
@@ -1494,7 +1512,8 @@ export class AssistantDaemonService extends EventEmitter {
     }
 
     const assigned = Object.assign(Object.create({ headers: req.headers }), body.json);
-    await this.getFeishuEventDispatcher(spaceId, config).invoke(assigned);
+    const dispatcher = await this.getFeishuEventDispatcher(spaceId, config);
+    await dispatcher.invoke(assigned);
     sendJson(res, 200, { success: true, accepted: true });
   }
 
@@ -1991,7 +2010,7 @@ export class AssistantDaemonService extends EventEmitter {
     if (!receiveId) {
       throw new Error('Feishu receive_id is missing');
     }
-    const client = this.getFeishuClient(spaceId, config);
+    const client = await this.getFeishuClient(spaceId, config);
     await client.im.v1.message.create({
       params: {
         receive_id_type: receiveIdType,

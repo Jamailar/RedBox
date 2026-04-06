@@ -4540,25 +4540,27 @@ ipcMain.handle('advisors:list', async () => {
           localizeAdvisorAvatarInBackground(advisorDir, configPath, config);
         }
 
-        const knowledgeDir = path.join(advisorDir, 'knowledge');
-        let knowledgeFiles: string[] = [];
-        try {
-          const files = await fs.readdir(knowledgeDir);
-          knowledgeFiles = files.filter((f: string) => f.endsWith('.txt') || f.endsWith('.md'));
-        } catch {
-          knowledgeFiles = [];
-        }
-
         return {
           id: dir.name,
-          ...config,
+          name: String(config.name || ''),
           avatar: resolveAdvisorAvatarForList(advisorDir, config),
-          knowledgeFiles,
-        } as { id: string; knowledgeFiles: string[]; createdAt?: string } & Record<string, unknown>;
+          personality: String(config.personality || ''),
+          knowledgeLanguage: String(config.knowledgeLanguage || ''),
+          createdAt: String(config.createdAt || ''),
+          hasYoutubeChannel: Boolean((config.youtubeChannel as Record<string, unknown> | undefined)?.url),
+        };
       } catch {
         return null;
       }
-    }))).filter((item): item is { id: string; knowledgeFiles: string[]; createdAt?: string } & Record<string, unknown> => Boolean(item));
+    }))).filter((item): item is {
+      id: string;
+      name: string;
+      avatar: string;
+      personality: string;
+      knowledgeLanguage: string;
+      createdAt: string;
+      hasYoutubeChannel: boolean;
+    } => Boolean(item));
 
     return advisors.sort((a, b) =>
       (b.createdAt || '').localeCompare(a.createdAt || '')
@@ -4566,6 +4568,48 @@ ipcMain.handle('advisors:list', async () => {
   } catch (error) {
     console.error('Failed to list advisors:', error);
     return [];
+  }
+});
+
+ipcMain.handle('advisors:get', async (_, advisorId: string) => {
+  const advisorDir = path.join(getAdvisorsDir(), advisorId);
+  const configPath = path.join(advisorDir, 'config.json');
+  const knowledgeDir = path.join(advisorDir, 'knowledge');
+
+  try {
+    const content = await fs.readFile(configPath, 'utf-8');
+    const config = JSON.parse(content) as Record<string, unknown>;
+
+    const avatar = String(config.avatar || '').trim();
+    if (avatar.startsWith('http')) {
+      localizeAdvisorAvatarInBackground(advisorDir, configPath, config);
+    }
+
+    let knowledgeFiles: string[] = [];
+    try {
+      const files = await fs.readdir(knowledgeDir);
+      knowledgeFiles = files.filter((f: string) => f.endsWith('.txt') || f.endsWith('.md'));
+    } catch {
+      knowledgeFiles = [];
+    }
+
+    return {
+      success: true,
+      advisor: {
+        id: advisorId,
+        name: String(config.name || ''),
+        avatar: resolveAdvisorAvatarForList(advisorDir, config),
+        personality: String(config.personality || ''),
+        systemPrompt: String(config.systemPrompt || ''),
+        knowledgeLanguage: String(config.knowledgeLanguage || ''),
+        createdAt: String(config.createdAt || ''),
+        knowledgeFiles,
+        hasYoutubeChannel: Boolean((config.youtubeChannel as Record<string, unknown> | undefined)?.url),
+      },
+    };
+  } catch (error) {
+    console.error('Failed to get advisor:', error);
+    return { success: false, error: String(error) };
   }
 });
 

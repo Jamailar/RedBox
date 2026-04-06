@@ -826,7 +826,6 @@ export function Settings({ isActive = true }: { isActive?: boolean }) {
   const [isMemoryLoading, setIsMemoryLoading] = useState(false);
   const [isMemorySearching, setIsMemorySearching] = useState(false);
   const [aiModelSubTab, setAiModelSubTab] = useState<'custom' | 'login'>('custom');
-  const [officialAiPanelEnabled, setOfficialAiPanelEnabled] = useState(false);
   const [OfficialAiPanelComponent, setOfficialAiPanelComponent] = useState<ComponentType<OfficialAiPanelProps> | null>(null);
 
   const isDeprecatedEmptyOpenAiSource = useCallback((source?: AiSourceConfig | null): boolean => {
@@ -849,7 +848,6 @@ export function Settings({ isActive = true }: { isActive?: boolean }) {
 
   useEffect(() => {
     if (!hasOfficialAiPanel) {
-      setOfficialAiPanelEnabled(false);
       setOfficialAiPanelComponent(null);
       setAiModelSubTab('custom');
       return;
@@ -858,14 +856,12 @@ export function Settings({ isActive = true }: { isActive?: boolean }) {
       return;
     }
     if (OfficialAiPanelComponent) {
-      setOfficialAiPanelEnabled(true);
       return;
     }
     let canceled = false;
     void loadOfficialAiPanelModule().then((module) => {
       if (canceled) return;
       const nextComponent = module?.default || null;
-      setOfficialAiPanelEnabled(Boolean(nextComponent));
       setOfficialAiPanelComponent(() => nextComponent);
       if (!nextComponent) {
         setAiModelSubTab('custom');

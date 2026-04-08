@@ -259,6 +259,10 @@ function createDefaultOtioTimeline(title: string) {
   };
 }
 
+function createTimelineClipId(): string {
+  return `clip_${randomUUID().slice(0, 8)}`;
+}
+
 async function syncPackageTimelineForAsset(packagePath: string, asset: MediaAsset, action: 'add' | 'remove'): Promise<void> {
   const packageKind = getPackageKindFromFileName(path.basename(packagePath));
   if (packageKind !== 'video' && packageKind !== 'audio') {
@@ -308,6 +312,7 @@ async function syncPackageTimelineForAsset(packagePath: string, asset: MediaAsse
       },
       active_media_reference_key: 'DEFAULT_MEDIA',
       metadata: {
+        clipId: createTimelineClipId(),
         assetId: asset.id,
         assetKind,
         source: 'media-library',

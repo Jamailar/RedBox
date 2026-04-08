@@ -19,6 +19,13 @@
     background: rgba(255, 255, 255, 0.02);
 }
 
+.redbox-editable-timeline__toolbar-left {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    min-width: 0;
+}
+
 .redbox-editable-timeline__toolbar-label {
     font-size: 11px;
     letter-spacing: 0.22em;
@@ -34,10 +41,44 @@
     color: rgba(255, 255, 255, 0.38);
 }
 
+.redbox-editable-timeline__toolbar-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+}
+
+.redbox-editable-timeline__button {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 10px;
+    border-radius: 12px;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    background: rgba(255, 255, 255, 0.04);
+    color: rgba(255, 255, 255, 0.82);
+    font-size: 12px;
+}
+
+.redbox-editable-timeline__button:hover:not(:disabled) {
+    border-color: rgba(255, 255, 255, 0.22);
+    background: rgba(255, 255, 255, 0.08);
+}
+
+.redbox-editable-timeline__button:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+}
+
 .redbox-editable-timeline__body {
     position: relative;
     flex: 1 1 auto;
     min-height: 0;
+}
+
+.redbox-editable-timeline__body--dragging {
+    box-shadow: inset 0 0 0 1px rgba(56, 189, 248, 0.35);
 }
 
 .redbox-editable-timeline .timeline-editor {
@@ -85,8 +126,21 @@
     overflow: hidden;
 }
 
-.redbox-editable-timeline--emerald .redbox-editable-timeline__clip {
-    background: linear-gradient(135deg, rgba(16, 185, 129, 0.22), rgba(52, 211, 153, 0.14));
+.redbox-editable-timeline__clip--video {
+    background: linear-gradient(135deg, rgba(59, 130, 246, 0.3), rgba(37, 99, 235, 0.18));
+}
+
+.redbox-editable-timeline__clip--audio {
+    background: linear-gradient(135deg, rgba(16, 185, 129, 0.32), rgba(5, 150, 105, 0.18));
+}
+
+.redbox-editable-timeline__clip--image {
+    background: linear-gradient(135deg, rgba(168, 85, 247, 0.26), rgba(236, 72, 153, 0.14));
+}
+
+.redbox-editable-timeline__clip--selected {
+    border-color: rgba(255, 255, 255, 0.55);
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.18);
 }
 
 .redbox-editable-timeline__clip-title {

@@ -1,10 +1,10 @@
 import {
     Boxes,
     FilePenLine,
-    ImagePlus,
     Lightbulb,
     Video,
 } from 'lucide-react';
+import { ParticleBoxSection } from './components/ParticleBoxSection';
 import { SiteHeader } from './components/SiteHeader';
 
 export const dynamic = 'force-dynamic';
@@ -86,25 +86,27 @@ export default function HomePage() {
         <main className="min-h-screen pt-36 text-[#22170f] md:pt-32">
             <SiteHeader />
 
-            <section className="relative overflow-hidden px-4 pb-20 pt-6 md:pb-28">
-                <div className="pointer-events-none absolute inset-x-0 top-0 -z-10 mx-auto h-[620px] max-w-6xl">
+            <ParticleBoxSection />
+
+            <section className="relative overflow-hidden px-4 pb-16 pt-8 md:pb-24 md:pt-12">
+                <div className="pointer-events-none absolute inset-x-0 top-0 -z-10 mx-auto h-[520px] max-w-6xl">
                     <div className="absolute -left-8 top-12 h-56 w-56 rounded-full bg-[#d75d31]/12 blur-3xl" />
                     <div className="absolute right-0 top-0 h-72 w-72 rounded-full bg-[#0d6c68]/10 blur-3xl" />
                 </div>
 
-                <div className="mx-auto grid w-full max-w-6xl items-center gap-8 lg:grid-cols-[1fr_0.96fr]">
-                    <div className="max-w-[640px]">
+                <div className="mx-auto max-w-6xl">
+                    <div className="max-w-[720px]">
                         <span className="inline-flex rounded-full border border-[#32231714] bg-white/72 px-4 py-2 text-[11px] font-extrabold uppercase tracking-[0.18em] text-[#6d5a4f]">
                             AI-Driven Editorial Studio
                         </span>
-                        <h1 className="mt-5 max-w-[9.6ch] font-serif text-[clamp(3.35rem,7vw,6.4rem)] leading-[0.88] tracking-[-0.06em] text-[#1f140d]">
+                        <h1 className="mt-5 max-w-[9.6ch] font-serif text-[clamp(3.1rem,7vw,6rem)] leading-[0.9] tracking-[-0.06em] text-[#1f140d]">
                             AI驱动的
                             <span className="block text-[#a43816]">自媒体编辑室</span>
                         </h1>
-                        <p className="mt-6 max-w-[38rem] text-[1.03rem] leading-8 text-[#6b5b4d]">
+                        <p className="mt-6 max-w-[42rem] text-[1.03rem] leading-8 text-[#6b5b4d]">
                             从素材到成稿，再到视频与封面，创作在这里自然发生。
                         </p>
-                        <p className="mt-3 max-w-[38rem] text-base leading-8 text-[#5f4a3c]">
+                        <p className="mt-3 max-w-[42rem] text-base leading-8 text-[#5f4a3c]">
                             不再在不同工具之间来回切，一切都在同一个空间完成。
                         </p>
 
@@ -117,60 +119,6 @@ export default function HomePage() {
                                     {item}
                                 </span>
                             ))}
-                        </div>
-                    </div>
-
-                    <div className="relative">
-                        <div className="rounded-[34px] border border-white/10 bg-[linear-gradient(180deg,rgba(31,24,19,0.98),rgba(24,20,18,0.96))] p-4 text-white shadow-[0_34px_70px_rgba(47,28,16,0.18)] md:p-5">
-                            <div className="rounded-[22px] border border-white/8 bg-white/5 p-5">
-                                <span className="inline-flex rounded-full border border-white/10 bg-white/8 px-3 py-1.5 text-[11px] font-extrabold uppercase tracking-[0.16em] text-white/75">
-                                    一个让内容自己生长的编辑空间
-                                </span>
-                                <div className="mt-5 space-y-4">
-                                    <p className="text-[15px] leading-8 text-white/74">
-                                        把素材放进来，灵感会在这里被看见、被连接、被延展。
-                                    </p>
-                                    <p className="text-[15px] leading-8 text-white/74">
-                                        一篇稿子不会停在草稿，它会继续变成视频、播客和封面。
-                                    </p>
-                                    <p className="text-[15px] leading-8 text-white/74">
-                                        你不需要一步步推进，它会自己往下走。
-                                    </p>
-                                </div>
-
-                                <div className="mt-5 grid gap-3 sm:grid-cols-2">
-                                    {studioAreas.map((item) => {
-                                        const Icon = item.icon;
-
-                                        return (
-                                            <article
-                                                key={item.title}
-                                                className="flex items-center gap-3 rounded-[18px] border border-white/8 bg-white/5 px-3.5 py-3"
-                                            >
-                                                <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[12px] bg-[linear-gradient(145deg,rgba(223,96,49,0.26),rgba(13,108,104,0.14))] text-[#ffd9cc]">
-                                                    <Icon className="h-4 w-4" />
-                                                </span>
-                                                <strong className="text-sm font-bold text-white/88">{item.title}</strong>
-                                            </article>
-                                        );
-                                    })}
-                                </div>
-                            </div>
-                        </div>
-
-                        <div className="mt-4 flex flex-wrap gap-3 lg:absolute lg:-bottom-5 lg:-left-5 lg:mt-0">
-                            <div className="rounded-[20px] border border-[#32231714] bg-white/78 px-4 py-3 text-sm font-bold text-[#3f2b20] shadow-[0_16px_28px_rgba(47,28,16,0.1)] backdrop-blur-xl">
-                                <span className="mb-1 block text-[10px] font-extrabold uppercase tracking-[0.16em] text-[#816655]">
-                                    核心价值
-                                </span>
-                                创作，不再被打断
-                            </div>
-                            <div className="rounded-[20px] border border-[#32231714] bg-white/78 px-4 py-3 text-sm font-bold text-[#3f2b20] shadow-[0_16px_28px_rgba(47,28,16,0.1)] backdrop-blur-xl">
-                                <span className="mb-1 block text-[10px] font-extrabold uppercase tracking-[0.16em] text-[#816655]">
-                                    适合对象
-                                </span>
-                                持续创作的人
-                            </div>
                         </div>
                     </div>
                 </div>

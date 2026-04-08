@@ -427,7 +427,7 @@ const APP_CLI_NAMESPACE_HELP: Record<string, { summary: string; actions: string[
     },
     manuscripts: {
         summary: 'List, read, write, and organize manuscripts.',
-        actions: ['list', 'read', 'write', 'create', 'organize', 'clips', 'clip-update', 'export'],
+        actions: ['list', 'read', 'write', 'create', 'organize', 'clips', 'clip-add', 'clip-update', 'clip-delete', 'clip-split', 'track-add', 'export'],
         examples: ['manuscripts list', 'manuscripts write --path "drafts/demo.md"', 'manuscripts export --path "wander/demo.redvideo"'],
     },
     knowledge: {
@@ -653,6 +653,35 @@ function createEmptyOtioTimeline(title: string) {
     };
 }
 
+function createTimelineClipId(): string {
+    return `clip_${ulid()}`;
+}
+
+function getTimelineClipIdentity(clip: any, fallbackTrackName = '', fallbackIndex = 0): string {
+    const metadata = (clip?.metadata && typeof clip.metadata === 'object') ? clip.metadata : {};
+    const explicitClipId = String(metadata.clipId || '').trim();
+    if (explicitClipId) return explicitClipId;
+    const assetId = String(metadata.assetId || clip?.media_references?.DEFAULT_MEDIA?.metadata?.assetId || '').trim();
+    const name = String(clip?.name || '').trim();
+    return `${fallbackTrackName}:${assetId || name || 'clip'}:${fallbackIndex}`;
+}
+
+function ensureTimelineTrack(timeline: Record<string, unknown>, trackName: string, kind: 'Video' | 'Audio') {
+    const stack = ((timeline as any).tracks ||= { OTIO_SCHEMA: 'Stack.1', children: [] });
+    const tracks = Array.isArray(stack.children) ? stack.children : [];
+    const existing = tracks.find((track: any) => String(track?.name || '').trim() === trackName);
+    if (existing) return existing;
+    const nextTrack = {
+        OTIO_SCHEMA: 'Track.1',
+        name: trackName,
+        kind,
+        children: [],
+    };
+    tracks.push(nextTrack);
+    stack.children = tracks;
+    return nextTrack;
+}
+
 function getPackageEntryPath(packagePath: string, fileName: string, manifest?: Record<string, unknown>): string {
     const entry = String(manifest?.entry || '').trim() || getDefaultManuscriptPackageEntry(fileName);
     return path.join(packagePath, entry);
@@ -747,6 +776,7 @@ function buildTimelineClipSummaries(timeline: Record<string, unknown>) {
             const assetId = String(metadata.assetId || mediaRef?.metadata?.assetId || '').trim();
             const sourceRef = assetId ? sourceRefByAssetId.get(assetId) : null;
             return {
+                clipId: getTimelineClipIdentity(clip, trackName, index),
                 assetId,
                 name: String(clip?.name || assetId || `Clip ${index + 1}`),
                 track: trackName,
@@ -788,6 +818,7 @@ function normalizePackageTimeline(timeline: Record<string, unknown>) {
                 ...clip,
                 metadata: {
                     ...metadata,
+                    clipId: getTimelineClipIdentity(clip, trackName, index),
                     order: index,
                     durationMs: metadata.durationMs ?? null,
                     trimInMs: Number(metadata.trimInMs ?? 0) || 0,
@@ -893,6 +924,10 @@ function quoteConcatPath(filePath: string): string {
     return `file '${String(filePath).replace(/'/g, `'\\''`)}'`;
 }
 
+function resolveClipAbsolutePath(mediaPath: string): string {
+    return path.isAbsolute(mediaPath) ? mediaPath : getAbsoluteMediaPath(mediaPath);
+}
+
 async function exportVideoOrAudioPackage(params: {
     packagePath: string;
     relPath: string;
@@ -931,7 +966,7 @@ async function exportVideoOrAudioPackage(params: {
                 skipped.push({ assetId: assetId || `clip-${index + 1}`, reason: 'missing mediaPath' });
                 continue;
             }
-            const absolutePath = getAbsoluteMediaPath(mediaPath);
+            const absolutePath = resolveClipAbsolutePath(mediaPath);
             try {
                 await fs.access(absolutePath);
             } catch {
@@ -1726,9 +1761,115 @@ export class AppCliTool extends DeclarativeTool<typeof AppCliParamsSchema> {
             };
         }
 
-        if (action === 'clip-update') {
+        if (action === 'track-add') {
+            const relPath = normalizeRelativePath(requireString(readFlag(parsed.flags, 'path') || payload.path, 'path'));
+            const kind = String(readFlag(parsed.flags, 'kind') || payload.kind || 'video').trim().toLowerCase() === 'audio' ? 'audio' : 'video';
+            const absolute = path.join(manuscriptsRoot, relPath);
+            const stats = await fs.stat(absolute);
+            if (!stats.isDirectory() || !isManuscriptPackageName(path.basename(absolute))) {
+                throw new Error('track-add 仅支持视频/音频工程稿件');
+            }
+            const timelinePath = getPackageTimelinePath(absolute);
+            const timeline = await readJsonFile<Record<string, unknown>>(timelinePath, createEmptyOtioTimeline(path.basename(absolute)));
+            const tracks = Array.isArray((timeline as any)?.tracks?.children) ? (timeline as any).tracks.children : [];
+            const prefix = kind === 'audio' ? 'A' : 'V';
+            const trackKind = kind === 'audio' ? 'Audio' as const : 'Video' as const;
+            const existingIndexes = tracks
+                .map((track: any) => String(track?.name || '').trim())
+                .filter((name: string) => name.startsWith(prefix))
+                .map((name: string) => Number(name.slice(1)))
+                .filter((value: number) => Number.isFinite(value));
+            const nextIndex = existingIndexes.length > 0 ? Math.max(...existingIndexes) + 1 : 1;
+            const trackName = `${prefix}${nextIndex}`;
+            ensureTimelineTrack(timeline, trackName, trackKind);
+            normalizePackageTimeline(timeline);
+            await fs.writeFile(timelinePath, JSON.stringify(timeline, null, 2), 'utf-8');
+            return {
+                success: true,
+                path: relPath,
+                track: trackName,
+                clips: buildTimelineClipSummaries(timeline),
+            };
+        }
+
+        if (action === 'clip-add') {
             const relPath = normalizeRelativePath(requireString(readFlag(parsed.flags, 'path') || payload.path, 'path'));
             const assetId = requireString(readFlag(parsed.flags, 'asset-id', 'assetid') || payload.assetId, 'assetId');
+            const absolute = path.join(manuscriptsRoot, relPath);
+            const stats = await fs.stat(absolute);
+            if (!stats.isDirectory() || !isManuscriptPackageName(path.basename(absolute))) {
+                throw new Error('clip-add 仅支持视频/音频工程稿件');
+            }
+            const asset = (await listMediaAssets(5000)).find((item) => item.id === assetId);
+            if (!asset) {
+                throw new Error(`Media asset not found: ${assetId}`);
+            }
+
+            const assetKind = String(asset.mimeType || '').startsWith('audio/')
+                ? 'audio'
+                : String(asset.mimeType || '').startsWith('video/')
+                    ? 'video'
+                    : /\.(mp3|wav|m4a|aac|flac|ogg|opus)$/i.test(String(asset.relativePath || ''))
+                        ? 'audio'
+                        : /\.(mp4|mov|webm|m4v|avi|mkv)$/i.test(String(asset.relativePath || ''))
+                            ? 'video'
+                            : /\.(png|jpg|jpeg|webp|gif|bmp|svg)$/i.test(String(asset.relativePath || ''))
+                                ? 'image'
+                                : 'unknown';
+            const timelinePath = getPackageTimelinePath(absolute);
+            const timeline = await readJsonFile<Record<string, unknown>>(timelinePath, createEmptyOtioTimeline(path.basename(absolute)));
+            const preferredTrack = String(readFlag(parsed.flags, 'track') || payload.track || '').trim() || (assetKind === 'audio' ? 'A1' : 'V1');
+            const targetTrack = ensureTimelineTrack(timeline, preferredTrack, preferredTrack.startsWith('A') ? 'Audio' : 'Video');
+            const targetChildren = Array.isArray((targetTrack as any)?.children) ? targetTrack.children : [];
+            const desiredOrderRaw = parseNumber(readFlag(parsed.flags, 'order') ?? payload.order);
+            const desiredOrder = desiredOrderRaw === undefined ? targetChildren.length : Math.max(0, Math.min(Math.trunc(desiredOrderRaw), targetChildren.length));
+            targetChildren.splice(desiredOrder, 0, {
+                OTIO_SCHEMA: 'Clip.2',
+                name: asset.title || asset.id,
+                source_range: null,
+                media_references: {
+                    DEFAULT_MEDIA: {
+                        OTIO_SCHEMA: 'ExternalReference.1',
+                        target_url: asset.relativePath || '',
+                        available_range: null,
+                        metadata: {
+                            assetId: asset.id,
+                            mimeType: asset.mimeType || '',
+                        },
+                    },
+                },
+                active_media_reference_key: 'DEFAULT_MEDIA',
+                metadata: {
+                    clipId: createTimelineClipId(),
+                    assetId: asset.id,
+                    assetKind,
+                    source: 'media-library',
+                    order: desiredOrder,
+                    durationMs: parseNumber(readFlag(parsed.flags, 'duration-ms', 'duration') ?? payload.durationMs) ?? null,
+                    trimInMs: 0,
+                    trimOutMs: 0,
+                    enabled: true,
+                    addedAt: new Date().toISOString(),
+                },
+            });
+            targetTrack.children = targetChildren;
+            normalizePackageTimeline(timeline);
+            await fs.writeFile(timelinePath, JSON.stringify(timeline, null, 2), 'utf-8');
+            return {
+                success: true,
+                path: relPath,
+                assetId,
+                clips: buildTimelineClipSummaries(timeline),
+            };
+        }
+
+        if (action === 'clip-update') {
+            const relPath = normalizeRelativePath(requireString(readFlag(parsed.flags, 'path') || payload.path, 'path'));
+            const clipId = String(readFlag(parsed.flags, 'clip-id', 'clipid') || payload.clipId || '').trim();
+            const assetId = String(readFlag(parsed.flags, 'asset-id', 'assetid') || payload.assetId || '').trim();
+            if (!clipId && !assetId) {
+                throw new Error('clip-update 需要 clipId 或 assetId');
+            }
             const absolute = path.join(manuscriptsRoot, relPath);
             const stats = await fs.stat(absolute);
             if (!stats.isDirectory() || !isManuscriptPackageName(path.basename(absolute))) {
@@ -1741,9 +1882,17 @@ export class AppCliTool extends DeclarativeTool<typeof AppCliParamsSchema> {
             let clipToMove: any = null;
             let currentTrack: any = null;
 
+            const matchesTargetClip = (clip: any, trackName: string, index: number) => {
+                if (clipId) {
+                    return getTimelineClipIdentity(clip, trackName, index) === clipId;
+                }
+                return String(clip?.metadata?.assetId || clip?.media_references?.DEFAULT_MEDIA?.metadata?.assetId || '').trim() === assetId;
+            };
+
             for (const track of tracks) {
                 const children = Array.isArray((track as any)?.children) ? track.children : [];
-                const clipIndex = children.findIndex((clip: any) => String(clip?.metadata?.assetId || clip?.media_references?.DEFAULT_MEDIA?.metadata?.assetId || '').trim() === assetId);
+                const trackName = String((track as any)?.name || '').trim();
+                const clipIndex = children.findIndex((clip: any, index: number) => matchesTargetClip(clip, trackName, index));
                 if (clipIndex >= 0) {
                     clipToMove = children.splice(clipIndex, 1)[0];
                     currentTrack = track;
@@ -1769,6 +1918,7 @@ export class AppCliTool extends DeclarativeTool<typeof AppCliParamsSchema> {
                 ...clipToMove,
                 metadata: {
                     ...nextMetadata,
+                    clipId: String(nextMetadata.clipId || '').trim() || clipId || createTimelineClipId(),
                     durationMs: durationRaw === null ? null : (parseNumber(durationRaw) ?? nextMetadata.durationMs ?? null),
                     trimInMs: parseNumber(trimInRaw) ?? nextMetadata.trimInMs ?? 0,
                     trimOutMs: parseNumber(trimOutRaw) ?? nextMetadata.trimOutMs ?? 0,
@@ -1789,7 +1939,100 @@ export class AppCliTool extends DeclarativeTool<typeof AppCliParamsSchema> {
             return {
                 success: true,
                 path: relPath,
-                assetId,
+                clipId: String(clipToMove?.metadata?.clipId || clipId || ''),
+                assetId: String(clipToMove?.metadata?.assetId || assetId || ''),
+                clips: buildTimelineClipSummaries(timeline),
+            };
+        }
+
+        if (action === 'clip-delete') {
+            const relPath = normalizeRelativePath(requireString(readFlag(parsed.flags, 'path') || payload.path, 'path'));
+            const clipId = requireString(readFlag(parsed.flags, 'clip-id', 'clipid') || payload.clipId, 'clipId');
+            const absolute = path.join(manuscriptsRoot, relPath);
+            const stats = await fs.stat(absolute);
+            if (!stats.isDirectory() || !isManuscriptPackageName(path.basename(absolute))) {
+                throw new Error('clip-delete 仅支持视频/音频工程稿件');
+            }
+            const timelinePath = getPackageTimelinePath(absolute);
+            const timeline = await readJsonFile<Record<string, unknown>>(timelinePath, createEmptyOtioTimeline(path.basename(absolute)));
+            const tracks = Array.isArray((timeline as any)?.tracks?.children) ? (timeline as any).tracks.children : [];
+            let removed = false;
+            for (const track of tracks) {
+                const trackName = String((track as any)?.name || '').trim();
+                const children = Array.isArray((track as any)?.children) ? track.children : [];
+                track.children = children.filter((clip: any, index: number) => {
+                    const matches = getTimelineClipIdentity(clip, trackName, index) === clipId;
+                    if (matches) removed = true;
+                    return !matches;
+                });
+            }
+            if (!removed) {
+                throw new Error(`Clip not found for clipId: ${clipId}`);
+            }
+            normalizePackageTimeline(timeline);
+            await fs.writeFile(timelinePath, JSON.stringify(timeline, null, 2), 'utf-8');
+            return {
+                success: true,
+                path: relPath,
+                clipId,
+                clips: buildTimelineClipSummaries(timeline),
+            };
+        }
+
+        if (action === 'clip-split') {
+            const relPath = normalizeRelativePath(requireString(readFlag(parsed.flags, 'path') || payload.path, 'path'));
+            const clipId = requireString(readFlag(parsed.flags, 'clip-id', 'clipid') || payload.clipId, 'clipId');
+            const ratioRaw = parseNumber(readFlag(parsed.flags, 'ratio', 'split-ratio') ?? payload.splitRatio);
+            const splitRatio = ratioRaw === undefined ? 0.5 : Math.min(Math.max(ratioRaw, 0.1), 0.9);
+            const absolute = path.join(manuscriptsRoot, relPath);
+            const stats = await fs.stat(absolute);
+            if (!stats.isDirectory() || !isManuscriptPackageName(path.basename(absolute))) {
+                throw new Error('clip-split 仅支持视频/音频工程稿件');
+            }
+            const timelinePath = getPackageTimelinePath(absolute);
+            const timeline = await readJsonFile<Record<string, unknown>>(timelinePath, createEmptyOtioTimeline(path.basename(absolute)));
+            const tracks = Array.isArray((timeline as any)?.tracks?.children) ? (timeline as any).tracks.children : [];
+            let splitDone = false;
+            for (const track of tracks) {
+                const trackName = String((track as any)?.name || '').trim();
+                const children = Array.isArray((track as any)?.children) ? track.children : [];
+                const nextChildren: any[] = [];
+                for (let index = 0; index < children.length; index += 1) {
+                    const clip = children[index];
+                    nextChildren.push(clip);
+                    if (getTimelineClipIdentity(clip, trackName, index) !== clipId) continue;
+                    const metadata = (clip?.metadata && typeof clip.metadata === 'object') ? clip.metadata : {};
+                    const currentDuration = Number(metadata.durationMs ?? 4000) || 4000;
+                    const firstDuration = Math.max(1000, Math.round(currentDuration * splitRatio));
+                    const secondDuration = Math.max(1000, currentDuration - firstDuration);
+                    clip.metadata = {
+                        ...metadata,
+                        clipId: String(metadata.clipId || '').trim() || clipId,
+                        durationMs: firstDuration,
+                    };
+                    nextChildren.push({
+                        ...clip,
+                        metadata: {
+                            ...metadata,
+                            clipId: createTimelineClipId(),
+                            durationMs: secondDuration,
+                            trimInMs: Number(metadata.trimInMs ?? 0) + firstDuration,
+                        },
+                    });
+                    splitDone = true;
+                }
+                track.children = nextChildren;
+                if (splitDone) break;
+            }
+            if (!splitDone) {
+                throw new Error(`Clip not found for clipId: ${clipId}`);
+            }
+            normalizePackageTimeline(timeline);
+            await fs.writeFile(timelinePath, JSON.stringify(timeline, null, 2), 'utf-8');
+            return {
+                success: true,
+                path: relPath,
+                clipId,
                 clips: buildTimelineClipSummaries(timeline),
             };
         }

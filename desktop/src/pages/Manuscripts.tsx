@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useState, type ChangeEvent } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react';
 import {
     ArrowLeft,
     AudioLines,
@@ -24,6 +24,7 @@ import {
 import clsx from 'clsx';
 import { resolveAssetUrl } from '../utils/pathManager';
 import type { PendingChatMessage } from '../App';
+import { usePageRefresh } from '../hooks/usePageRefresh';
 import { REDBOX_OFFICIAL_VIDEO_BASE_URL, getRedBoxOfficialVideoModel } from '../../shared/redboxVideo';
 import {
     ARTICLE_DRAFT_EXTENSION,
@@ -54,9 +55,13 @@ type FileNode = {
     isDirectory: boolean;
     children?: FileNode[];
     status?: 'writing' | 'completed' | 'abandoned';
+    title?: string;
+    draftType?: CreateKind | 'unknown';
+    updatedAt?: number;
+    summary?: string;
 };
 
-type MediaAssetSource = 'generated' | 'planned' | 'imported';
+type MediaAssetSource = 'generated' | 'planned' | 'imported' | 'external';
 
 type MediaAsset = {
     id: string;
@@ -281,9 +286,15 @@ function buildDraftStorageName(): string {
     return `${Date.now()}`;
 }
 
+function pathBasenameSafe(rawPath: string): string {
+    const normalized = String(rawPath || '').replace(/\\/g, '/');
+    const parts = normalized.split('/').filter(Boolean);
+    return parts[parts.length - 1] || '';
+}
+
 function inferAssetKind(asset: MediaAsset): 'image' | 'video' | 'audio' | 'unknown' {
     const mime = String(asset.mimeType || '').toLowerCase();
-    const ref = `${asset.relativePath || ''} ${asset.previewUrl || ''}`.toLowerCase();
+    const ref = `${asset.relativePath || ''} ${asset.previewUrl || ''} ${asset.absolutePath || ''}`.toLowerCase();
     if (mime.startsWith('image/') || /\.(png|jpg|jpeg|webp|gif|bmp|svg)$/i.test(ref)) return 'image';
     if (mime.startsWith('video/') || /\.(mp4|mov|webm|m4v|avi|mkv)$/i.test(ref)) return 'video';
     if (mime.startsWith('audio/') || /\.(mp3|wav|m4a|aac|flac|ogg|opus)$/i.test(ref)) return 'audio';
@@ -388,14 +399,34 @@ function summaryFromContent(content: string): string {
     return plain.slice(0, 72);
 }
 
+function collectFileMetaMap(nodes: FileNode[]): Record<string, FileCardMeta> {
+    const next: Record<string, FileCardMeta> = {};
+    const visit = (items: FileNode[]) => {
+        for (const item of items) {
+            if (item.isDirectory) {
+                visit(item.children || []);
+                continue;
+            }
+            next[item.path] = {
+                title: item.title || DEFAULT_UNTITLED_DRAFT_TITLE,
+                draftType: item.draftType || 'unknown',
+                updatedAt: Number(item.updatedAt || 0) || undefined,
+                summary: item.summary || '',
+            };
+        }
+    };
+    visit(nodes);
+    return next;
+}
+
 export function Manuscripts({ pendingFile, onFileConsumed, onNavigateToRedClaw, isActive = false, onImmersiveModeChange }: ManuscriptsProps) {
     const [mode, setMode] = useState<'gallery' | 'editor'>('gallery');
     const [editorFile, setEditorFile] = useState<string | null>(null);
     const [editorDescriptor, setEditorDescriptor] = useState<EditorDescriptor | null>(null);
     const [tree, setTree] = useState<FileNode[]>([]);
     const [assets, setAssets] = useState<MediaAsset[]>([]);
-    const [fileMetaMap, setFileMetaMap] = useState<Record<string, FileCardMeta>>({});
     const [loading, setLoading] = useState(true);
+    const [isRefreshing, setIsRefreshing] = useState(false);
     const [error, setError] = useState('');
     const [activeFolder, setActiveFolder] = useState('');
     const [query, setQuery] = useState('');
@@ -447,29 +478,64 @@ export function Manuscripts({ pendingFile, onFileConsumed, onNavigateToRedClaw, 
     const [editorMetadata, setEditorMetadata] = useState<Record<string, unknown>>({});
     const [editorBodyDirty, setEditorBodyDirty] = useState(false);
     const [isSavingEditorBody, setIsSavingEditorBody] = useState(false);
+    const treeRequestIdRef = useRef(0);
+    const assetsRequestIdRef = useRef(0);
+    const hasLoadedSnapshotRef = useRef(false);
+    const fileMetaMap = useMemo(() => collectFileMetaMap(tree), [tree]);
 
-    const loadData = useCallback(async () => {
-        setLoading(true);
-        setError('');
+    const loadTree = useCallback(async () => {
+        const requestId = ++treeRequestIdRef.current;
         try {
-            const [treeResult, mediaResult] = await Promise.all([
-                window.ipcRenderer.invoke('manuscripts:list') as Promise<FileNode[]>,
-                window.ipcRenderer.invoke('media:list', { limit: 500 }) as Promise<{ success?: boolean; assets?: MediaAsset[]; error?: string }>,
-            ]);
+            const treeResult = await window.ipcRenderer.invoke('manuscripts:list') as Promise<FileNode[]>;
+            if (requestId !== treeRequestIdRef.current) return;
             setTree(Array.isArray(treeResult) ? treeResult : []);
+        } catch (loadError) {
+            if (requestId !== treeRequestIdRef.current) return;
+            console.error('Failed to load drafts hub:', loadError);
+            setError(loadError instanceof Error ? loadError.message : '加载草稿失败');
+            if (!hasLoadedSnapshotRef.current) {
+                setTree([]);
+            }
+            throw loadError;
+        }
+    }, []);
+
+    const loadAssets = useCallback(async () => {
+        const requestId = ++assetsRequestIdRef.current;
+        try {
+            const mediaResult = await window.ipcRenderer.invoke('media:list', { limit: 500 }) as { success?: boolean; assets?: MediaAsset[]; error?: string };
+            if (requestId !== assetsRequestIdRef.current) return;
             if (!mediaResult?.success) {
                 throw new Error(mediaResult?.error || '加载媒体资产失败');
             }
             setAssets(Array.isArray(mediaResult.assets) ? mediaResult.assets : []);
         } catch (loadError) {
-            console.error('Failed to load drafts hub:', loadError);
-            setError(loadError instanceof Error ? loadError.message : '加载草稿失败');
-            setTree([]);
-            setAssets([]);
-        } finally {
-            setLoading(false);
+            if (requestId !== assetsRequestIdRef.current) return;
+            console.error('Failed to load draft media assets:', loadError);
+            if (!hasLoadedSnapshotRef.current) {
+                setAssets([]);
+            }
+            throw loadError;
         }
     }, []);
+
+    const loadData = useCallback(async () => {
+        if (hasLoadedSnapshotRef.current) {
+            setIsRefreshing(true);
+        } else {
+            setLoading(true);
+        }
+        setError('');
+        try {
+            await Promise.all([loadTree(), loadAssets()]);
+            hasLoadedSnapshotRef.current = true;
+        } catch (loadError) {
+            setError(loadError instanceof Error ? loadError.message : '加载草稿失败');
+        } finally {
+            setLoading(false);
+            setIsRefreshing(false);
+        }
+    }, [loadAssets, loadTree]);
 
     const handleImportMediaFiles = useCallback(async () => {
         setWorkingId('media-import');
@@ -509,12 +575,32 @@ export function Manuscripts({ pendingFile, onFileConsumed, onNavigateToRedClaw, 
         }
     }, []);
 
+    usePageRefresh({
+        isActive,
+        refresh: loadData,
+    });
+
     useEffect(() => {
-        if (isActive) {
-            void loadData();
-            void loadSettings();
-        }
-    }, [isActive, loadData, loadSettings]);
+        if (!isActive) return;
+        const handleDataChanged = (_event: unknown, payload?: { scope?: string }) => {
+            if (payload?.scope === 'manuscripts') {
+                void loadTree();
+                return;
+            }
+            if (payload?.scope === 'media') {
+                void loadAssets();
+            }
+        };
+        window.ipcRenderer.on('data:changed', handleDataChanged);
+        return () => {
+            window.ipcRenderer.off('data:changed', handleDataChanged);
+        };
+    }, [isActive, loadAssets, loadTree]);
+
+    useEffect(() => {
+        if (!isActive) return;
+        void loadSettings();
+    }, [isActive, loadSettings]);
 
     useEffect(() => {
         if (!size) return;
@@ -550,64 +636,6 @@ export function Manuscripts({ pendingFile, onFileConsumed, onNavigateToRedClaw, 
     const currentFolderChildren = useMemo(() => getCurrentFolderChildren(tree, activeFolder), [tree, activeFolder]);
     const currentFolders = useMemo(() => currentFolderChildren.filter((item) => item.isDirectory), [currentFolderChildren]);
     const currentFiles = useMemo(() => currentFolderChildren.filter((item) => !item.isDirectory), [currentFolderChildren]);
-
-    useEffect(() => {
-        let cancelled = false;
-        const targets = currentFiles.map((item) => item.path);
-        if (!targets.length) {
-            setFileMetaMap((prev) => {
-                const next = { ...prev };
-                Object.keys(next).forEach((key) => {
-                    if (!targets.includes(key)) {
-                        delete next[key];
-                    }
-                });
-                return next;
-            });
-            return;
-        }
-
-        void (async () => {
-            const entries = await Promise.all(targets.map(async (filePath) => {
-                try {
-                    const result = await window.ipcRenderer.invoke('manuscripts:read', filePath) as ManuscriptReadResult;
-                    const metadata = (result?.metadata || {}) as Record<string, unknown>;
-                    const title = String(metadata.title || '').trim() || DEFAULT_UNTITLED_DRAFT_TITLE;
-                    const draftType = String(metadata.draftType || '').trim() as CreateKind | '';
-                    return {
-                        filePath,
-                        meta: {
-                            title,
-                            draftType: draftType || 'unknown',
-                            updatedAt: Number(metadata.updatedAt || metadata.createdAt || 0) || undefined,
-                            summary: summaryFromContent(String(result?.content || '')),
-                        } satisfies FileCardMeta,
-                    };
-                } catch {
-                    return {
-                        filePath,
-                        meta: {
-                            title: DEFAULT_UNTITLED_DRAFT_TITLE,
-                            draftType: 'unknown',
-                            summary: '',
-                        } satisfies FileCardMeta,
-                    };
-                }
-            }));
-            if (cancelled) return;
-            setFileMetaMap((prev) => {
-                const next = { ...prev };
-                for (const entry of entries) {
-                    next[entry.filePath] = entry.meta;
-                }
-                return next;
-            });
-        })();
-
-        return () => {
-            cancelled = true;
-        };
-    }, [currentFiles]);
 
     const normalizedQuery = query.trim().toLowerCase();
 
@@ -759,6 +787,37 @@ export function Manuscripts({ pendingFile, onFileConsumed, onNavigateToRedClaw, 
         }
     }, []);
 
+    const handleImportAndBindAssetsToPackage = useCallback(async () => {
+        if (!editorFile) return;
+        setWorkingId('media-import-bind');
+        try {
+            const result = await window.ipcRenderer.invoke('manuscripts:attach-external-files', {
+                filePath: editorFile,
+            }) as {
+                success?: boolean;
+                canceled?: boolean;
+                error?: string;
+                imported?: Array<Record<string, unknown>>;
+                state?: PackageState;
+            };
+            if (result?.canceled) {
+                return;
+            }
+            if (!result?.success) {
+                throw new Error(result?.error || '导入素材失败');
+            }
+            if (result.state) {
+                setPackageState(result.state);
+            } else {
+                await refreshPackageState(editorFile);
+            }
+        } catch (importError) {
+            alert(importError instanceof Error ? importError.message : '导入素材失败');
+        } finally {
+            setWorkingId(null);
+        }
+    }, [editorFile, refreshPackageState]);
+
     const handleUpgradeDraftPackage = useCallback(async (targetKind: 'article' | 'post') => {
         if (!editorFile) return;
         setIsUpgradingDraft(true);
@@ -862,6 +921,44 @@ export function Manuscripts({ pendingFile, onFileConsumed, onNavigateToRedClaw, 
             cancelled = true;
         };
     }, [editorDescriptor?.draftType, editorFile]);
+
+    useEffect(() => {
+        if (!editorChatSessionId || !editorFile) return;
+        const draftType = editorDescriptor?.draftType;
+        if (draftType !== 'video' && draftType !== 'audio') return;
+
+        const packageAssets = Array.isArray(packageState?.assets?.items) ? packageState?.assets?.items : [];
+        const timelineClips = Array.isArray(packageState?.timelineSummary?.clips) ? packageState?.timelineSummary?.clips : [];
+        const timelineSummary = packageState?.timelineSummary as ({ trackNames?: string[] } & Record<string, unknown>) | undefined;
+        const timelineTrackNames = Array.isArray(timelineSummary?.trackNames)
+            ? timelineSummary.trackNames
+            : Array.from(new Set(timelineClips.map((item) => String(item?.track || '').trim()).filter(Boolean)));
+
+        void window.ipcRenderer.invoke('chat:update-session-metadata', {
+            sessionId: editorChatSessionId,
+            metadata: {
+                associatedFilePath: editorFile,
+                associatedPackageKind: draftType,
+                agentProfile: draftType === 'video' ? 'video-editor' : draftType === 'audio' ? 'audio-editor' : 'default',
+                associatedPackageTitle: editorDescriptor?.title || fileMetaMap[editorFile]?.title || '未命名',
+                associatedPackageAssetCount: packageAssets.length,
+                associatedPackageClipCount: Number(packageState?.timelineSummary?.clipCount || timelineClips.length || 0),
+                associatedPackageTrackNames: timelineTrackNames,
+                associatedPackageClips: timelineClips.slice(0, 12).map((item) => ({
+                    assetId: item?.assetId,
+                    name: item?.name,
+                    track: item?.track,
+                    order: item?.order,
+                    durationMs: item?.durationMs,
+                    trimInMs: item?.trimInMs,
+                    trimOutMs: item?.trimOutMs,
+                    enabled: item?.enabled,
+                })),
+            },
+        }).catch((error) => {
+            console.error('Failed to sync editor chat metadata:', error);
+        });
+    }, [editorChatSessionId, editorDescriptor?.draftType, editorDescriptor?.title, editorFile, fileMetaMap, packageState]);
 
     useEffect(() => {
         const immersive = mode === 'editor' && (editorDescriptor?.draftType === 'video' || editorDescriptor?.draftType === 'audio');
@@ -1103,7 +1200,11 @@ export function Manuscripts({ pendingFile, onFileConsumed, onNavigateToRedClaw, 
             assetKind: inferAssetKind(asset),
         }));
 
-        return [...draftCards, ...assetCards].sort((a, b) => b.updatedAt - a.updatedAt);
+        return [...draftCards, ...assetCards].sort((a, b) => {
+            const timeDelta = b.updatedAt - a.updatedAt;
+            if (timeDelta !== 0) return timeDelta;
+            return a.title.localeCompare(b.title, 'zh-Hans-CN');
+        });
     }, [fileMetaMap, visibleAssets, visibleDrafts]);
 
     const bindableImageAssets = useMemo(
@@ -1143,7 +1244,26 @@ export function Manuscripts({ pendingFile, onFileConsumed, onNavigateToRedClaw, 
             ...packageImages.map((item) => String(item.assetId || '').trim()),
             ...packageAssets.map((item) => String(item.assetId || '').trim()),
         ].filter(Boolean));
-        const packagePreviewAssets = assets.filter((asset) => packageAssetIds.has(asset.id));
+        const packagePreviewAssets = [
+            ...assets.filter((asset) => packageAssetIds.has(asset.id)),
+            ...packageAssets
+                .filter((item) => {
+                    const assetId = String(item.assetId || '').trim();
+                    return assetId && !assets.some((asset) => asset.id === assetId);
+                })
+                .map((item) => ({
+                    id: String(item.assetId || ''),
+                    source: 'external' as const,
+                    title: String(item.title || pathBasenameSafe(String(item.mediaPath || '')) || item.assetId || ''),
+                    mimeType: String(item.mimeType || ''),
+                    relativePath: '',
+                    absolutePath: String(item.absolutePath || item.mediaPath || ''),
+                    previewUrl: String(item.previewUrl || ''),
+                    createdAt: '',
+                    updatedAt: '',
+                    exists: Boolean(item.exists),
+                })),
+        ];
         const articlePreviewHtml = String(packageState?.wechatHtml || packageState?.layoutHtml || '').trim();
         const primaryVideoAsset = packagePreviewAssets.find((asset) => {
             const kind = inferAssetKind(asset);
@@ -1262,13 +1382,12 @@ export function Manuscripts({ pendingFile, onFileConsumed, onNavigateToRedClaw, 
                             <button
                                 type="button"
                                 onClick={() => {
-                                    setBindAssetRole('asset');
-                                    setIsBindAssetModalOpen(true);
+                                    void handleImportAndBindAssetsToPackage();
                                 }}
                                 className="inline-flex items-center gap-2 rounded-lg border border-white/10 px-3 py-1.5 text-sm text-white/75 hover:bg-white/5 hover:text-white"
                             >
                                 <Upload className="h-4 w-4" />
-                                关联素材
+                                导入素材
                             </button>
                         )}
                     </div>
@@ -1293,8 +1412,7 @@ export function Manuscripts({ pendingFile, onFileConsumed, onNavigateToRedClaw, 
                                 setEditorBodyDirty(true);
                             }}
                             onOpenBindAssets={() => {
-                                setBindAssetRole('asset');
-                                setIsBindAssetModalOpen(true);
+                                void handleImportAndBindAssetsToPackage();
                             }}
                             onPackageStateChange={(state) => setPackageState(state as PackageState)}
                         />
@@ -1318,8 +1436,7 @@ export function Manuscripts({ pendingFile, onFileConsumed, onNavigateToRedClaw, 
                                 setEditorBodyDirty(true);
                             }}
                             onOpenBindAssets={() => {
-                                setBindAssetRole('asset');
-                                setIsBindAssetModalOpen(true);
+                                void handleImportAndBindAssetsToPackage();
                             }}
                             onPackageStateChange={(state) => setPackageState(state as PackageState)}
                         />
@@ -1527,8 +1644,8 @@ export function Manuscripts({ pendingFile, onFileConsumed, onNavigateToRedClaw, 
                                     onClick={() => void loadData()}
                                     className="inline-flex items-center gap-2 rounded-xl border border-border bg-white/70 px-3 py-2 text-sm text-text-secondary hover:text-text-primary"
                                 >
-                                    <RefreshCw className="h-4 w-4" />
-                                    刷新
+                                    <RefreshCw className={clsx('h-4 w-4', isRefreshing && 'animate-spin')} />
+                                    {isRefreshing ? '刷新中' : '刷新'}
                                 </button>
                                 {activeFolder === '' && (
                                     <button

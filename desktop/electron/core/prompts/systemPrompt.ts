@@ -221,7 +221,7 @@ function getPlanModeInstructions(): string {
 You are currently in Plan Mode. This mode is for researching and planning complex tasks before implementation.
 
 ## Objectives
-1.  **Research:** Use compact primitives like \`app_cli\`, \`bash\`, \`workspace\` (write/edit only), and \`web_search\` to gather context.
+1.  **Research:** Use compact primitives like \`app_cli\`, \`bash\`, and \`workspace\` (write/edit only) to gather context.
 2.  **Design:** Analyze the requirements and existing codebase to design a solution.
 3.  **Plan:** Update the plan file (usually \`.opencode/PLAN.md\`) with your findings and detailed implementation steps.
 4.  **Exit:** When the plan is solid and you are ready to code, call \`plan_mode_exit\`.
@@ -313,7 +313,6 @@ ${categories.join('\n')}
 - Prefer \`app_cli\` for app-managed data and business actions.
 - Prefer \`bash\` for file inspection, keyword search, directory listing, and reading absolute paths.
 - Prefer \`workspace\` only for precise file writes and edits inside the workspace.
-- Use \`web_search\` only when the information is external and likely current.
 - Load \`skill\` only when a specialized workflow is clearly relevant.
 
 ## Compression Rules

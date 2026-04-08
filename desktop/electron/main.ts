@@ -226,6 +226,8 @@ let assistantDaemonListenersAttached = false;
 let workItemStoreListenersAttached = false;
 let appShutdownInProgress = false;
 let appShutdownPromise: Promise<void> | null = null;
+const MANUSCRIPT_TREE_CACHE_TTL_MS = 4000;
+const manuscriptTreeCache = new Map<string, { tree: unknown[]; generatedAt: number }>();
 
 function emitRendererDataChanged(scope: string, payload: Record<string, unknown> = {}) {
   for (const browserWindow of BrowserWindow.getAllWindows()) {
@@ -235,6 +237,14 @@ function emitRendererDataChanged(scope: string, payload: Record<string, unknown>
       ...payload,
     });
   }
+}
+
+function invalidateManuscriptTreeCache(scopePath?: string) {
+  if (scopePath) {
+    manuscriptTreeCache.delete(scopePath);
+    return;
+  }
+  manuscriptTreeCache.clear();
 }
 
 function attachWorkItemStoreListeners() {
@@ -371,6 +381,71 @@ const REDCLAW_EXPAND_XHS_TO_WECHAT_TEMPLATE = loadPrompt(
 );
 let appUpdateLastNotifiedVersion = '';
 const advisorAvatarLocalizationInFlight = new Set<string>();
+type AdvisorSummaryRecord = {
+  id: string;
+  name: string;
+  avatar: string;
+  personality: string;
+  knowledgeLanguage: string;
+  createdAt: string;
+  hasYoutubeChannel: boolean;
+};
+type AdvisorDetailRecord = AdvisorSummaryRecord & {
+  systemPrompt: string;
+  knowledgeFiles: string[];
+};
+let advisorListCache: AdvisorSummaryRecord[] | null = null;
+const advisorDetailCache = new Map<string, AdvisorDetailRecord>();
+
+function invalidateAdvisorCache(advisorId?: string): void {
+  advisorListCache = null;
+  if (advisorId) {
+    advisorDetailCache.delete(advisorId);
+    return;
+  }
+  advisorDetailCache.clear();
+}
+
+async function buildAdvisorSummary(advisorId: string, config: Record<string, unknown>): Promise<AdvisorSummaryRecord> {
+  const advisorDir = path.join(getAdvisorsDir(), advisorId);
+  const configPath = path.join(advisorDir, 'config.json');
+  const avatar = String(config.avatar || '').trim();
+  if (avatar.startsWith('http')) {
+    localizeAdvisorAvatarInBackground(advisorDir, configPath, config);
+  }
+  return {
+    id: advisorId,
+    name: String(config.name || ''),
+    avatar: resolveAdvisorAvatarForList(advisorDir, config),
+    personality: String(config.personality || ''),
+    knowledgeLanguage: String(config.knowledgeLanguage || ''),
+    createdAt: String(config.createdAt || ''),
+    hasYoutubeChannel: Boolean((config.youtubeChannel as Record<string, unknown> | undefined)?.url),
+  };
+}
+
+async function buildAdvisorDetail(advisorId: string): Promise<AdvisorDetailRecord> {
+  const advisorDir = path.join(getAdvisorsDir(), advisorId);
+  const configPath = path.join(advisorDir, 'config.json');
+  const knowledgeDir = path.join(advisorDir, 'knowledge');
+  const content = await fs.readFile(configPath, 'utf-8');
+  const config = JSON.parse(content) as Record<string, unknown>;
+  const summary = await buildAdvisorSummary(advisorId, config);
+
+  let knowledgeFiles: string[] = [];
+  try {
+    const files = await fs.readdir(knowledgeDir);
+    knowledgeFiles = files.filter((f: string) => f.endsWith('.txt') || f.endsWith('.md'));
+  } catch {
+    knowledgeFiles = [];
+  }
+
+  return {
+    ...summary,
+    systemPrompt: String(config.systemPrompt || ''),
+    knowledgeFiles,
+  };
+}
 let localAssetProtocolsRegistered = false;
 const BROWSER_PLUGIN_BUNDLE_RELATIVE_PATH = path.join('.plugin-runtime', 'browser-extension');
 const BROWSER_PLUGIN_EXPORT_RELATIVE_PATH = path.join('integrations', 'browser-extension', 'redbox-capture');
@@ -2766,6 +2841,37 @@ ipcMain.handle('chat:getOrCreateFileSession', async (_, { filePath, fileId }: { 
   return { id: sessionId, title, timestamp: Date.now(), metadata: JSON.stringify(metadata) };
 });
 
+ipcMain.handle('chat:update-session-metadata', async (_, payload?: {
+  sessionId?: string;
+  metadata?: Record<string, unknown>;
+}) => {
+  const sessionId = String(payload?.sessionId || '').trim();
+  if (!sessionId) {
+    return { success: false, error: 'sessionId is required' };
+  }
+
+  const session = getChatSession(sessionId);
+  if (!session) {
+    return { success: false, error: 'session not found' };
+  }
+
+  let currentMetadata: Record<string, unknown> = {};
+  if (session.metadata) {
+    try {
+      currentMetadata = JSON.parse(session.metadata);
+    } catch (error) {
+      console.warn('[chat:update-session-metadata] Failed to parse existing metadata:', error);
+    }
+  }
+
+  const nextMetadata = {
+    ...currentMetadata,
+    ...(payload?.metadata || {}),
+  };
+  updateChatSessionMetadata(sessionId, nextMetadata);
+  return { success: true };
+});
+
 // 获取或创建上下文关联的会话 (知识库聊天)
 ipcMain.handle('chat:getOrCreateContextSession', async (_, { contextId, contextType, title, initialContext }: { contextId: string; contextType: string; title: string; initialContext: string }) => {
   if (!contextId || !contextType) return null;
@@ -4525,6 +4631,9 @@ ipcMain.handle('advisors:list', async () => {
   const advisorsDir = getAdvisorsDir();
 
   try {
+    if (advisorListCache) {
+      return advisorListCache;
+    }
     await fs.mkdir(advisorsDir, { recursive: true });
     const dirs = await fs.readdir(advisorsDir, { withFileTypes: true });
     const advisorDirs = dirs.filter((dir) => dir.isDirectory());
@@ -4533,22 +4642,7 @@ ipcMain.handle('advisors:list', async () => {
       try {
         const content = await fs.readFile(configPath, 'utf-8');
         const config = JSON.parse(content) as Record<string, unknown>;
-        const advisorDir = path.join(advisorsDir, dir.name);
-
-        const avatar = String(config.avatar || '').trim();
-        if (avatar.startsWith('http')) {
-          localizeAdvisorAvatarInBackground(advisorDir, configPath, config);
-        }
-
-        return {
-          id: dir.name,
-          name: String(config.name || ''),
-          avatar: resolveAdvisorAvatarForList(advisorDir, config),
-          personality: String(config.personality || ''),
-          knowledgeLanguage: String(config.knowledgeLanguage || ''),
-          createdAt: String(config.createdAt || ''),
-          hasYoutubeChannel: Boolean((config.youtubeChannel as Record<string, unknown> | undefined)?.url),
-        };
+        return await buildAdvisorSummary(dir.name, config);
       } catch {
         return null;
       }
@@ -4562,9 +4656,10 @@ ipcMain.handle('advisors:list', async () => {
       hasYoutubeChannel: boolean;
     } => Boolean(item));
 
-    return advisors.sort((a, b) =>
+    advisorListCache = advisors.sort((a, b) =>
       (b.createdAt || '').localeCompare(a.createdAt || '')
     );
+    return advisorListCache;
   } catch (error) {
     console.error('Failed to list advisors:', error);
     return [];
@@ -4572,41 +4667,17 @@ ipcMain.handle('advisors:list', async () => {
 });
 
 ipcMain.handle('advisors:get', async (_, advisorId: string) => {
-  const advisorDir = path.join(getAdvisorsDir(), advisorId);
-  const configPath = path.join(advisorDir, 'config.json');
-  const knowledgeDir = path.join(advisorDir, 'knowledge');
-
   try {
-    const content = await fs.readFile(configPath, 'utf-8');
-    const config = JSON.parse(content) as Record<string, unknown>;
-
-    const avatar = String(config.avatar || '').trim();
-    if (avatar.startsWith('http')) {
-      localizeAdvisorAvatarInBackground(advisorDir, configPath, config);
+    const cached = advisorDetailCache.get(advisorId);
+    if (cached) {
+      return {
+        success: true,
+        advisor: cached,
+      };
     }
-
-    let knowledgeFiles: string[] = [];
-    try {
-      const files = await fs.readdir(knowledgeDir);
-      knowledgeFiles = files.filter((f: string) => f.endsWith('.txt') || f.endsWith('.md'));
-    } catch {
-      knowledgeFiles = [];
-    }
-
-    return {
-      success: true,
-      advisor: {
-        id: advisorId,
-        name: String(config.name || ''),
-        avatar: resolveAdvisorAvatarForList(advisorDir, config),
-        personality: String(config.personality || ''),
-        systemPrompt: String(config.systemPrompt || ''),
-        knowledgeLanguage: String(config.knowledgeLanguage || ''),
-        createdAt: String(config.createdAt || ''),
-        knowledgeFiles,
-        hasYoutubeChannel: Boolean((config.youtubeChannel as Record<string, unknown> | undefined)?.url),
-      },
-    };
+    const advisor = await buildAdvisorDetail(advisorId);
+    advisorDetailCache.set(advisorId, advisor);
+    return { success: true, advisor };
   } catch (error) {
     console.error('Failed to get advisor:', error);
     return { success: false, error: String(error) };
@@ -4687,6 +4758,7 @@ ipcMain.handle('advisors:create', async (_, data: { name: string; avatar: string
     }
 
     await fs.writeFile(path.join(advisorDir, 'config.json'), JSON.stringify(config, null, 2), 'utf-8');
+    invalidateAdvisorCache(advisorId);
     win?.webContents.send('advisors:changed', { action: 'create', advisorId });
     emitRendererDataChanged('advisors', { action: 'create', entityId: advisorId });
     return { success: true, id: advisorId };
@@ -4725,6 +4797,7 @@ ipcMain.handle('advisors:update', async (_, data: { id: string; name: string; av
     };
 
     await fs.writeFile(configPath, JSON.stringify(updated, null, 2), 'utf-8');
+    invalidateAdvisorCache(data.id);
     win?.webContents.send('advisors:changed', { action: 'update', advisorId: data.id });
     emitRendererDataChanged('advisors', { action: 'update', entityId: data.id });
     return { success: true };
@@ -4765,6 +4838,7 @@ ipcMain.handle('advisors:delete', async (_, advisorId: string) => {
 
   try {
     await fs.rm(advisorDir, { recursive: true, force: true });
+    invalidateAdvisorCache(advisorId);
     win?.webContents.send('advisors:changed', { action: 'delete', advisorId });
     emitRendererDataChanged('advisors', { action: 'delete', entityId: advisorId });
     return { success: true };
@@ -4810,6 +4884,8 @@ ipcMain.handle('advisors:upload-knowledge', async (_, advisorId: string) => {
     }
   }
 
+  invalidateAdvisorCache(advisorId);
+  emitRendererDataChanged('advisors', { action: 'update', entityId: advisorId });
   return { success: true, count: result.filePaths.length };
 });
 
@@ -4819,6 +4895,8 @@ ipcMain.handle('advisors:delete-knowledge', async (_, { advisorId, fileName }: {
 
   try {
     await fs.unlink(filePath);
+    invalidateAdvisorCache(advisorId);
+    emitRendererDataChanged('advisors', { action: 'update', entityId: advisorId });
     return { success: true };
   } catch (error) {
     console.error('Failed to delete knowledge file:', error);
@@ -5183,6 +5261,8 @@ ipcMain.handle('advisors:update-youtube-settings', async (_event, payload: {
       ...payload?.settings,
     });
     await fs.writeFile(configPath, JSON.stringify(config, null, 2), 'utf-8');
+    invalidateAdvisorCache(advisorId);
+    emitRendererDataChanged('advisors', { action: 'update', entityId: advisorId });
     return { success: true, youtubeChannel: config.youtubeChannel };
   } catch (error) {
     console.error('Failed to update advisor youtube settings:', error);
@@ -6023,6 +6103,68 @@ function getManuscriptPackageEntryPath(packagePath: string, fileName: string, ma
   return path.join(packagePath, entry);
 }
 
+type ManuscriptTreeNode = {
+  name: string;
+  path: string;
+  isDirectory: boolean;
+  children?: ManuscriptTreeNode[];
+  status?: string;
+  title?: string;
+  draftType?: string;
+  updatedAt?: number;
+  summary?: string;
+};
+
+function summarizeManuscriptContent(content: string) {
+  return String(content || '')
+    .replace(/^#+\s+/gm, '')
+    .replace(/```[\s\S]*?```/g, ' ')
+    .replace(/\[(.*?)\]\((.*?)\)/g, '$1')
+    .replace(/[*_>`~-]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 72);
+}
+
+async function readManuscriptListMetadata(fullPath: string, fileName: string, isPackage: boolean) {
+  const stats = await fs.stat(fullPath);
+  const fallbackTitle = '未命名';
+  const fallbackDraftType = getDraftTypeFromFileName(fileName);
+  const fallbackUpdatedAt = Number.isFinite(stats.mtimeMs) ? Math.trunc(stats.mtimeMs) : Date.now();
+
+  try {
+    if (isPackage) {
+      const { content, metadata } = await readManuscriptPackage(fullPath);
+      return {
+        status: String(metadata?.status || 'writing'),
+        title: String(metadata?.title || '').trim() || fallbackTitle,
+        draftType: String(metadata?.draftType || '').trim() || fallbackDraftType,
+        updatedAt: Number(metadata?.updatedAt || metadata?.createdAt || fallbackUpdatedAt) || fallbackUpdatedAt,
+        summary: summarizeManuscriptContent(content),
+      };
+    }
+
+    const rawContent = await fs.readFile(fullPath, 'utf-8');
+    const parsed = matter(rawContent);
+    const metadata = (parsed.data || {}) as Record<string, unknown>;
+    return {
+      status: String(metadata?.status || 'writing'),
+      title: String(metadata?.title || '').trim() || fallbackTitle,
+      draftType: String(metadata?.draftType || '').trim() || fallbackDraftType,
+      updatedAt: Number(metadata?.updatedAt || metadata?.createdAt || fallbackUpdatedAt) || fallbackUpdatedAt,
+      summary: summarizeManuscriptContent(parsed.content || ''),
+    };
+  } catch {
+    return {
+      status: 'writing',
+      title: fallbackTitle,
+      draftType: fallbackDraftType,
+      updatedAt: fallbackUpdatedAt,
+      summary: '',
+    };
+  }
+}
+
 async function readManuscriptPackage(packagePath: string): Promise<{ content: string; metadata: Record<string, unknown> }> {
   const manifestPath = getManuscriptPackageManifestPath(packagePath);
   const fileName = path.basename(packagePath);
@@ -6100,6 +6242,20 @@ async function saveManuscriptPackage(packagePath: string, content: string, metad
   await fs.writeFile(getManuscriptPackageManifestPath(packagePath), JSON.stringify(packageMetadata, null, 2), 'utf-8');
 }
 
+async function touchManuscriptPackageUpdatedAt(packagePath: string) {
+  try {
+    const manifestPath = getManuscriptPackageManifestPath(packagePath);
+    const existing = await readJsonFromFile<Record<string, unknown>>(manifestPath, {});
+    const next = {
+      ...existing,
+      updatedAt: Date.now(),
+    };
+    await fs.writeFile(manifestPath, JSON.stringify(next, null, 2), 'utf-8');
+  } catch (error) {
+    console.error('Failed to touch manuscript package updatedAt:', error);
+  }
+}
+
 function createEmptyOtioTimeline(title: string) {
   return {
     OTIO_SCHEMA: 'Timeline.1',
@@ -6128,6 +6284,133 @@ function createEmptyOtioTimeline(title: string) {
       version: 1,
     },
   };
+}
+
+function createTimelineClipId(): string {
+  return `clip_${ulid()}`;
+}
+
+function guessMediaMimeTypeByFilePath(inputPath: string): string {
+  const ext = path.extname(inputPath).toLowerCase();
+  if (['.jpg', '.jpeg'].includes(ext)) return 'image/jpeg';
+  if (ext === '.png') return 'image/png';
+  if (ext === '.webp') return 'image/webp';
+  if (ext === '.gif') return 'image/gif';
+  if (ext === '.bmp') return 'image/bmp';
+  if (ext === '.svg') return 'image/svg+xml';
+  if (ext === '.mp4') return 'video/mp4';
+  if (ext === '.mov') return 'video/quicktime';
+  if (ext === '.webm') return 'video/webm';
+  if (ext === '.m4v') return 'video/x-m4v';
+  if (ext === '.avi') return 'video/x-msvideo';
+  if (ext === '.mkv') return 'video/x-matroska';
+  if (ext === '.mp3') return 'audio/mpeg';
+  if (ext === '.wav') return 'audio/wav';
+  if (ext === '.m4a') return 'audio/mp4';
+  if (ext === '.aac') return 'audio/aac';
+  if (ext === '.flac') return 'audio/flac';
+  if (ext === '.ogg') return 'audio/ogg';
+  if (ext === '.opus') return 'audio/opus';
+  return 'application/octet-stream';
+}
+
+function inferAssetKindFromPathOrMime(inputPath: string, mimeType?: string): 'image' | 'video' | 'audio' | 'unknown' {
+  const mime = String(mimeType || '').toLowerCase();
+  const ref = String(inputPath || '').toLowerCase();
+  if (mime.startsWith('image/') || /\.(png|jpg|jpeg|webp|gif|bmp|svg)$/i.test(ref)) return 'image';
+  if (mime.startsWith('video/') || /\.(mp4|mov|webm|m4v|avi|mkv)$/i.test(ref)) return 'video';
+  if (mime.startsWith('audio/') || /\.(mp3|wav|m4a|aac|flac|ogg|opus)$/i.test(ref)) return 'audio';
+  return 'unknown';
+}
+
+function getTimelineClipIdentity(clip: any, fallbackTrackName = '', fallbackIndex = 0): string {
+  const metadata = (clip?.metadata && typeof clip.metadata === 'object') ? clip.metadata : {};
+  const explicitClipId = String(metadata.clipId || '').trim();
+  if (explicitClipId) return explicitClipId;
+  const assetId = String(metadata.assetId || clip?.media_references?.DEFAULT_MEDIA?.metadata?.assetId || '').trim();
+  const name = String(clip?.name || '').trim();
+  return `${fallbackTrackName}:${assetId || name || 'clip'}:${fallbackIndex}`;
+}
+
+function ensureTimelineTrack(timeline: Record<string, unknown>, trackName: string, kind: 'Video' | 'Audio') {
+  const stack = ((timeline as any).tracks ||= { OTIO_SCHEMA: 'Stack.1', children: [] });
+  const tracks = Array.isArray(stack.children) ? stack.children : [];
+  const existing = tracks.find((track: any) => String(track?.name || '').trim() === trackName);
+  if (existing) return existing;
+  const nextTrack = {
+    OTIO_SCHEMA: 'Track.1',
+    name: trackName,
+    kind,
+    children: [],
+  };
+  tracks.push(nextTrack);
+  stack.children = tracks;
+  return nextTrack;
+}
+
+async function attachExternalFileToPackage(packagePath: string, input: {
+  absolutePath: string;
+  title?: string;
+  mimeType?: string;
+}): Promise<void> {
+  const normalizedAbsolutePath = path.resolve(input.absolutePath);
+  const mimeType = String(input.mimeType || guessMediaMimeTypeByFilePath(normalizedAbsolutePath)).trim();
+  const assetKind = inferAssetKindFromPathOrMime(normalizedAbsolutePath, mimeType);
+  const assetId = `external_${ulid()}`;
+  const title = String(input.title || path.basename(normalizedAbsolutePath)).trim() || path.basename(normalizedAbsolutePath);
+
+  const assetsPath = getManuscriptPackageAssetsPath(packagePath);
+  const assetsJson = await readJsonFromFile<{ items: Array<Record<string, unknown>> }>(assetsPath, { items: [] });
+  assetsJson.items.push({
+    assetId,
+    mediaPath: normalizedAbsolutePath,
+    source: 'external-file',
+    mimeType,
+    title,
+    role: 'asset',
+    boundAt: new Date().toISOString(),
+  });
+  await fs.writeFile(assetsPath, JSON.stringify(assetsJson, null, 2), 'utf-8');
+
+  const timelinePath = getManuscriptPackageTimelinePath(packagePath);
+  const timeline = await readJsonFromFile<Record<string, unknown>>(timelinePath, createEmptyOtioTimeline(path.basename(packagePath)));
+  const preferredTrackName = assetKind === 'audio' ? 'A1' : 'V1';
+  const preferredKind = preferredTrackName.startsWith('A') ? 'Audio' as const : 'Video' as const;
+  const targetTrack = ensureTimelineTrack(timeline, preferredTrackName, preferredKind);
+  const targetChildren = Array.isArray((targetTrack as any)?.children) ? targetTrack.children : [];
+  const desiredOrder = targetChildren.length;
+  targetChildren.push({
+    OTIO_SCHEMA: 'Clip.2',
+    name: title,
+    source_range: null,
+    media_references: {
+      DEFAULT_MEDIA: {
+        OTIO_SCHEMA: 'ExternalReference.1',
+        target_url: normalizedAbsolutePath,
+        available_range: null,
+        metadata: {
+          assetId,
+          mimeType,
+        },
+      },
+    },
+    active_media_reference_key: 'DEFAULT_MEDIA',
+    metadata: {
+      clipId: createTimelineClipId(),
+      assetId,
+      assetKind,
+      source: 'external-file',
+      order: desiredOrder,
+      durationMs: null,
+      trimInMs: 0,
+      trimOutMs: 0,
+      enabled: true,
+      addedAt: new Date().toISOString(),
+    },
+  });
+  targetTrack.children = targetChildren;
+  normalizePackageTimeline(timeline);
+  await fs.writeFile(timelinePath, JSON.stringify(timeline, null, 2), 'utf-8');
 }
 
 async function readJsonFromFile<T>(filePath: string, fallback: T): Promise<T> {
@@ -6161,6 +6444,7 @@ function buildTimelineClipSummaries(timeline: Record<string, unknown>) {
       const assetId = String(metadata.assetId || mediaRef?.metadata?.assetId || '').trim();
       const sourceRef = assetId ? sourceRefByAssetId.get(assetId) : null;
       clips.push({
+        clipId: getTimelineClipIdentity(clip, trackName, index),
         assetId,
         name: String(clip?.name || assetId || `Clip ${index + 1}`),
         track: trackName,
@@ -6203,6 +6487,7 @@ function normalizePackageTimeline(timeline: Record<string, unknown>) {
         ...clip,
         metadata: {
           ...metadata,
+          clipId: getTimelineClipIdentity(clip, trackName, index),
           order: index,
           durationMs: metadata.durationMs ?? null,
           trimInMs: Number(metadata.trimInMs ?? 0) || 0,
@@ -6247,13 +6532,40 @@ async function getManuscriptPackageState(packagePath: string) {
     hasWechatHtml = Boolean(wechatHtml.trim());
   } catch {}
 
+  const enrichedAssets = await Promise.all((assets.items || []).map(async (item) => {
+    const mediaPath = String(item.mediaPath || '').trim();
+    if (!mediaPath) {
+      return { ...item, exists: false };
+    }
+    const absolutePath = path.isAbsolute(mediaPath) ? mediaPath : getAbsoluteMediaPath(mediaPath);
+    try {
+      await fs.access(absolutePath);
+      return {
+        ...item,
+        absolutePath,
+        previewUrl: toLocalFileUrl(absolutePath),
+        exists: true,
+      };
+    } catch {
+      return {
+        ...item,
+        absolutePath,
+        previewUrl: toLocalFileUrl(absolutePath),
+        exists: false,
+      };
+    }
+  }));
+
   return {
     manifest: {
       ...manifest,
       packageKind: manifest.packageKind || getPackageKindFromFileName(fileName),
       draftType: manifest.draftType || getDraftTypeFromFileName(fileName),
     },
-    assets,
+    assets: {
+      ...assets,
+      items: enrichedAssets,
+    },
     cover,
     images,
     timelineSummary: {
@@ -6363,10 +6675,10 @@ async function ensureManuscriptsDir() {
 }
 
 // 递归构建文件树
-async function buildFileTree(dirPath: string, basePath: string): Promise<{ name: string; path: string; isDirectory: boolean; children?: unknown[]; status?: string }[]> {
+async function buildFileTree(dirPath: string, basePath: string): Promise<ManuscriptTreeNode[]> {
   const fs = require('fs/promises');
   const entries = await fs.readdir(dirPath, { withFileTypes: true });
-  const result: { name: string; path: string; isDirectory: boolean; children?: unknown[]; status?: string }[] = [];
+  const result: ManuscriptTreeNode[] = [];
 
   // Sort: directories first, then alphabetically
   const sorted = entries.sort((a: { isDirectory: () => boolean; name: string }, b: { isDirectory: () => boolean; name: string }) => {
@@ -6381,21 +6693,30 @@ async function buildFileTree(dirPath: string, basePath: string): Promise<{ name:
 
     if (entry.isDirectory()) {
       if (isManuscriptPackageName(entry.name)) {
-        let status = 'writing';
+        const metadata = await readManuscriptListMetadata(fullPath, entry.name, true);
         try {
-          const { metadata } = await readManuscriptPackage(fullPath);
-          if (metadata && metadata.status) {
-            status = String(metadata.status);
-          }
+          result.push({
+            name: entry.name,
+            path: relativePath,
+            isDirectory: false,
+            status: metadata.status,
+            title: metadata.title,
+            draftType: metadata.draftType,
+            updatedAt: metadata.updatedAt,
+            summary: metadata.summary,
+          });
         } catch {
-          // Ignore error
+          result.push({
+            name: entry.name,
+            path: relativePath,
+            isDirectory: false,
+            status: 'writing',
+            title: '未命名',
+            draftType: getDraftTypeFromFileName(entry.name),
+            updatedAt: undefined,
+            summary: '',
+          });
         }
-        result.push({
-          name: entry.name,
-          path: relativePath,
-          isDirectory: false,
-          status
-        });
         continue;
       }
       const children = await buildFileTree(fullPath, basePath);
@@ -6406,21 +6727,16 @@ async function buildFileTree(dirPath: string, basePath: string): Promise<{ name:
         children
       });
     } else if (isSupportedManuscriptFile(entry.name)) {
-      let status = 'writing';
-      try {
-        const content = await fs.readFile(fullPath, 'utf-8');
-        const { data } = matter(content);
-        if (data && data.status) {
-          status = data.status;
-        }
-      } catch (e) {
-        // Ignore error
-      }
+      const metadata = await readManuscriptListMetadata(fullPath, entry.name, false);
       result.push({
         name: entry.name,
         path: relativePath,
         isDirectory: false,
-        status
+        status: metadata.status,
+        title: metadata.title,
+        draftType: metadata.draftType,
+        updatedAt: metadata.updatedAt,
+        summary: metadata.summary,
       });
     }
   }
@@ -6428,14 +6744,26 @@ async function buildFileTree(dirPath: string, basePath: string): Promise<{ name:
   return result;
 }
 
-// 列出文件树
-ipcMain.handle('manuscripts:list', async () => {
-  const fs = require('fs/promises');
+async function listManuscriptTreeWithCache() {
   await ensureManuscriptsDir();
   const baseDir = getManuscriptsDir();
+  const cacheKey = baseDir;
+  const cached = manuscriptTreeCache.get(cacheKey);
+  if (cached && Date.now() - cached.generatedAt < MANUSCRIPT_TREE_CACHE_TTL_MS) {
+    return cached.tree as ManuscriptTreeNode[];
+  }
+  const tree = await buildFileTree(baseDir, baseDir);
+  manuscriptTreeCache.set(cacheKey, {
+    tree,
+    generatedAt: Date.now(),
+  });
+  return tree;
+}
 
+// 列出文件树
+ipcMain.handle('manuscripts:list', async () => {
   try {
-    const tree = await buildFileTree(baseDir, baseDir);
+    const tree = await listManuscriptTreeWithCache();
     return tree;
   } catch (error) {
     console.error('Failed to list manuscripts:', error);
@@ -6509,6 +6837,8 @@ ipcMain.handle('manuscripts:save', async (_, { path: filePath, content, metadata
           }
         });
       }
+      invalidateManuscriptTreeCache(getManuscriptsDir());
+      emitRendererDataChanged('manuscripts', { action: 'save', entityId: filePath });
       return { success: true };
     }
 
@@ -6538,6 +6868,8 @@ ipcMain.handle('manuscripts:save', async (_, { path: filePath, content, metadata
       });
     }
 
+    invalidateManuscriptTreeCache(getManuscriptsDir());
+    emitRendererDataChanged('manuscripts', { action: 'save', entityId: filePath });
     return { success: true };
   } catch (error) {
     console.error('Failed to save manuscript:', error);
@@ -6628,6 +6960,8 @@ ipcMain.handle('manuscripts:save-layout', async (_, layout: any) => {
 
   try {
     await fs.writeFile(layoutPath, JSON.stringify(layout, null, 2), 'utf-8');
+    invalidateManuscriptTreeCache(getManuscriptsDir());
+    emitRendererDataChanged('manuscripts', { action: 'layout-save' });
     return { success: true };
   } catch (error) {
     console.error('Failed to save layout:', error);
@@ -6642,6 +6976,8 @@ ipcMain.handle('manuscripts:create-folder', async (_, { parentPath, name }: { pa
 
   try {
     await fs.mkdir(fullPath, { recursive: true });
+    invalidateManuscriptTreeCache(getManuscriptsDir());
+    emitRendererDataChanged('manuscripts', { action: 'create-folder', entityId: path.relative(getManuscriptsDir(), fullPath) });
     return { success: true };
   } catch (error) {
     console.error('Failed to create folder:', error);
@@ -6671,6 +7007,8 @@ ipcMain.handle('manuscripts:create-file', async (_, { parentPath, name, content,
     } else {
       await fs.writeFile(fullPath, content || '', 'utf-8');
     }
+    invalidateManuscriptTreeCache(getManuscriptsDir());
+    emitRendererDataChanged('manuscripts', { action: 'create-file', entityId: path.relative(getManuscriptsDir(), fullPath) });
     return { success: true, path: path.relative(getManuscriptsDir(), fullPath) };
   } catch (error) {
     console.error('Failed to create file:', error);
@@ -6685,6 +7023,8 @@ ipcMain.handle('manuscripts:delete', async (_, filePath: string) => {
 
   try {
     await fs.rm(fullPath, { recursive: true, force: true });
+    invalidateManuscriptTreeCache(getManuscriptsDir());
+    emitRendererDataChanged('manuscripts', { action: 'delete', entityId: filePath });
     return { success: true };
   } catch (error) {
     console.error('Failed to delete manuscript:', error);
@@ -6701,6 +7041,12 @@ ipcMain.handle('manuscripts:rename', async (_, { oldPath, newName }: { oldPath: 
 
   try {
     await fs.rename(oldFullPath, newFullPath);
+    invalidateManuscriptTreeCache(getManuscriptsDir());
+    emitRendererDataChanged('manuscripts', {
+      action: 'rename',
+      entityId: path.relative(getManuscriptsDir(), newFullPath),
+      oldPath,
+    });
     return { success: true, newPath: path.relative(getManuscriptsDir(), newFullPath) };
   } catch (error) {
     console.error('Failed to rename manuscript:', error);
@@ -6718,6 +7064,12 @@ ipcMain.handle('manuscripts:upgrade-to-package', async (_, {
   try {
     const targetExtension = targetKind === 'article' ? ARTICLE_DRAFT_EXTENSION : POST_DRAFT_EXTENSION;
     const newPath = await upgradeMarkdownManuscriptToPackage(sourcePath, targetExtension);
+    invalidateManuscriptTreeCache(getManuscriptsDir());
+    emitRendererDataChanged('manuscripts', {
+      action: 'upgrade',
+      entityId: newPath,
+      sourcePath,
+    });
     return { success: true, newPath };
   } catch (error) {
     console.error('Failed to upgrade manuscript to package:', error);
@@ -6744,6 +7096,7 @@ ipcMain.handle('manuscripts:get-package-state', async (_, filePath: string) => {
 
 ipcMain.handle('manuscripts:update-package-clip', async (_, payload?: {
   filePath?: string;
+  clipId?: string;
   assetId?: string;
   track?: string;
   order?: number;
@@ -6754,9 +7107,10 @@ ipcMain.handle('manuscripts:update-package-clip', async (_, payload?: {
 }) => {
   try {
     const filePath = String(payload?.filePath || '').trim();
+    const clipId = String(payload?.clipId || '').trim();
     const assetId = String(payload?.assetId || '').trim();
-    if (!filePath || !assetId) {
-      return { success: false, error: 'filePath and assetId are required' };
+    if (!filePath || (!clipId && !assetId)) {
+      return { success: false, error: 'filePath and clipId/assetId are required' };
     }
     const fullPath = path.join(getManuscriptsDir(), filePath);
     const stats = await fs.stat(fullPath);
@@ -6770,9 +7124,17 @@ ipcMain.handle('manuscripts:update-package-clip', async (_, payload?: {
     let clipToMove: any = null;
     let currentTrack: any = null;
 
+    const matchesTargetClip = (clip: any, trackName: string, index: number) => {
+      if (clipId) {
+        return getTimelineClipIdentity(clip, trackName, index) === clipId;
+      }
+      return String(clip?.metadata?.assetId || clip?.media_references?.DEFAULT_MEDIA?.metadata?.assetId || '').trim() === assetId;
+    };
+
     for (const track of tracks) {
       const children = Array.isArray((track as any)?.children) ? track.children : [];
-      const clipIndex = children.findIndex((clip: any) => String(clip?.metadata?.assetId || clip?.media_references?.DEFAULT_MEDIA?.metadata?.assetId || '').trim() === assetId);
+      const trackName = String((track as any)?.name || '').trim();
+      const clipIndex = children.findIndex((clip: any, index: number) => matchesTargetClip(clip, trackName, index));
       if (clipIndex >= 0) {
         clipToMove = children.splice(clipIndex, 1)[0];
         currentTrack = track;
@@ -6792,6 +7154,7 @@ ipcMain.handle('manuscripts:update-package-clip', async (_, payload?: {
       ...clipToMove,
       metadata: {
         ...nextMetadata,
+        clipId: String(nextMetadata.clipId || '').trim() || clipId || createTimelineClipId(),
         durationMs: payload?.durationMs === null ? null : (payload?.durationMs ?? nextMetadata.durationMs ?? null),
         trimInMs: payload?.trimInMs ?? nextMetadata.trimInMs ?? 0,
         trimOutMs: payload?.trimOutMs ?? nextMetadata.trimOutMs ?? 0,
@@ -6806,9 +7169,258 @@ ipcMain.handle('manuscripts:update-package-clip', async (_, payload?: {
 
     normalizePackageTimeline(timeline);
     await fs.writeFile(timelinePath, JSON.stringify(timeline, null, 2), 'utf-8');
+    await touchManuscriptPackageUpdatedAt(fullPath);
+    invalidateManuscriptTreeCache(getManuscriptsDir());
+    emitRendererDataChanged('manuscripts', { action: 'clip-update', entityId: filePath });
     return { success: true, state: await getManuscriptPackageState(fullPath) };
   } catch (error) {
     console.error('Failed to update manuscript package clip:', error);
+    return { success: false, error: error instanceof Error ? error.message : String(error) };
+  }
+});
+
+ipcMain.handle('manuscripts:add-package-track', async (_, payload?: {
+  filePath?: string;
+  kind?: 'video' | 'audio';
+}) => {
+  try {
+    const filePath = String(payload?.filePath || '').trim();
+    const kind = String(payload?.kind || 'video').trim().toLowerCase() === 'audio' ? 'audio' : 'video';
+    if (!filePath) {
+      return { success: false, error: 'filePath is required' };
+    }
+    const fullPath = path.join(getManuscriptsDir(), filePath);
+    const stats = await fs.stat(fullPath);
+    if (!stats.isDirectory() || !isManuscriptPackageName(path.basename(fullPath))) {
+      return { success: false, error: 'Not a manuscript package' };
+    }
+
+    const timelinePath = getManuscriptPackageTimelinePath(fullPath);
+    const timeline = await readJsonFromFile<Record<string, unknown>>(timelinePath, createEmptyOtioTimeline(path.basename(fullPath)));
+    const tracks = Array.isArray((timeline as any)?.tracks?.children) ? (timeline as any).tracks.children : [];
+    const prefix = kind === 'audio' ? 'A' : 'V';
+    const kindLabel = kind === 'audio' ? 'Audio' as const : 'Video' as const;
+    const existingIndexes = tracks
+      .map((track: any) => String(track?.name || '').trim())
+      .filter((name: string) => name.startsWith(prefix))
+      .map((name: string) => Number(name.slice(1)))
+      .filter((value: number) => Number.isFinite(value));
+    const nextIndex = existingIndexes.length > 0 ? Math.max(...existingIndexes) + 1 : 1;
+    ensureTimelineTrack(timeline, `${prefix}${nextIndex}`, kindLabel);
+    normalizePackageTimeline(timeline);
+    await fs.writeFile(timelinePath, JSON.stringify(timeline, null, 2), 'utf-8');
+    await touchManuscriptPackageUpdatedAt(fullPath);
+    invalidateManuscriptTreeCache(getManuscriptsDir());
+    emitRendererDataChanged('manuscripts', { action: 'track-add', entityId: filePath });
+    return { success: true, state: await getManuscriptPackageState(fullPath) };
+  } catch (error) {
+    console.error('Failed to add manuscript package track:', error);
+    return { success: false, error: error instanceof Error ? error.message : String(error) };
+  }
+});
+
+ipcMain.handle('manuscripts:add-package-clip', async (_, payload?: {
+  filePath?: string;
+  assetId?: string;
+  track?: string;
+  order?: number;
+  durationMs?: number | null;
+}) => {
+  try {
+    const filePath = String(payload?.filePath || '').trim();
+    const assetId = String(payload?.assetId || '').trim();
+    if (!filePath || !assetId) {
+      return { success: false, error: 'filePath and assetId are required' };
+    }
+    const fullPath = path.join(getManuscriptsDir(), filePath);
+    const stats = await fs.stat(fullPath);
+    if (!stats.isDirectory() || !isManuscriptPackageName(path.basename(fullPath))) {
+      return { success: false, error: 'Not a manuscript package' };
+    }
+
+    const asset = (await listMediaAssets(5000)).find((item) => item.id === assetId);
+    if (!asset) {
+      return { success: false, error: 'Media asset not found' };
+    }
+
+    const assetKind = String(asset.mimeType || '').startsWith('audio/')
+      ? 'audio'
+      : String(asset.mimeType || '').startsWith('video/')
+        ? 'video'
+        : /\.(mp3|wav|m4a|aac|flac|ogg|opus)$/i.test(String(asset.relativePath || ''))
+          ? 'audio'
+          : /\.(mp4|mov|webm|m4v|avi|mkv)$/i.test(String(asset.relativePath || ''))
+            ? 'video'
+            : /\.(png|jpg|jpeg|webp|gif|bmp|svg)$/i.test(String(asset.relativePath || ''))
+              ? 'image'
+              : 'unknown';
+
+    const timelinePath = getManuscriptPackageTimelinePath(fullPath);
+    const timeline = await readJsonFromFile<Record<string, unknown>>(timelinePath, createEmptyOtioTimeline(path.basename(fullPath)));
+    const preferredTrackName = String(payload?.track || '').trim()
+      || (assetKind === 'audio' ? 'A1' : 'V1');
+    const targetTrack = ensureTimelineTrack(
+      timeline,
+      preferredTrackName,
+      preferredTrackName.startsWith('A') ? 'Audio' : 'Video'
+    );
+    const targetChildren = Array.isArray((targetTrack as any)?.children) ? targetTrack.children : [];
+    const desiredOrder = typeof payload?.order === 'number' && Number.isFinite(payload.order)
+      ? Math.max(0, Math.min(Math.trunc(payload.order), targetChildren.length))
+      : targetChildren.length;
+
+    const nextClip = {
+      OTIO_SCHEMA: 'Clip.2',
+      name: asset.title || asset.id,
+      source_range: null,
+      media_references: {
+        DEFAULT_MEDIA: {
+          OTIO_SCHEMA: 'ExternalReference.1',
+          target_url: asset.relativePath || '',
+          available_range: null,
+          metadata: {
+            assetId: asset.id,
+            mimeType: asset.mimeType || '',
+          },
+        },
+      },
+      active_media_reference_key: 'DEFAULT_MEDIA',
+      metadata: {
+        clipId: createTimelineClipId(),
+        assetId: asset.id,
+        assetKind,
+        source: 'media-library',
+        order: desiredOrder,
+        durationMs: payload?.durationMs ?? null,
+        trimInMs: 0,
+        trimOutMs: 0,
+        enabled: true,
+        addedAt: new Date().toISOString(),
+      },
+    };
+
+    targetChildren.splice(desiredOrder, 0, nextClip);
+    targetTrack.children = targetChildren;
+    normalizePackageTimeline(timeline);
+    await fs.writeFile(timelinePath, JSON.stringify(timeline, null, 2), 'utf-8');
+    await touchManuscriptPackageUpdatedAt(fullPath);
+    invalidateManuscriptTreeCache(getManuscriptsDir());
+    emitRendererDataChanged('manuscripts', { action: 'clip-add', entityId: filePath });
+    return { success: true, state: await getManuscriptPackageState(fullPath) };
+  } catch (error) {
+    console.error('Failed to add manuscript package clip:', error);
+    return { success: false, error: error instanceof Error ? error.message : String(error) };
+  }
+});
+
+ipcMain.handle('manuscripts:delete-package-clip', async (_, payload?: {
+  filePath?: string;
+  clipId?: string;
+}) => {
+  try {
+    const filePath = String(payload?.filePath || '').trim();
+    const clipId = String(payload?.clipId || '').trim();
+    if (!filePath || !clipId) {
+      return { success: false, error: 'filePath and clipId are required' };
+    }
+    const fullPath = path.join(getManuscriptsDir(), filePath);
+    const stats = await fs.stat(fullPath);
+    if (!stats.isDirectory() || !isManuscriptPackageName(path.basename(fullPath))) {
+      return { success: false, error: 'Not a manuscript package' };
+    }
+    const timelinePath = getManuscriptPackageTimelinePath(fullPath);
+    const timeline = await readJsonFromFile<Record<string, unknown>>(timelinePath, createEmptyOtioTimeline(path.basename(fullPath)));
+    const tracks = Array.isArray((timeline as any)?.tracks?.children) ? (timeline as any).tracks.children : [];
+    let removed = false;
+    for (const track of tracks) {
+      const trackName = String((track as any)?.name || '').trim();
+      const children = Array.isArray((track as any)?.children) ? track.children : [];
+      const nextChildren = children.filter((clip: any, index: number) => {
+        const matches = getTimelineClipIdentity(clip, trackName, index) === clipId;
+        if (matches) removed = true;
+        return !matches;
+      });
+      track.children = nextChildren;
+    }
+    if (!removed) {
+      return { success: false, error: 'Clip not found in timeline' };
+    }
+    normalizePackageTimeline(timeline);
+    await fs.writeFile(timelinePath, JSON.stringify(timeline, null, 2), 'utf-8');
+    await touchManuscriptPackageUpdatedAt(fullPath);
+    invalidateManuscriptTreeCache(getManuscriptsDir());
+    emitRendererDataChanged('manuscripts', { action: 'clip-delete', entityId: filePath });
+    return { success: true, state: await getManuscriptPackageState(fullPath) };
+  } catch (error) {
+    console.error('Failed to delete manuscript package clip:', error);
+    return { success: false, error: error instanceof Error ? error.message : String(error) };
+  }
+});
+
+ipcMain.handle('manuscripts:split-package-clip', async (_, payload?: {
+  filePath?: string;
+  clipId?: string;
+  splitRatio?: number;
+}) => {
+  try {
+    const filePath = String(payload?.filePath || '').trim();
+    const clipId = String(payload?.clipId || '').trim();
+    const splitRatioRaw = Number(payload?.splitRatio);
+    const splitRatio = Number.isFinite(splitRatioRaw) ? Math.min(Math.max(splitRatioRaw, 0.1), 0.9) : 0.5;
+    if (!filePath || !clipId) {
+      return { success: false, error: 'filePath and clipId are required' };
+    }
+    const fullPath = path.join(getManuscriptsDir(), filePath);
+    const stats = await fs.stat(fullPath);
+    if (!stats.isDirectory() || !isManuscriptPackageName(path.basename(fullPath))) {
+      return { success: false, error: 'Not a manuscript package' };
+    }
+    const timelinePath = getManuscriptPackageTimelinePath(fullPath);
+    const timeline = await readJsonFromFile<Record<string, unknown>>(timelinePath, createEmptyOtioTimeline(path.basename(fullPath)));
+    const tracks = Array.isArray((timeline as any)?.tracks?.children) ? (timeline as any).tracks.children : [];
+    let splitDone = false;
+    for (const track of tracks) {
+      const trackName = String((track as any)?.name || '').trim();
+      const children = Array.isArray((track as any)?.children) ? track.children : [];
+      const nextChildren: any[] = [];
+      for (let index = 0; index < children.length; index += 1) {
+        const clip = children[index];
+        nextChildren.push(clip);
+        if (getTimelineClipIdentity(clip, trackName, index) !== clipId) continue;
+        const metadata = (clip?.metadata && typeof clip.metadata === 'object') ? clip.metadata : {};
+        const currentDuration = Number(metadata.durationMs ?? 4000) || 4000;
+        const firstDuration = Math.max(1000, Math.round(currentDuration * splitRatio));
+        const secondDuration = Math.max(1000, currentDuration - firstDuration);
+        clip.metadata = {
+          ...metadata,
+          clipId: String(metadata.clipId || '').trim() || clipId,
+          durationMs: firstDuration,
+        };
+        nextChildren.push({
+          ...clip,
+          metadata: {
+            ...metadata,
+            clipId: createTimelineClipId(),
+            durationMs: secondDuration,
+            trimInMs: Number(metadata.trimInMs ?? 0) + firstDuration,
+          },
+        });
+        splitDone = true;
+      }
+      track.children = nextChildren;
+      if (splitDone) break;
+    }
+    if (!splitDone) {
+      return { success: false, error: 'Clip not found in timeline' };
+    }
+    normalizePackageTimeline(timeline);
+    await fs.writeFile(timelinePath, JSON.stringify(timeline, null, 2), 'utf-8');
+    await touchManuscriptPackageUpdatedAt(fullPath);
+    invalidateManuscriptTreeCache(getManuscriptsDir());
+    emitRendererDataChanged('manuscripts', { action: 'clip-split', entityId: filePath });
+    return { success: true, state: await getManuscriptPackageState(fullPath) };
+  } catch (error) {
+    console.error('Failed to split manuscript package clip:', error);
     return { success: false, error: error instanceof Error ? error.message : String(error) };
   }
 });
@@ -6832,9 +7444,69 @@ ipcMain.handle('manuscripts:save-formatted-html', async (_, payload?: {
     const wechatHtml = String(payload?.wechatHtml || layoutHtml);
     await fs.writeFile(getManuscriptPackageLayoutHtmlPath(fullPath), layoutHtml, 'utf-8');
     await fs.writeFile(getManuscriptPackageWechatHtmlPath(fullPath), wechatHtml, 'utf-8');
+    await touchManuscriptPackageUpdatedAt(fullPath);
+    invalidateManuscriptTreeCache(getManuscriptsDir());
+    emitRendererDataChanged('manuscripts', { action: 'save-formatted-html', entityId: sourcePath });
     return { success: true };
   } catch (error) {
     console.error('Failed to save manuscript formatted html:', error);
+    return { success: false, error: error instanceof Error ? error.message : String(error) };
+  }
+});
+
+ipcMain.handle('manuscripts:attach-external-files', async (_, payload?: {
+  filePath?: string;
+}) => {
+  try {
+    const filePath = String(payload?.filePath || '').trim();
+    if (!filePath) {
+      return { success: false, error: 'filePath is required' };
+    }
+    const fullPath = path.join(getManuscriptsDir(), filePath);
+    const stats = await fs.stat(fullPath);
+    if (!stats.isDirectory() || !isManuscriptPackageName(path.basename(fullPath))) {
+      return { success: false, error: 'Not a manuscript package' };
+    }
+
+    const picked = await dialog.showOpenDialog({
+      properties: ['openFile', 'multiSelections'],
+      filters: [
+        { name: '媒体文件', extensions: ['mp4', 'mov', 'webm', 'm4v', 'avi', 'mkv', 'mp3', 'wav', 'm4a', 'aac', 'flac', 'ogg', 'opus', 'png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp', 'svg'] },
+        { name: '所有文件', extensions: ['*'] },
+      ],
+    });
+    if (picked.canceled || !picked.filePaths.length) {
+      return { success: true, canceled: true, imported: [] };
+    }
+
+    const imported: Array<Record<string, unknown>> = [];
+    for (const pickedPath of picked.filePaths) {
+      const absolutePath = path.resolve(pickedPath);
+      const pickedStats = await fs.stat(absolutePath).catch(() => null);
+      if (!pickedStats?.isFile()) continue;
+      await attachExternalFileToPackage(fullPath, {
+        absolutePath,
+        title: path.basename(absolutePath),
+        mimeType: guessMediaMimeTypeByFilePath(absolutePath),
+      });
+      imported.push({
+        absolutePath,
+        title: path.basename(absolutePath),
+        mimeType: guessMediaMimeTypeByFilePath(absolutePath),
+      });
+    }
+
+    await touchManuscriptPackageUpdatedAt(fullPath);
+    invalidateManuscriptTreeCache(getManuscriptsDir());
+    emitRendererDataChanged('manuscripts', { action: 'attach-external-files', entityId: filePath });
+    return {
+      success: true,
+      canceled: false,
+      imported,
+      state: await getManuscriptPackageState(fullPath),
+    };
+  } catch (error) {
+    console.error('Failed to attach external files to manuscript package:', error);
     return { success: false, error: error instanceof Error ? error.message : String(error) };
   }
 });
@@ -6849,6 +7521,12 @@ ipcMain.handle('manuscripts:move', async (_, { sourcePath, targetDir }: { source
   try {
     await fs.mkdir(path.dirname(targetFullPath), { recursive: true });
     await fs.rename(sourceFullPath, targetFullPath);
+    invalidateManuscriptTreeCache(getManuscriptsDir());
+    emitRendererDataChanged('manuscripts', {
+      action: 'move',
+      entityId: path.relative(getManuscriptsDir(), targetFullPath),
+      sourcePath,
+    });
     return { success: true, newPath: path.relative(getManuscriptsDir(), targetFullPath) };
   } catch (error) {
     console.error('Failed to move manuscript:', error);

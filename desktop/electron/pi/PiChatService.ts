@@ -59,6 +59,22 @@ import type { RuntimeEvent, RuntimeMessageContentPart } from '../core/runtimeTyp
 interface SessionMetadata {
   associatedFilePath?: string;
   associatedFileId?: string;
+  associatedPackageKind?: 'video' | 'audio';
+  agentProfile?: 'default' | 'video-editor' | 'audio-editor';
+  associatedPackageTitle?: string;
+  associatedPackageAssetCount?: number;
+  associatedPackageClipCount?: number;
+  associatedPackageTrackNames?: string[];
+  associatedPackageClips?: Array<{
+    assetId?: string;
+    name?: string;
+    track?: string;
+    order?: number;
+    durationMs?: number;
+    trimInMs?: number;
+    trimOutMs?: number;
+    enabled?: boolean;
+  }>;
   contextId?: string;
   contextType?: string;
   contextContent?: string;
@@ -179,9 +195,9 @@ interface ChatAttachmentRuntimeOptions {
 
 const DEFAULT_REDCLAW_AUTO_COMPACT_TOKENS = 256000;
 const DEFAULT_MODEL_CONTEXT_WINDOW_FALLBACK = 64000;
-const TOOL_GUARD_MAX_TOTAL_CALLS = 24;
-const TOOL_GUARD_MAX_CALLS_PER_TOOL = 12;
-const TOOL_GUARD_MAX_REPEAT_SIGNATURE = 3;
+const TOOL_GUARD_MAX_TOTAL_CALLS = 100;
+const TOOL_GUARD_MAX_CALLS_PER_TOOL = 100;
+const TOOL_GUARD_MAX_REPEAT_SIGNATURE = 100;
 const TOOL_RESULT_MAX_TEXT_CHARS = 32000;
 const TOOL_RESULT_MAX_LLM_CHARS = 22000;
 const TOOL_RESULT_MAX_DISPLAY_CHARS = 26000;
@@ -190,6 +206,8 @@ const PI_CHAT_SYSTEM_BASE_TEMPLATE = loadPrompt(
   'runtime/pi/system_base.txt',
   'You are RedClaw, the self-media operations expert agent inside RedBox.\nCurrent date: {{current_date}}\nCurrent working directory: {{current_working_directory}}'
 );
+const PI_CHAT_VIDEO_EDITOR_TEMPLATE = loadPrompt('runtime/pi/video_editor.txt', '');
+const PI_CHAT_AUDIO_EDITOR_TEMPLATE = loadPrompt('runtime/pi/audio_editor.txt', '');
 
 interface ToolGuardState {
   totalCalls: number;
@@ -927,7 +945,7 @@ export class PiChatService {
       runtimeMessages,
       preparedExecution,
       temperature: 0.6,
-      maxTurns: 24,
+      maxTurns: 100,
       maxTimeMinutes: 12,
     };
   }
@@ -1123,7 +1141,7 @@ export class PiChatService {
             callId: event.toolCallId,
             name: event.toolName,
             args: event.args,
-          }, event.toolName === 'workspace' || event.toolName === 'web_search' ? 'retrieve' : 'execute_tools');
+          }, event.toolName === 'workspace' ? 'retrieve' : 'execute_tools');
           this.sendToUI('chat:tool-start', {
             callId: event.toolCallId,
             name: event.toolName,
@@ -1186,7 +1204,7 @@ export class PiChatService {
             success: output.success,
             command,
             outputPreview: output.content.slice(0, 400),
-          }, event.toolName === 'workspace' || event.toolName === 'web_search' ? 'retrieve' : 'execute_tools');
+          }, event.toolName === 'workspace' ? 'retrieve' : 'execute_tools');
           this.sendToUI('chat:tool-end', {
             callId: event.toolCallId,
             name: event.toolName,
@@ -2606,7 +2624,7 @@ export class PiChatService {
           callId: event.callId,
           name: event.name,
           args: event.params,
-        }, event.name === 'workspace' || event.name === 'web_search' ? 'retrieve' : 'execute_tools');
+        }, event.name === 'workspace' ? 'retrieve' : 'execute_tools');
         break;
       case 'tool_output':
         this.sendToUI('chat:tool-update', {
@@ -2642,7 +2660,7 @@ export class PiChatService {
           name: event.name,
           success: event.result.success,
           outputPreview: String(event.result.llmContent || '').slice(0, 400),
-        }, event.name === 'workspace' || event.name === 'web_search' ? 'retrieve' : 'execute_tools');
+        }, event.name === 'workspace' ? 'retrieve' : 'execute_tools');
         break;
       case 'compact_start':
         this.sendToUI('chat:thought-delta', { content: `上下文整理中（${event.strategy}）...` });
@@ -2734,14 +2752,11 @@ export class PiChatService {
     if (toolNames.has('bash')) {
       lines.push('- `bash`: preferred for inspection, search, listing, and reading absolute paths');
     }
-    if (toolNames.has('web_search')) {
-      lines.push('- `web_search`: current external information');
-    }
     if (toolNames.has('skill')) {
       lines.push('- `skill`: load specialized workflows only when clearly relevant');
     }
 
-    const remaining = Array.from(toolNames).filter((name) => !['app_cli', 'workspace', 'bash', 'web_search', 'skill'].includes(name));
+    const remaining = Array.from(toolNames).filter((name) => !['app_cli', 'workspace', 'bash', 'skill'].includes(name));
     if (remaining.length) {
       lines.push(`- other_tools: ${remaining.join(', ')}`);
     }
@@ -3040,14 +3055,44 @@ export class PiChatService {
         `- 文件路径: ${metadata.associatedFilePath}`,
         '- 当用户要求分析/修改当前稿件时，优先围绕该文件操作。',
       );
-      const associatedFilePath = String(metadata.associatedFilePath || '').trim().toLowerCase();
-      if (associatedFilePath.endsWith('.redvideo') || associatedFilePath.endsWith('.redaudio')) {
+      const packageAgentPrompt = this.buildPackageAgentPrompt(metadata);
+      if (packageAgentPrompt) {
+        promptParts.push('', packageAgentPrompt);
+      }
+      if (metadata.agentProfile && metadata.agentProfile !== 'default') {
+        promptParts.push(`- 当前编辑 Agent: ${metadata.agentProfile}`);
+      }
+      if (metadata.associatedPackageKind) {
+        promptParts.push(`- 当前工程类型: ${metadata.associatedPackageKind}`);
+      }
+      if (metadata.associatedPackageTitle) {
+        promptParts.push(`- 当前工程标题: ${metadata.associatedPackageTitle}`);
+      }
+      if (typeof metadata.associatedPackageAssetCount === 'number') {
+        promptParts.push(`- 已关联素材数: ${metadata.associatedPackageAssetCount}`);
+      }
+      if (typeof metadata.associatedPackageClipCount === 'number') {
+        promptParts.push(`- 当前时间线片段数: ${metadata.associatedPackageClipCount}`);
+      }
+      if (Array.isArray(metadata.associatedPackageTrackNames) && metadata.associatedPackageTrackNames.length > 0) {
+        promptParts.push(`- 当前轨道: ${metadata.associatedPackageTrackNames.join(', ')}`);
+      }
+      if (Array.isArray(metadata.associatedPackageClips) && metadata.associatedPackageClips.length > 0) {
+        const clipLines = metadata.associatedPackageClips
+          .slice(0, 12)
+          .map((clip, index) => {
+            const name = String(clip.name || clip.assetId || `片段 ${index + 1}`);
+            const track = String(clip.track || 'unknown');
+            const order = Number.isFinite(Number(clip.order)) ? `#${Number(clip.order)}` : `#${index}`;
+            const duration = Number.isFinite(Number(clip.durationMs)) ? `${Number(clip.durationMs)}ms` : 'unknown';
+            const enabled = clip.enabled === false ? 'disabled' : 'enabled';
+            const trimIn = Number.isFinite(Number(clip.trimInMs)) ? `${Number(clip.trimInMs)}ms` : 'na';
+            const trimOut = Number.isFinite(Number(clip.trimOutMs)) ? `${Number(clip.trimOutMs)}ms` : 'na';
+            return `  - ${order} ${name} | track=${track} | duration=${duration} | trimIn=${trimIn} | trimOut=${trimOut} | ${enabled}`;
+          });
         promptParts.push(
-          '- 这是一个可编辑的音视频工程稿，不是普通 Markdown。',
-          '- 处理当前工程时，优先使用 `app_cli` 读取和修改工程结构，而不是只改脚本文本。',
-          '- 推荐顺序：先 `app_cli(command="manuscripts clips --path \\"...工程路径...\\"")` 查看片段，再用 `app_cli(command="manuscripts clip-update --path \\"...工程路径...\\" --asset-id ... --track ... --order ... --duration-ms ...")` 修改时间线。',
-          '- 如果用户要求输出真实剪辑结果，调用 `app_cli(command="manuscripts export --path \\"...工程路径...\\"")` 导出粗剪媒体文件。',
-          '- 修改时间线前，先检查 clips 和关联素材，不要盲目假设当前工程里已经有可用片段。',
+          '- 当前时间线片段摘要:',
+          ...clipLines,
         );
       }
     }
@@ -3160,6 +3205,24 @@ export class PiChatService {
     }
 
     return promptParts.join('\n');
+  }
+
+  private buildPackageAgentPrompt(metadata: SessionMetadata): string {
+    if (metadata.agentProfile === 'video-editor') {
+      return renderPrompt(PI_CHAT_VIDEO_EDITOR_TEMPLATE, {});
+    }
+    if (metadata.agentProfile === 'audio-editor') {
+      return renderPrompt(PI_CHAT_AUDIO_EDITOR_TEMPLATE, {});
+    }
+
+    const associatedFilePath = String(metadata.associatedFilePath || '').trim().toLowerCase();
+    if (associatedFilePath.endsWith('.redvideo') || metadata.associatedPackageKind === 'video') {
+      return renderPrompt(PI_CHAT_VIDEO_EDITOR_TEMPLATE, {});
+    }
+    if (associatedFilePath.endsWith('.redaudio') || metadata.associatedPackageKind === 'audio') {
+      return renderPrompt(PI_CHAT_AUDIO_EDITOR_TEMPLATE, {});
+    }
+    return '';
   }
 }
 

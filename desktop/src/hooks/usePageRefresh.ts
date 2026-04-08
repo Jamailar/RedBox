@@ -40,6 +40,8 @@ export function usePageRefresh({
     const lastRefreshAtRef = useRef(0);
     const mountedRef = useRef(false);
     const wasActiveRef = useRef(false);
+    const inFlightRefreshRef = useRef<Promise<void> | null>(null);
+    const queuedForceRefreshRef = useRef(false);
 
     useEffect(() => {
         refreshRef.current = refresh;
@@ -51,8 +53,23 @@ export function usePageRefresh({
         if (!force && now - lastRefreshAtRef.current < debounceMs) {
             return;
         }
+        if (inFlightRefreshRef.current) {
+            queuedForceRefreshRef.current = queuedForceRefreshRef.current || force;
+            return;
+        }
         lastRefreshAtRef.current = now;
-        void refreshRef.current();
+        const refreshPromise = Promise.resolve(refreshRef.current())
+            .catch((error) => {
+                console.error('[usePageRefresh] refresh failed:', error);
+            })
+            .finally(() => {
+                inFlightRefreshRef.current = null;
+                if (queuedForceRefreshRef.current) {
+                    queuedForceRefreshRef.current = false;
+                    runRefresh(true);
+                }
+            });
+        inFlightRefreshRef.current = refreshPromise;
     }, [debounceMs, isActive]);
 
     useEffect(() => {

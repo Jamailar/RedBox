@@ -28,7 +28,6 @@ export { LspTool } from './lspTool';
 export { TodoWriteTool, TodoReadTool } from './todoTool';
 export { PlanModeEnterTool, PlanModeExitTool } from './planTool';
 export { SkillTool, SkillManageTool, SkillInstallTool } from './skillTool';
-export { WebSearchTool } from './searchTool';
 
 // 导入工具类型
 import { type ToolDefinition, type ToolResult, ToolKind } from '../toolRegistry';
@@ -38,7 +37,6 @@ import { CalculatorTool } from './calculatorTool';
 import { LspTool } from './lspTool';
 import { PlanModeEnterTool, PlanModeExitTool } from './planTool';
 import { SkillTool, SkillManageTool, SkillInstallTool } from './skillTool';
-import { WebSearchTool } from './searchTool';
 import { BashTool } from './bashTool';
 import { AppCliTool } from './appCliTool';
 import { WorkspaceTool } from './workspaceTool';
@@ -107,21 +105,6 @@ const ensureBuiltinToolDescriptorsRegistered = (): void => {
         artifactOutput: ['manuscript', 'image', 'project', 'config'],
         retryPolicy: 'manual',
         create: () => new AppCliTool(),
-    });
-    register({
-        name: 'web_search',
-        displayName: 'Web Search',
-        description: 'Search the web for current information and resources.',
-        kind: ToolKind.Search,
-        contexts: publicAllContexts,
-        visibility: 'public',
-        requiresContext: null,
-        preconditions: ['query must be non-empty'],
-        successSignal: 'search results returned',
-        failureSignal: 'search request failed',
-        artifactOutput: ['web-results'],
-        retryPolicy: 'safe-retry',
-        create: () => new WebSearchTool(),
     });
     register({
         name: 'skill',
@@ -222,7 +205,6 @@ export const BUILTIN_TOOL_NAMES = [
     'workspace',
     'bash',
     'app_cli',
-    'web_search',
     'skill',
     'calculator',
     'lsp',

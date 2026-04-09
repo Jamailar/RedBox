@@ -1,72 +1,58 @@
 # LexBox Migration Blueprint
 
-## Objective
+## Outcome
 
-Build a Rust-driven desktop clone of the existing `desktop/` app while keeping
-the renderer as close as possible to the current React codebase.
+The original migration goal has been realized inside `LexBox/`:
 
-## Chosen strategy
+- Tauri v2 replaces Electron as the desktop shell.
+- Rust replaces the Electron main-process host as the primary desktop runtime.
+- The React renderer remains reusable behind a compatibility bridge.
+- `desktop/` remains read-only reference material.
 
-1. Keep the existing React renderer alive with minimal changes.
-2. Replace the Electron preload contract with a Tauri-compatible
-   `window.ipcRenderer` bridge.
-3. Route all renderer requests through a single Rust command dispatcher:
-   `ipc_invoke(channel, payload)` and `ipc_send(channel, payload)`.
-4. Migrate Electron handlers in slices instead of rewriting the app as a
-   monolith.
+## What is finished
 
-## Current multi-agent workstreams
+### 1. Workspace isolation
 
-### Agent A: renderer parity
+- `LexBox` builds and runs independently.
+- No runtime or build-time dependency on `../desktop`.
 
-- Reuse `../desktop/src` directly from `LexBox`.
-- Preserve view structure and navigation from the current app shell.
-- Keep Tailwind and page-level dependencies aligned with the Electron app.
+### 2. Compatibility bridge
 
-### Agent B: host compatibility
+- Renderer still uses a stable `window.ipcRenderer` contract.
+- The bridge is now backed by Tauri commands/events.
 
-- Recreate the preload API shape in `src/bridge/ipcRenderer.ts`.
-- Keep event names and channel names stable so the renderer does not need a
-  cross-cutting rewrite.
-- Add safe fallback responses for channels not migrated yet.
+### 3. Rust host migration
 
-### Agent C: Rust command migration
+The host router in `src-tauri/src/main.rs` now covers the renderer-facing namespaces used by the app.
 
-Phase 1:
+### 4. Packaging
 
-- `db:*`
-- `spaces:*`
-- `app:*`
-- `clipboard:*`
-- `manuscripts:*`
-- `wechat-official:*`
+- Tauri debug build works.
+- Release bundle generation works.
+- macOS `.app` bundle is produced.
 
-Phase 2:
+## What remains
 
-- `chat:*`
-- `knowledge:*`
-- `indexing:*`
-- `media:*`
-- `cover:*`
-- `subjects:*`
+The remaining work is not host migration. It is external integration hardening:
 
-Phase 3:
+- real provider credentials and endpoint validation
+- WeChat official remote draft success under real account constraints
+- Weixin sidecar real protocol/state integration
+- provider-specific media response edge cases
+- MCP server-specific runtime validation
+- end-to-end UI smoke with real local data and real services
 
-- `skills:*`
-- `mcp:*`
-- `assistant:*`
-- `redclaw:*`
-- long-running task orchestration
+## Practical next phase
 
-### Agent D: long-cycle orchestration
+The next phase should be treated as environment-backed validation, not architecture migration:
 
-- Track IPC parity, page parity, and backend parity as separate lanes.
-- Keep Node-heavy AI runtimes available as sidecars while Rust host capability expands.
-- Use the generic router to migrate entire namespaces in batches instead of one-off handlers.
-
-## Practical constraint
-
-The current machine does not have Cargo installed, so the Rust side is
-scaffolded but not compiled in this turn. Frontend reuse and router structure
-have been prepared so that work can continue immediately after Rust tooling is
-installed.
+1. Run real UI smoke against:
+   - Settings
+   - Chat
+   - Knowledge
+   - Advisors
+   - Manuscripts
+   - RedClaw
+   - Media / Cover
+2. Test real third-party credentials where available.
+3. Fix provider-specific issues discovered in those runs.

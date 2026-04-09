@@ -1,47 +1,86 @@
-# LexBox 架构路线
+# LexBox Architecture
 
-## 迁移原则
+## Current shape
 
-1. 前端尽量复用 `desktop/src/`，避免重写 UI。
-2. Electron preload API 先通过兼容层保住调用面。
-3. Rust 宿主先接状态和宿主职责，再接高复杂任务调度。
-4. Node 能力允许作为过渡 sidecar 存在，但最终宿主必须由 Rust 驱动。
+`LexBox` is no longer a scaffold. It is the active Tauri v2 desktop shell with a Rust host and a React renderer.
 
-## 当前分层
+Top-level split:
 
-- `src/`
-  - React 入口
-  - Electron 风格 `ipcRenderer` 兼容层
-  - 迁移控制面
-- `src-tauri/`
-  - Rust 状态持久化
-  - IPC 分发
-  - 桌面窗口宿主
-- `scripts/extract-ipc-inventory.mjs`
-  - 从现有 `desktop/` 中抽取 IPC 面，给后续迁移排期
+- `LexBox/src/`
+  - React UI
+  - `window.ipcRenderer` compatibility bridge
+  - View logic kept close to the original app shell
+- `LexBox/src-tauri/src/main.rs`
+  - Rust host router
+  - Local persistent store
+  - Tauri command/event bridge
+  - Desktop integrations
+  - External provider adapters
 
-## 阶段规划
+## Runtime layers
 
-### Stage 1
+### Renderer layer
 
-- 宿主工程建立
-- Settings / Spaces / Subjects 迁移
-- 可运行的复用布局
+- All renderer code stays inside `LexBox/src/`.
+- Renderer still calls Electron-style APIs through `window.ipcRenderer`.
+- The bridge now targets Tauri command/event APIs instead of Electron preload.
 
-### Stage 2
+### Host layer
 
-- Chat / CreativeChat 事件桥
-- Session / Runtime / Tasks 只读能力
-- 基础流式输出与工具确认
+- `ipc_invoke(channel, payload)` handles request/response operations.
+- `ipc_send(channel, payload)` handles fire-and-forget and streaming-trigger operations.
+- Host state is persisted in a LexBox-local JSON store under the user config directory.
 
-### Stage 3
+### Domain layer in Rust
 
-- Manuscripts 工作区与文件操作
-- Knowledge 文档导入与索引任务
-- 本地资源协议替代
+Implemented Rust-hosted domains now include:
 
-### Stage 4
+- app / debug / settings / spaces
+- subjects / manuscripts
+- chat / runtime / sessions / tasks / background
+- knowledge / documents / YouTube / wander / embeddings / similarity
+- media / cover / image generation / video generation
+- advisors / yt-dlp integration
+- assistant daemon / Weixin sidecar process lifecycle
+- RedClaw runner / scheduled tasks / long-cycle tasks / artifact persistence
+- skills / MCP / diagnostics / hooks
+- WeChat official binding and draft flow
 
-- RedClaw runner
-- Background task registry
-- Headless worker / sidecar 协调
+## Persistence model
+
+LexBox currently uses a Rust-managed local store for migrated desktop state:
+
+- settings
+- spaces
+- chat sessions/messages
+- runtime transcripts/checkpoints/tool results
+- knowledge notes / document sources / YouTube entries
+- advisor profiles / advisor video records
+- RedClaw state
+- assistant daemon state
+- MCP configs / hooks / skills
+- workboard items
+- embedding cache / similarity cache / wander history
+
+This store is independent from `desktop/`.
+
+## External dependencies
+
+The remaining complexity is no longer Electron migration. It is external service compatibility:
+
+- model providers for chat / image / video / embedding / transcription
+- WeChat official account credentials and media upload permissions
+- Weixin sidecar command and its state-file format
+- MCP server availability and protocol quirks
+- yt-dlp availability
+
+## Verification baseline
+
+Current architecture has been verified with:
+
+- frontend production build
+- Rust `cargo fmt --check`
+- Rust `cargo check`
+- Tauri debug build
+- Tauri release bundle generation
+- short debug/release smoke startup

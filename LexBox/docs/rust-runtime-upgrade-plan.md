@@ -470,6 +470,22 @@ subagent 必须具备：
 
 把现有 `scheduled_tasks`、`long_cycle_tasks` 从“产品字段 + runner tick”升级成真正可恢复的长期任务系统。
 
+### 当前实现暴露出的结构问题
+
+从当前代码看，这一层还停留在：
+
+- 调度线程直接扫描 `scheduled_tasks / long_cycle_tasks`
+- 到期后直接调用 `execute_redclaw_run(...)`
+- 执行状态主要回写到任务字段本身
+- `background-tasks:list` 仍然是从产品字段派生的展示层数据
+
+这说明现阶段最大问题不是“模块数量不够”，而是：
+
+- 调度定义和执行实例没有分离
+- 长任务状态和 UI 展示状态没有统一底座
+- 失败 / 重试 / cancel / resume 还没有共享状态机
+- app 重启恢复只能恢复“配置”，不能恢复“执行中的实例”
+
 ### 要做什么
 
 新增：
@@ -492,6 +508,379 @@ subagent 必须具备：
 - review / approval hold
 - artifact save / retry
 - cancel / resume
+
+### 第七步还可以继续优化的方向
+
+这里建议收紧实现目标，不要一开始就把第七步写成一个“大而全的新系统”。
+
+更合理的优化方式是：
+
+1. 先统一 `Job Definition` 和 `Job Execution`
+
+- `scheduled_tasks` / `long_cycle_tasks` 保留为产品输入层
+- 新增统一 `job_definitions`
+- 新增统一 `job_executions`
+- 调度器只负责“生成 execution”，不直接承担完整执行语义
+
+这样后面：
+
+- retry
+- resume
+- dead-letter
+- heartbeat
+
+都会落在 execution 层，而不是继续污染产品字段。
+
+2. 先做单机正确性，再做 lease
+
+`lease.rs` 有必要，但不应该是第七步最先落地的东西。
+
+当前是桌面端单宿主为主，真正更急的是：
+
+- 任务执行实例可恢复
+- 状态转换可验证
+- 重启后不会重复跑错
+
+所以建议先做：
+
+- execution state machine
+- persisted execution record
+- scheduler enqueue / dispatch
+
+再做：
+
+- multi-owner lease
+- worker 抢占
+- 分布式/多实例互斥
+
+否则会把大量复杂度前置，但并不能先解决今天最痛的稳定性问题。
+
+3. `heartbeat` 不要单独抽象成孤立能力
+
+heartbeat 最好只是 execution 的一个字段族，而不是第一个独立子系统。
+
+建议 execution 统一持有：
+
+- `started_at`
+- `last_heartbeat_at`
+- `heartbeat_timeout_ms`
+- `attempt_count`
+- `worker_id`
+- `worker_state`
+
+然后 heartbeat runner 只是定期更新 execution。
+
+这样比“先做一个 heartbeat 模块，再回头接任务系统”更稳。
+
+4. `dead-letter` 先做成终态，不要先做复杂队列
+
+这一步最容易过度设计。
+
+第一版只需要：
+
+- execution 进入 `dead_lettered`
+- 保留失败原因、最后 checkpoint、最后 artifact、最后输入
+- UI 可查看、可手动 retry、可归档
+
+不需要一开始就引入复杂的 dead-letter queue 管理器。
+
+5. `background-tasks:list` 不要继续用派生假数据
+
+现在后台任务面板还是从产品字段“推导出来”的。
+
+第七步应该改成：
+
+- 优先展示真实 execution
+- definition 只作为来源信息
+- UI 读到的是 `job execution snapshot`
+
+否则前端看到的“后台任务”仍然不是真执行器，只是配置镜像。
+
+6. `scheduled task` 和 `long-cycle task` 的差异应该下沉到 trigger / progression，而不是两套执行器
+
+建议抽象为：
+
+- `JobTrigger`
+  - interval
+  - daily
+  - weekly
+  - once
+- `JobProgression`
+  - single_run
+  - multi_round
+  - maintenance
+
+这样第七步不会变成“两套 scheduler 逻辑 + 两套恢复逻辑 + 两套 retry 逻辑”。
+
+7. `cancel / resume / retry` 应该统一走 execution transition
+
+不要继续出现：
+
+- scheduled task 有自己的 cancel
+- long-cycle task 有自己的 cancel
+- runtime task 再有一套 cancel
+
+第七步真正优化后，应该统一成：
+
+- `queued -> leased -> running -> succeeded`
+- `running -> failed -> retrying`
+- `running -> cancelled`
+- `failed -> dead_lettered`
+- `cancelled/failed -> resumed`
+
+这会直接降低后续前端、日志、运维面板、trace 面板的复杂度。
+
+### 更推荐的第七步拆法
+
+建议把阶段 7 再拆成 4 个小阶段：
+
+#### 7A：统一 Job 数据模型
+
+- 定义 `job_definition`
+- 定义 `job_execution`
+- 定义统一状态机
+- 把现有 `scheduled_tasks / long_cycle_tasks` 映射到 definition 层
+
+#### 7B：调度器只负责 enqueue
+
+- 到期后生成 execution
+- 避免 scheduler 线程直接执行模型调用
+- execution runner 单独消费 queued execution
+
+#### 7C：补 heartbeat / retry / resume
+
+- execution 有 heartbeat
+- execution 可重试
+- app 重启可恢复 running / retrying / queued execution
+
+#### 7D：补 dead-letter 与后台面板
+
+- 背景任务面板改读真实 execution
+- 失败 execution 可进入 dead-letter
+- 提供 retry / inspect / archive
+
+### 推荐的数据模型草案
+
+建议第七步至少先稳定这 3 个核心实体：
+
+#### `job_definition`
+
+用途：描述“这个长期任务是什么、何时触发、属于谁”。
+
+建议字段：
+
+- `id`
+- `kind`
+  - `scheduled`
+  - `long_cycle`
+  - `maintenance`
+- `title`
+- `enabled`
+- `owner_context_id`
+- `runtime_mode`
+- `trigger`
+  - `interval`
+  - `daily`
+  - `weekly`
+  - `once`
+- `progression`
+  - `single_run`
+  - `multi_round`
+  - `maintenance`
+- `payload`
+  - prompt / objective / stepPrompt / config snapshot
+- `next_due_at`
+- `last_enqueued_at`
+- `created_at`
+- `updated_at`
+
+#### `job_execution`
+
+用途：描述“某一次实际执行实例”。
+
+建议字段：
+
+- `id`
+- `definition_id`
+- `status`
+  - `queued`
+  - `leased`
+  - `running`
+  - `retrying`
+  - `succeeded`
+  - `failed`
+  - `cancelled`
+  - `dead_lettered`
+- `attempt_count`
+- `worker_id`
+- `worker_mode`
+- `session_id`
+- `runtime_task_id`
+- `started_at`
+- `last_heartbeat_at`
+- `heartbeat_timeout_ms`
+- `completed_at`
+- `last_error`
+- `input_snapshot`
+- `output_summary`
+- `artifacts`
+- `checkpoints`
+- `created_at`
+- `updated_at`
+
+#### `job_dead_letter`
+
+用途：第一版可以只是 execution 的终态视图，不一定单独建表。
+
+如果后面单独拆实体，建议至少保留：
+
+- `execution_id`
+- `definition_id`
+- `final_error`
+- `last_checkpoint`
+- `last_artifacts`
+- `attempt_count`
+- `dead_lettered_at`
+
+### 推荐的状态机约束
+
+建议明确只允许这些状态转移：
+
+- `queued -> leased`
+- `leased -> running`
+- `running -> succeeded`
+- `running -> failed`
+- `running -> cancelled`
+- `failed -> retrying`
+- `retrying -> queued`
+- `failed -> dead_lettered`
+- `cancelled -> queued`
+
+建议明确禁止这些转移：
+
+- `succeeded -> running`
+- `dead_lettered -> running`
+- `queued -> succeeded`
+- `leased -> succeeded`
+
+这样做的意义是：
+
+- 后台面板显示逻辑会稳定
+- retry/resume/cancel 不会各写一套 if/else
+- 测试可以直接围绕状态迁移矩阵写
+
+### Scheduler 与 Runner 的职责边界
+
+第七步最值得继续优化的一个点，就是不要把 scheduler 和 runner 混在一起。
+
+建议明确：
+
+#### Scheduler 负责
+
+- 扫描 definition 是否到期
+- 生成 execution
+- 更新 `next_due_at`
+- 避免重复 enqueue
+
+#### Runner 负责
+
+- 消费 `queued execution`
+- 创建 session / runtime task
+- 发 heartbeat
+- 写 checkpoint / artifact
+- 更新 execution 终态
+
+#### UI / Query Layer 负责
+
+- 把 execution 聚合成后台任务视图
+- 把 definition 聚合成任务配置视图
+
+这样第七步会天然形成 3 层，而不是继续堆在一个 tick 线程里。
+
+### 旧字段到新结构的兼容切换顺序
+
+建议按下面顺序切，不要一步替换：
+
+1. 保留现有 `scheduled_tasks / long_cycle_tasks` 作为输入源
+2. 新增 `job_definitions / job_executions`
+3. 后台 tick 先只负责从旧字段同步 definition
+4. enqueue 改成写 execution，而不是直接 `execute_redclaw_run`
+5. UI 的 `background-tasks:list` 先双读，优先 execution，没有再 fallback 旧字段
+6. execution 路径稳定后，再把旧字段降级为纯产品配置层
+
+这样可以避免：
+
+- 一次性 cutover 造成后台功能失效
+- 升级期间用户已有定时任务丢失
+- 前端后台任务面板突然读不到数据
+
+### 与当前代码直接对应的改造优先级
+
+结合当前实现，建议第七步不要平均用力，而是按下面顺序打：
+
+1. 先替换 [`run_redclaw_scheduler`](/Users/Jam/LocalDev/GitHub/RedConvert/LexBox/src-tauri/src/main.rs#L11884)
+原因：这里现在既在做调度，也在做执行。
+
+2. 再替换 [`derived_background_tasks`](/Users/Jam/LocalDev/GitHub/RedConvert/LexBox/src-tauri/src/main.rs#L6424)
+原因：这里现在还是把产品字段伪装成后台执行态。
+
+3. 最后统一 `background-tasks:cancel` 和 `runner-*` 手动执行入口
+原因：cancel / run-now / long-cycle-now 这些入口最后都应该落到 execution transition，而不是直接改产品字段。
+
+### 第七步的非目标
+
+为了避免范围失控，建议明确这一步先不做：
+
+- 多进程 / 多机器抢占式 lease
+- 复杂 dead-letter queue 管理后台
+- 优先级调度器
+- execution 并发配额系统
+- 通用工作流 DSL
+
+这些都不是当前瓶颈。
+第七步第一目标仍然是：
+
+- 正确
+- 可恢复
+- 可观察
+- 可迁移
+
+### 推荐的第七步验收拆解
+
+建议不要只保留总验收标准，再补一层子验收：
+
+#### 7A 验收
+
+- 能从旧 `scheduled_tasks / long_cycle_tasks` 生成统一 definition
+- 新 definition 能完整表达触发规则和执行模式
+
+#### 7B 验收
+
+- 到期任务只 enqueue execution，不直接执行模型调用
+- 同一 due window 不会重复 enqueue 多个 execution
+
+#### 7C 验收
+
+- running execution 有 heartbeat
+- app 重启后 queued / running / retrying execution 可恢复
+- retry 次数与失败原因可追踪
+
+#### 7D 验收
+
+- 后台任务页优先展示真实 execution
+- failed execution 可 inspect / retry
+- dead-lettered execution 可见且可归档
+
+### 这样优化后的好处
+
+- 第七步风险更小
+- 不会把“执行实例”和“产品配置”继续混在一起
+- 第八步事件协议会更容易统一
+- 第九步测试也能直接围绕 execution state machine 写
+
+一句话总结：
+
+第七步最该优化的，不是“再多加几个模块”，而是先把它从“runner tick 驱动产品字段”改成“definition + execution 驱动的长期任务运行时”。
 
 ### 验收标准
 

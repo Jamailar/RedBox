@@ -38,3 +38,13 @@
   - tool/runtime layers only enforce input validation and safety constraints
 - If a behavior must be constrained, prefer structured rules, typed state, and tool contracts over brittle string matching against user messages.
 - Hardcoded message-text checks are a last resort only, and any exception should be narrow, explicit, and easy to remove later.
+
+## UX State Rule
+- Existing user-visible data must never be replaced by a blocking loading screen just because a refresh starts.
+- Default policy is stale-while-revalidate:
+  - render cached/existing data immediately
+  - refresh in the background
+  - show refresh state with local indicators only
+- Full-page or full-panel loading is allowed only for true first-load empty states where no usable data exists yet.
+- Refresh failures must preserve the last successful data snapshot and surface an inline error instead of clearing the page.
+- Login/session/bootstrap flows follow the same rule: use persisted state first, then silently refresh in the background.

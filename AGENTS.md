@@ -48,3 +48,14 @@
 - Full-page or full-panel loading is allowed only for true first-load empty states where no usable data exists yet.
 - Refresh failures must preserve the last successful data snapshot and surface an inline error instead of clearing the page.
 - Login/session/bootstrap flows follow the same rule: use persisted state first, then silently refresh in the background.
+
+## Store Lock Rule
+- Global app state locks must stay narrow and memory-only.
+- Never hold the global store lock while doing file system I/O, workspace scans, directory creation, hydration, serialization, or other potentially slow work.
+- Required pattern is:
+  - read the minimal state snapshot under lock
+  - release the lock
+  - do file/workspace loading outside the lock
+  - reacquire the lock only to apply the final in-memory mutation
+- Page activation, chat post-response maintenance, workspace bootstrap, and list/load commands must follow this rule by default.
+- If cached data can satisfy a page transition, prefer cache-first access and background refresh rather than lock-coupled reloads.

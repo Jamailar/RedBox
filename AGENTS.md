@@ -48,6 +48,8 @@
 - Full-page or full-panel loading is allowed only for true first-load empty states where no usable data exists yet.
 - Refresh failures must preserve the last successful data snapshot and surface an inline error instead of clearing the page.
 - Login/session/bootstrap flows follow the same rule: use persisted state first, then silently refresh in the background.
+- For routine UI actions, prefer icon-only affordances when the meaning is already clear from the symbol and context.
+- Do not add explanatory helper text for controls that can be understood from standard visual language; reserve text labels for ambiguous, high-risk, or non-standard actions.
 
 ## Store Lock Rule
 - Global app state locks must stay narrow and memory-only.

@@ -14,8 +14,10 @@ Updated: 2026-04-11
 
 - [x] Header / ruler / playhead / scrollbar structure kept as explicit modules
 - [x] Timeline selection drives inspector
+- [x] Active track now drives inspector when no clip is selected
 - [x] Timeline playhead drives preview current time
 - [x] Asset drag preview remains available for insert flow
+- [x] Track UI state is now unified in editor store (`locked` / `hidden` / `collapsed`)
 - [ ] Zoom state is persisted but not yet fully bi-directionally driven by UI controls
 
 ## Stage
@@ -42,9 +44,10 @@ Updated: 2026-04-11
 - [x] `focus_item`
 - [x] `clip_move`
 - [x] `clip_toggle_enabled`
+- [x] `track_reorder`
+- [x] `track_delete`
 - [ ] `clip_duplicate`
 - [ ] `clip_replace_asset`
-- [ ] `track_reorder`
 - [ ] `scene_item_read`
 - [ ] `scene_item_update`
 - [ ] `undo` / `redo`

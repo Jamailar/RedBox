@@ -59,7 +59,13 @@
   - render cached or already-loaded data immediately
   - refresh in the background
   - show local refresh indicators only
+- Page activation, tab switching, panel expansion, and route changes must commit UI first and only then start data refresh.
+- Never await slow IPC, file I/O, workspace hydration, or daemon/network status reads on the critical path of a page/tab switch.
+- If a newly opened page needs host data, render a safe local snapshot or placeholder immediately, then trigger the host read in the background via effect/timer/transition.
+- For page-level refresh on activation, prefer fire-and-forget warmup with timeout/late-result ignore semantics over blocking awaits tied directly to the navigation gesture.
 - Refresh failures must keep the last successful snapshot visible and report an inline error instead of clearing the UI.
+- Renderer pages must tolerate partial or stale host payloads during refresh. Do not assume nested IPC fields always exist just because TypeScript types say they should.
+- Any renderer that consumes nested host state must either normalize the payload at the bridge boundary or use defensive access/fallbacks in render so one missing nested field cannot crash the whole page.
 - Global store locks must stay narrow and memory-only.
 - Never hold a global store lock while doing file I/O, workspace scans, directory creation, hydration, serialization, or other slow work.
 - Required pattern:
@@ -68,6 +74,62 @@
   - perform file/workspace work outside the lock
   - reacquire only to apply the final in-memory mutation
 - Commands, page activation flows, chat post-response maintenance, and workspace bootstrap should follow this pattern by default.
+
+## UI Freeze And Page Blocking Rules
+
+- In this repo, a page that becomes unclickable, shows a spinning cursor, or freezes on tab switch should be treated as an event-loop blockage first, not as a pure routing bug.
+- For Tauri host code, any page-path command that might take more than roughly 10-20ms must not run as a synchronous `#[tauri::command] fn` on the UI-critical path.
+- Page-facing host commands should default to `async`. CPU-heavy work must go to `spawn_blocking`; I/O work should be truly async where possible.
+- Never put directory scans, large file reads, large SQLite queries, heavy JSON encode/decode, image/video processing, blocking HTTP, or `sleep` in a synchronous page-load command.
+- Renderer navigation must follow `render shell first, hydrate later`. Showing the page must not wait for all of its data, widgets, or background setup to finish.
+- Page enter must not trigger full initialization of every subpanel at once. Split first paint, essential data, and non-critical warmup into separate phases.
+- Large lists, trees, transcripts, and tables must not be fully rendered on first paint. Use pagination, virtualization, incremental expansion, or summary-first loading.
+- Frontend CPU-heavy parsing, transformation, and thumbnail-like work must not run on the main thread during navigation. Use workers or defer until after first paint.
+- IPC payloads on page entry must stay minimal. Do not send whole project trees, full document bodies, full chat history, base64 images, or thousands of records if the page only needs a summary.
+- Prefer IDs, paths, cursors, counts, and previews on first load. Fetch details lazily when the user expands or opens a specific item.
+- Renderer code must tolerate partial host payloads. Any nested host field may be absent because of stale persistence, version skew, partial migration, or failed refresh.
+- Locking rules are part of UI performance rules:
+  - do not hold `Mutex`/`RwLock` guards across `await`
+  - do not keep one coarse app-wide lock for unrelated page work
+  - do not nest locks in inconsistent order
+  - keep critical sections tiny and in-memory only
+- When shared resources are hot or long-lived, prefer a dedicated task plus message passing over many callers contending on one lock.
+- Page switch work must be cancellable or ignorable. When the user goes A -> B -> C quickly, stale A/B work must not still compete with C for UI-critical resources.
+- Use request/version tokens for page loads so only the latest navigation result can commit UI state.
+- Re-registering listeners, timers, polling loops, or subscriptions on every page entry without cleanup is treated as a page-blocking bug, because the accumulated callbacks will eventually freeze the UI.
+- Thumbnail generation, media probing, and rich editor/chart initialization are high-risk page-entry work. They must be delayed, chunked, or moved off the main/UI-critical path.
+- Dev-mode performance can mislead, but it is not an excuse for blocking architecture. Validate both dev behavior and release behavior before concluding the issue is solved.
+
+## UI Freeze Diagnosis Rules
+
+- When a page blocks on navigation, first isolate whether the freeze is renderer-side or host-side:
+  - temporarily bypass page-entry `invoke` calls
+  - if the page still freezes, suspect renderer render/JS/main-thread work
+  - if the page stops freezing, suspect host command, IPC payload size, or lock contention
+- Add timing around every page-entry phase on both sides before guessing:
+  - route switch
+  - first render
+  - each `invoke`
+  - large render blocks
+  - host command duration
+- Any single step above roughly 50ms should be treated as a likely contributor to visible jank; larger spikes are blockers for page-entry paths.
+- On the renderer side, use the browser/WebView Performance tools and look for long tasks, scripting spikes, layout, style recalculation, and GC during navigation.
+- On the host side, search page paths for these first:
+  - synchronous `#[tauri::command] fn`
+  - `std::fs`
+  - large serialization/deserialization
+  - blocking DB/file access
+  - `Mutex` / `RwLock`
+  - `block_on`
+  - `sleep`
+  - media/image/video processing
+- When a page uses multiple page-entry requests, do not fire them all blindly in parallel. Decide which data is critical for first paint and defer the rest.
+- Every new page or tab must be verified against these failure modes:
+  - host call hangs
+  - host call times out
+  - host returns partial nested data
+  - IPC payload is much larger than expected
+  - user switches pages repeatedly before the previous load completes
 
 ## Common Change Playbooks
 
@@ -98,6 +160,12 @@
 - Wire the page in `src/App.tsx` and keep the current lazy-loading/view-switching pattern.
 - Reuse `Layout` navigation patterns instead of creating a second navigation system.
 - When a page has background refresh, preserve the last successful state during transitions and retries.
+- Treat page/tab open as a render-first interaction:
+  - update the navigation state immediately
+  - render with existing/default snapshot
+  - schedule host reads after paint
+  - never gate the first render on slow page-specific data
+- When adding a new tab/page backed by IPC data, explicitly verify that clicking into it still renders instantly if the host call hangs, times out, or returns an incomplete payload.
 
 ## Known Pitfalls
 
@@ -108,6 +176,8 @@
 - Do not hold store locks across disk or workspace operations.
 - Do not introduce user-intent routing based on ad hoc string matching when structured flags or metadata can carry intent.
 - Do not add broad refactors to `src-tauri/src/main.rs` unless they directly support the task; prefer moving new logic into domain modules.
+- Do not make a new page/tab depend on an awaited activation-time IPC call for first paint. This is a common cause of “click tab -> page blocks”.
+- Do not dereference nested host payload fields in render without a fallback path. Persisted old data, partial migrations, and stale daemon snapshots can omit sub-objects and crash the page on navigation.
 
 ## Documentation Expectations
 

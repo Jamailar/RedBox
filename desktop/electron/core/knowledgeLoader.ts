@@ -10,6 +10,7 @@ export interface WanderItem {
   title: string;
   content: string;
   cover?: string;
+  video?: string;
   meta: any;
 }
 
@@ -50,12 +51,45 @@ export async function getAllKnowledgeItems(): Promise<WanderItem[]> {
                cover = toAppAssetUrl(absolutePath);
           }
 
+          // Resolve video: check images/video.json first, then fall back to any .mp4 in images
+          let video: string | undefined;
+          if (meta.images) {
+            // Priority: images/video.json (structured metadata)
+            const videoJsonPath = path.join(redbookDir, dir.name, 'images', 'video.json');
+            try {
+              const videoJsonContent = await fs.readFile(videoJsonPath, 'utf-8');
+              const videoJson = JSON.parse(videoJsonContent);
+              if (videoJson && videoJson.url) {
+                if (videoJson.url.startsWith('http')) {
+                  video = videoJson.url;
+                } else {
+                  const absolutePath = path.join(redbookDir, dir.name, videoJson.url);
+                  video = toAppAssetUrl(absolutePath);
+                }
+              }
+            } catch {
+              // video.json not found, fall through to .mp4 scan
+            }
+
+            // Fallback: scan images for .mp4
+            if (!video) {
+              for (const img of meta.images) {
+                if (typeof img === 'string' && img.endsWith('.mp4')) {
+                  const absolutePath = path.join(redbookDir, dir.name, img);
+                  video = toAppAssetUrl(absolutePath);
+                  break;
+                }
+              }
+            }
+          }
+
           items.push({
             id: dir.name,
-            type: 'note',
+            type: video ? 'video' : 'note',
             title: meta.title || 'Untitled Note',
             content: meta.content || '',
             cover,
+            video,
             meta,
           });
         } catch {

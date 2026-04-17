@@ -1,4 +1,4 @@
-# LexBox Video Editor Parity Checklist
+# RedBox Video Editor Parity Checklist
 
 Updated: 2026-04-11
 
@@ -28,7 +28,7 @@ Updated: 2026-04-11
 - [x] Scene selection feeds inspector
 - [ ] Freeform drag / resize for stage items is still pending
 
-## LexBox Specific
+## RedBox Specific
 
 - [x] Script stays first-level
 - [x] Remotion stays first-level

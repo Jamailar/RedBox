@@ -46,7 +46,7 @@
 
 统一 runner 位于：
 
-- [src-tauri/src/scheduler/job_runtime.rs](/Users/Jam/LocalDev/GitHub/RedConvert/LexBox/src-tauri/src/scheduler/job_runtime.rs)
+- [src-tauri/src/scheduler/job_runtime.rs](/Users/Jam/LocalDev/GitHub/RedConvert/RedBox/src-tauri/src/scheduler/job_runtime.rs)
 
 执行流程：
 
@@ -104,8 +104,8 @@
 
 相关入口：
 
-- [src-tauri/src/runtime/phase0.rs](/Users/Jam/LocalDev/GitHub/RedConvert/LexBox/src-tauri/src/runtime/phase0.rs)
-- [src/pages/settings/SettingsSections.tsx](/Users/Jam/LocalDev/GitHub/RedConvert/LexBox/src/pages/settings/SettingsSections.tsx)
+- [src-tauri/src/runtime/phase0.rs](/Users/Jam/LocalDev/GitHub/RedConvert/RedBox/src-tauri/src/runtime/phase0.rs)
+- [src/pages/settings/SettingsSections.tsx](/Users/Jam/LocalDev/GitHub/RedConvert/RedBox/src/pages/settings/SettingsSections.tsx)
 
 ## Feature Flag And Rollback
 

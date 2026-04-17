@@ -36,11 +36,24 @@
 ## Coding And Change Rules
 
 - Preserve the local style of the file you touch. This repo mixes older and newer code; do not restyle unrelated sections.
+- The product name is `RedBox`. User-visible UI text, settings copy, documentation titles, bundle metadata, runtime labels, temp-file prefixes, local persistence paths, aliases, and internal identifiers should use `RedBox` / `redbox` consistently.
+- Do not introduce or reintroduce any legacy pre-rename product name anywhere in repo content unless the user explicitly asks for a one-time migration compatibility exception.
 - Prefer existing `window.ipcRenderer` helpers over direct `invoke()`/`listen()` usage in page code. If a new host channel is needed, add or extend the bridge instead of scattering raw channel strings.
 - Keep channel and event naming aligned with existing domain groupings such as `chat:*`, `runtime:*`, `manuscripts:*`, `knowledge:*`, and `redclaw:*`.
 - New compatibility events should be emitted from `src-tauri/src/events/`, not handcrafted in random command handlers.
 - Keep renderer pages responsive by preserving existing data during refresh. Use stale-while-revalidate behavior by default.
 - For routine UI actions, prefer existing icon-first affordances and avoid helper text unless the action is ambiguous or risky.
+- UI copy must stay user-facing. Do not put design rationale, reference-project notes, implementation plans, internal module names, technical stack details, page-layout explanations, or backend business-flow explanations into visible UI text.
+- When writing UI copy, keep only what helps the user decide, configure, or recover from an error. Developer reasoning belongs in code comments or docs, not on the page.
+- Hard rule for headings/descriptions: visible UI text must describe only user-facing capability, current state, required input, consequence, or recovery action. It must never describe how the page is organized or how the designer implemented it.
+- Forbidden visible UI patterns include:
+  - explaining layout choices such as “按操作顺序组织”, “不再拆成左右两栏”, “统一管理”
+  - explaining implementation intent such as “这里用于…管理…模块”, “该页面负责…”, “先做 A 再做 B”
+  - exposing developer abstractions such as “模块”, “编排”, “工作流”, “内部状态”, “运行时” unless the term is itself the product feature name
+- UI copy self-check before finishing any frontend change:
+  - remove any sentence that would still make sense in a PR description or design review
+  - if the sentence helps the developer more than the end user, it does not belong in the UI
+  - settings页标题优先写功能名，描述优先写“用户能配置什么/会产生什么效果”，不要写“这个页面怎么组织”
 - Do not hardcode secrets, model keys, endpoints, or machine-specific paths.
 
 ## AI System Design Rules

@@ -1,12 +1,12 @@
-# LexBox 吸收 Hermes Agent 经验的分阶段升级计划
+# RedBox 吸收 Hermes Agent 经验的分阶段升级计划
 
 更新时间：2026-04-15
 
 ## 1. 目标
 
-这份计划不是把 `hermes-agent` 搬进 `LexBox`。
+这份计划不是把 `hermes-agent` 搬进 `RedBox`。
 
-目标是吸收它真正有效的系统经验，把 `LexBox` 现有的：
+目标是吸收它真正有效的系统经验，把 `RedBox` 现有的：
 
 - `runtime:event`
 - `sessions / checkpoints / tool results`
@@ -18,7 +18,7 @@
 
 整理成一套更清晰、更低回归、更可持续演进的 Agent 基础设施。
 
-本计划优先服务当前 `LexBox/` Tauri + Rust 宿主，不扩展到旧 `desktop/`。
+本计划优先服务当前 `RedBox/` Tauri + Rust 宿主，不扩展到旧 `desktop/`。
 
 ---
 
@@ -31,20 +31,20 @@
 3. 把多入口统一到一个 runtime core，而不是每个入口各自拼 AI 行为。
 4. 把安全、审批、恢复、可观察性都当一等公民。
 
-对 `LexBox` 来说，最重要的是先补“系统层”，再补“平台层”。
+对 `RedBox` 来说，最重要的是先补“系统层”，再补“平台层”。
 
 ---
 
 ## 3. 当前基础
 
-`LexBox` 已经具备计划实施所需的大部分底座：
+`RedBox` 已经具备计划实施所需的大部分底座：
 
-- 统一事件协议已初步存在，见 [src-tauri/src/events/mod.rs](/Users/Jam/LocalDev/GitHub/RedConvert/LexBox/src-tauri/src/events/mod.rs:154)
-- 工具 pack 已初步存在，见 [src-tauri/src/tools/packs.rs](/Users/Jam/LocalDev/GitHub/RedConvert/LexBox/src-tauri/src/tools/packs.rs:1)
-- tool descriptor/schema 已初步存在，见 [src-tauri/src/tools/catalog.rs](/Users/Jam/LocalDev/GitHub/RedConvert/LexBox/src-tauri/src/tools/catalog.rs:16)
-- skill runtime 裁剪逻辑已存在，见 [src-tauri/src/skills/runtime.rs](/Users/Jam/LocalDev/GitHub/RedConvert/LexBox/src-tauri/src/skills/runtime.rs:71)
-- prompt 装配入口已存在，见 [src-tauri/src/interactive_runtime_shared.rs](/Users/Jam/LocalDev/GitHub/RedConvert/LexBox/src-tauri/src/interactive_runtime_shared.rs:18)
-- real subagent 基础骨架已存在，见 [src-tauri/src/subagents/spawner.rs](/Users/Jam/LocalDev/GitHub/RedConvert/LexBox/src-tauri/src/subagents/spawner.rs:94)
+- 统一事件协议已初步存在，见 [src-tauri/src/events/mod.rs](/Users/Jam/LocalDev/GitHub/RedConvert/RedBox/src-tauri/src/events/mod.rs:154)
+- 工具 pack 已初步存在，见 [src-tauri/src/tools/packs.rs](/Users/Jam/LocalDev/GitHub/RedConvert/RedBox/src-tauri/src/tools/packs.rs:1)
+- tool descriptor/schema 已初步存在，见 [src-tauri/src/tools/catalog.rs](/Users/Jam/LocalDev/GitHub/RedConvert/RedBox/src-tauri/src/tools/catalog.rs:16)
+- skill runtime 裁剪逻辑已存在，见 [src-tauri/src/skills/runtime.rs](/Users/Jam/LocalDev/GitHub/RedConvert/RedBox/src-tauri/src/skills/runtime.rs:71)
+- prompt 装配入口已存在，见 [src-tauri/src/interactive_runtime_shared.rs](/Users/Jam/LocalDev/GitHub/RedConvert/RedBox/src-tauri/src/interactive_runtime_shared.rs:18)
+- real subagent 基础骨架已存在，见 [src-tauri/src/subagents/spawner.rs](/Users/Jam/LocalDev/GitHub/RedConvert/RedBox/src-tauri/src/subagents/spawner.rs:94)
 
 所以这份计划的重点不是“补齐空白功能”，而是“把已有零件收束成稳定内核”。
 
@@ -132,9 +132,9 @@
 
 ### 涉及文件
 
-- [src-tauri/src/events/mod.rs](/Users/Jam/LocalDev/GitHub/RedConvert/LexBox/src-tauri/src/events/mod.rs:154)
-- [src/bridge/ipcRenderer.ts](/Users/Jam/LocalDev/GitHub/RedConvert/LexBox/src/bridge/ipcRenderer.ts:15)
-- [src/pages/Settings.tsx](/Users/Jam/LocalDev/GitHub/RedConvert/LexBox/src/pages/Settings.tsx:1526)
+- [src-tauri/src/events/mod.rs](/Users/Jam/LocalDev/GitHub/RedConvert/RedBox/src-tauri/src/events/mod.rs:154)
+- [src/bridge/ipcRenderer.ts](/Users/Jam/LocalDev/GitHub/RedConvert/RedBox/src/bridge/ipcRenderer.ts:15)
+- [src/pages/Settings.tsx](/Users/Jam/LocalDev/GitHub/RedConvert/RedBox/src/pages/Settings.tsx:1526)
 
 ### 验收标准
 
@@ -158,11 +158,11 @@
 
 因为 Hermes 的最大优点之一是上下文层次清晰，而它社区当前最大问题之一也是 token bloat。
 
-`LexBox` 应该吸收前者，规避后者。
+`RedBox` 应该吸收前者，规避后者。
 
 ### 当前问题
 
-当前 [interactive_runtime_shared.rs](/Users/Jam/LocalDev/GitHub/RedConvert/LexBox/src-tauri/src/interactive_runtime_shared.rs:18) 已经开始做 runtime prompt 装配，但还有这些问题：
+当前 [interactive_runtime_shared.rs](/Users/Jam/LocalDev/GitHub/RedConvert/RedBox/src-tauri/src/interactive_runtime_shared.rs:18) 已经开始做 runtime prompt 装配，但还有这些问题：
 
 - context source 没有统一抽象
 - RedClaw profile docs 直接拼进 prompt
@@ -246,8 +246,8 @@
 
 ### 涉及文件
 
-- [src-tauri/src/interactive_runtime_shared.rs](/Users/Jam/LocalDev/GitHub/RedConvert/LexBox/src-tauri/src/interactive_runtime_shared.rs:43)
-- [src-tauri/src/skills/runtime.rs](/Users/Jam/LocalDev/GitHub/RedConvert/LexBox/src-tauri/src/skills/runtime.rs:71)
+- [src-tauri/src/interactive_runtime_shared.rs](/Users/Jam/LocalDev/GitHub/RedConvert/RedBox/src-tauri/src/interactive_runtime_shared.rs:43)
+- [src-tauri/src/skills/runtime.rs](/Users/Jam/LocalDev/GitHub/RedConvert/RedBox/src-tauri/src/skills/runtime.rs:71)
 
 ### 验收标准
 
@@ -359,8 +359,8 @@
 
 ### 涉及文件
 
-- [src-tauri/src/commands/workspace_data.rs](/Users/Jam/LocalDev/GitHub/RedConvert/LexBox/src-tauri/src/commands/workspace_data.rs:398)
-- [src/bridge/ipcRenderer.ts](/Users/Jam/LocalDev/GitHub/RedConvert/LexBox/src/bridge/ipcRenderer.ts:193)
+- [src-tauri/src/commands/workspace_data.rs](/Users/Jam/LocalDev/GitHub/RedConvert/RedBox/src-tauri/src/commands/workspace_data.rs:398)
+- [src/bridge/ipcRenderer.ts](/Users/Jam/LocalDev/GitHub/RedConvert/RedBox/src/bridge/ipcRenderer.ts:193)
 
 ### 验收标准
 
@@ -390,9 +390,9 @@
 
 你们已经有：
 
-- tool packs：[src-tauri/src/tools/packs.rs](/Users/Jam/LocalDev/GitHub/RedConvert/LexBox/src-tauri/src/tools/packs.rs:25)
-- tool descriptors：[src-tauri/src/tools/catalog.rs](/Users/Jam/LocalDev/GitHub/RedConvert/LexBox/src-tauri/src/tools/catalog.rs:16)
-- skill 权限裁剪：[src-tauri/src/skills/runtime.rs](/Users/Jam/LocalDev/GitHub/RedConvert/LexBox/src-tauri/src/skills/runtime.rs:79)
+- tool packs：[src-tauri/src/tools/packs.rs](/Users/Jam/LocalDev/GitHub/RedConvert/RedBox/src-tauri/src/tools/packs.rs:25)
+- tool descriptors：[src-tauri/src/tools/catalog.rs](/Users/Jam/LocalDev/GitHub/RedConvert/RedBox/src-tauri/src/tools/catalog.rs:16)
+- skill 权限裁剪：[src-tauri/src/skills/runtime.rs](/Users/Jam/LocalDev/GitHub/RedConvert/RedBox/src-tauri/src/skills/runtime.rs:79)
 
 但现在还不够：
 
@@ -467,9 +467,9 @@
 
 ### 涉及文件
 
-- [src-tauri/src/tools/catalog.rs](/Users/Jam/LocalDev/GitHub/RedConvert/LexBox/src-tauri/src/tools/catalog.rs:27)
-- [src-tauri/src/commands/chat.rs](/Users/Jam/LocalDev/GitHub/RedConvert/LexBox/src-tauri/src/commands/chat.rs:121)
-- [src/bridge/ipcRenderer.ts](/Users/Jam/LocalDev/GitHub/RedConvert/LexBox/src/bridge/ipcRenderer.ts:276)
+- [src-tauri/src/tools/catalog.rs](/Users/Jam/LocalDev/GitHub/RedConvert/RedBox/src-tauri/src/tools/catalog.rs:27)
+- [src-tauri/src/commands/chat.rs](/Users/Jam/LocalDev/GitHub/RedConvert/RedBox/src-tauri/src/commands/chat.rs:121)
+- [src/bridge/ipcRenderer.ts](/Users/Jam/LocalDev/GitHub/RedConvert/RedBox/src/bridge/ipcRenderer.ts:276)
 
 ### 验收标准
 
@@ -492,7 +492,7 @@
 
 ### 当前基础
 
-现在 [subagents/spawner.rs](/Users/Jam/LocalDev/GitHub/RedConvert/LexBox/src-tauri/src/subagents/spawner.rs:108) 已经做了这些事：
+现在 [subagents/spawner.rs](/Users/Jam/LocalDev/GitHub/RedConvert/RedBox/src-tauri/src/subagents/spawner.rs:108) 已经做了这些事：
 
 - child task / session
 - allowedTools 注入
@@ -563,9 +563,9 @@
 
 ### 涉及文件
 
-- [src-tauri/src/subagents/spawner.rs](/Users/Jam/LocalDev/GitHub/RedConvert/LexBox/src-tauri/src/subagents/spawner.rs:182)
-- [src-tauri/src/events/mod.rs](/Users/Jam/LocalDev/GitHub/RedConvert/LexBox/src-tauri/src/events/mod.rs:164)
-- [src/runtime/runtimeEventStream.ts](/Users/Jam/LocalDev/GitHub/RedConvert/LexBox/src/runtime/runtimeEventStream.ts:258)
+- [src-tauri/src/subagents/spawner.rs](/Users/Jam/LocalDev/GitHub/RedConvert/RedBox/src-tauri/src/subagents/spawner.rs:182)
+- [src-tauri/src/events/mod.rs](/Users/Jam/LocalDev/GitHub/RedConvert/RedBox/src-tauri/src/events/mod.rs:164)
+- [src/runtime/runtimeEventStream.ts](/Users/Jam/LocalDev/GitHub/RedConvert/RedBox/src/runtime/runtimeEventStream.ts:258)
 
 ### 验收标准
 
@@ -584,7 +584,7 @@
 
 ### 目标
 
-为 `LexBox` 增加一个类似 Hermes `execute_code` 的“受限程序化执行层”，把机械流程从多轮 LLM 工具调用压缩成单次脚本执行。
+为 `RedBox` 增加一个类似 Hermes `execute_code` 的“受限程序化执行层”，把机械流程从多轮 LLM 工具调用压缩成单次脚本执行。
 
 ### 为什么值得做
 
@@ -594,7 +594,7 @@ Hermes 在这块的价值非常明确：
 - 只有最终 stdout 回到上下文
 - 中间工具结果不污染 prompt
 
-这对 `LexBox` 很适合，尤其是：
+这对 `RedBox` 很适合，尤其是：
 
 - 批量内容处理
 - 素材清洗
@@ -679,7 +679,7 @@ Hermes 在这块的价值非常明确：
 
 ### 这是中后期最关键阶段
 
-因为到这一步，`LexBox` 才真正从“带 AI 的桌面应用”升级成“可长期运行的 agent 系统”。
+因为到这一步，`RedBox` 才真正从“带 AI 的桌面应用”升级成“可长期运行的 agent 系统”。
 
 ### 当前问题
 
@@ -752,10 +752,10 @@ Hermes 在这块的价值非常明确：
 
 ### 涉及文件
 
-- [src-tauri/src/scheduler/mod.rs](/Users/Jam/LocalDev/GitHub/RedConvert/LexBox/src-tauri/src/scheduler/mod.rs:255)
-- [src-tauri/src/scheduler/job_runtime.rs](/Users/Jam/LocalDev/GitHub/RedConvert/LexBox/src-tauri/src/scheduler/job_runtime.rs:235)
-- [src-tauri/src/assistant_core.rs](/Users/Jam/LocalDev/GitHub/RedConvert/LexBox/src-tauri/src/assistant_core.rs:554)
-- [src-tauri/src/commands/bridge.rs](/Users/Jam/LocalDev/GitHub/RedConvert/LexBox/src-tauri/src/commands/bridge.rs:80)
+- [src-tauri/src/scheduler/mod.rs](/Users/Jam/LocalDev/GitHub/RedConvert/RedBox/src-tauri/src/scheduler/mod.rs:255)
+- [src-tauri/src/scheduler/job_runtime.rs](/Users/Jam/LocalDev/GitHub/RedConvert/RedBox/src-tauri/src/scheduler/job_runtime.rs:235)
+- [src-tauri/src/assistant_core.rs](/Users/Jam/LocalDev/GitHub/RedConvert/RedBox/src-tauri/src/assistant_core.rs:554)
+- [src-tauri/src/commands/bridge.rs](/Users/Jam/LocalDev/GitHub/RedConvert/RedBox/src-tauri/src/commands/bridge.rs:80)
 
 ### 验收标准
 
@@ -922,7 +922,7 @@ Hermes 在这块的价值非常明确：
 
 ## 19. 最终效果预期
 
-完成这轮升级后，`LexBox` 应该达到的不是“更像 Hermes”，而是更清晰地成为：
+完成这轮升级后，`RedBox` 应该达到的不是“更像 Hermes”，而是更清晰地成为：
 
 - 一个有结构化 context engine 的桌面 Agent
 - 一个有边界长期记忆与跨会话 recall 的工作区助手
@@ -931,4 +931,4 @@ Hermes 在这块的价值非常明确：
 
 如果只能用一句话概括这份 roadmap：
 
-先把 `LexBox` 从“功能很多的 AI 桌面应用”升级成“有内核分层的 Agent Runtime”，再谈更大的自动化与平台扩展。
+先把 `RedBox` 从“功能很多的 AI 桌面应用”升级成“有内核分层的 Agent Runtime”，再谈更大的自动化与平台扩展。

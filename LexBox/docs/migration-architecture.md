@@ -1,16 +1,16 @@
-# LexBox Architecture
+# RedBox Architecture
 
 ## Current shape
 
-`LexBox` is no longer a scaffold. It is the active Tauri v2 desktop shell with a Rust host and a React renderer.
+`RedBox` is no longer a scaffold. It is the active Tauri v2 desktop shell with a Rust host and a React renderer.
 
 Top-level split:
 
-- `LexBox/src/`
+- `RedBox/src/`
   - React UI
   - `window.ipcRenderer` compatibility bridge
   - View logic kept close to the original app shell
-- `LexBox/src-tauri/src/main.rs`
+- `RedBox/src-tauri/src/main.rs`
   - Rust host router
   - Local persistent store
   - Tauri command/event bridge
@@ -21,7 +21,7 @@ Top-level split:
 
 ### Renderer layer
 
-- All renderer code stays inside `LexBox/src/`.
+- All renderer code stays inside `RedBox/src/`.
 - Renderer still calls Electron-style APIs through `window.ipcRenderer`.
 - The bridge now targets Tauri command/event APIs instead of Electron preload.
 
@@ -29,7 +29,7 @@ Top-level split:
 
 - `ipc_invoke(channel, payload)` handles request/response operations.
 - `ipc_send(channel, payload)` handles fire-and-forget and streaming-trigger operations.
-- Host state is persisted in a LexBox-local JSON store under the user config directory.
+- Host state is persisted in a RedBox-local JSON store under the user config directory.
 
 ### Domain layer in Rust
 
@@ -48,7 +48,7 @@ Implemented Rust-hosted domains now include:
 
 ## Persistence model
 
-LexBox currently uses a Rust-managed local store for migrated desktop state:
+RedBox currently uses a Rust-managed local store for migrated desktop state:
 
 - settings
 - spaces

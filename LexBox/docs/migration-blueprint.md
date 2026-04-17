@@ -1,8 +1,8 @@
-# LexBox Migration Blueprint
+# RedBox Migration Blueprint
 
 ## Outcome
 
-The original migration goal has been realized inside `LexBox/`:
+The original migration goal has been realized inside `RedBox/`:
 
 - Tauri v2 replaces Electron as the desktop shell.
 - Rust replaces the Electron main-process host as the primary desktop runtime.
@@ -13,7 +13,7 @@ The original migration goal has been realized inside `LexBox/`:
 
 ### 1. Workspace isolation
 
-- `LexBox` builds and runs independently.
+- `RedBox` builds and runs independently.
 - No runtime or build-time dependency on `../desktop`.
 
 ### 2. Compatibility bridge

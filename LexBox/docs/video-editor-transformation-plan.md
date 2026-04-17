@@ -116,17 +116,17 @@
 
 当前 RedBox 视频编辑器相关代码：
 
-- `/Users/Jam/LocalDev/GitHub/RedConvert/LexBox/src/components/manuscripts/VideoDraftWorkbench.tsx`
-- `/Users/Jam/LocalDev/GitHub/RedConvert/LexBox/src/components/manuscripts/EditableTrackTimeline.tsx`
-- `/Users/Jam/LocalDev/GitHub/RedConvert/LexBox/src/components/manuscripts/remotion/RemotionVideoPreview.tsx`
-- `/Users/Jam/LocalDev/GitHub/RedConvert/LexBox/src/components/manuscripts/remotion/RemotionTransportBar.tsx`
+- `/Users/Jam/LocalDev/GitHub/RedConvert/RedBox/src/components/manuscripts/VideoDraftWorkbench.tsx`
+- `/Users/Jam/LocalDev/GitHub/RedConvert/RedBox/src/components/manuscripts/EditableTrackTimeline.tsx`
+- `/Users/Jam/LocalDev/GitHub/RedConvert/RedBox/src/components/manuscripts/remotion/RemotionVideoPreview.tsx`
+- `/Users/Jam/LocalDev/GitHub/RedConvert/RedBox/src/components/manuscripts/remotion/RemotionTransportBar.tsx`
 
 当前宿主与 AI 工具链：
 
-- `/Users/Jam/LocalDev/GitHub/RedConvert/LexBox/src-tauri/src/tools/catalog.rs`
-- `/Users/Jam/LocalDev/GitHub/RedConvert/LexBox/src-tauri/src/tools/packs.rs`
-- `/Users/Jam/LocalDev/GitHub/RedConvert/LexBox/src-tauri/src/main.rs`
-- `/Users/Jam/LocalDev/GitHub/RedConvert/LexBox/src-tauri/src/commands/manuscripts.rs`
+- `/Users/Jam/LocalDev/GitHub/RedConvert/RedBox/src-tauri/src/tools/catalog.rs`
+- `/Users/Jam/LocalDev/GitHub/RedConvert/RedBox/src-tauri/src/tools/packs.rs`
+- `/Users/Jam/LocalDev/GitHub/RedConvert/RedBox/src-tauri/src/main.rs`
+- `/Users/Jam/LocalDev/GitHub/RedConvert/RedBox/src-tauri/src/commands/manuscripts.rs`
 
 当前已经具备：
 

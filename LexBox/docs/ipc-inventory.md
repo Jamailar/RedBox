@@ -77,12 +77,6 @@
 | `file:copy-image` | 1 |
 | `file:show-in-folder` | 2 |
 | `image-gen:generate` | 3 |
-| `indexing:clear-queue` | 1 |
-| `indexing:get-stats` | 3 |
-| `indexing:rebuild-advisor` | 1 |
-| `indexing:rebuild-all` | 1 |
-| `indexing:remove-item` | 1 |
-| `indexing:status` | 2 |
 | `knowledge:delete` | 1 |
 | `knowledge:delete-youtube` | 1 |
 | `knowledge:docs-updated` | 1 |
@@ -405,11 +399,6 @@
 9914:ipcMain.handle('archives:samples:create', async (_, data: {
 9965:ipcMain.handle('archives:samples:update', async (_, data: {
 10016:ipcMain.handle('archives:samples:delete', async (_, sampleId: string) => {
-10030:ipcMain.handle('indexing:get-stats', async () => {
-10034:ipcMain.handle('indexing:remove-item', async (_, itemId: string) => {
-10039:ipcMain.handle('indexing:clear-queue', async () => {
-10044:ipcMain.handle('indexing:rebuild-all', async () => {
-10166:ipcMain.handle('indexing:rebuild-advisor', async (_, advisorId: string) => {
 11053:ipcMain.handle('xhs:save-note', async (_event, note: any) => {
 11057:ipcMain.handle('youtube:save-note', async (_event, payload: {
 ```

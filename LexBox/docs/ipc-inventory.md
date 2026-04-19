@@ -105,11 +105,13 @@
 | `manuscripts:create-file` | 4 |
 | `manuscripts:create-folder` | 2 |
 | `manuscripts:create-richpost-custom-theme` | 1 |
+| `manuscripts:delete-richpost-custom-theme` | 1 |
 | `manuscripts:delete` | 2 |
 | `manuscripts:delete-package-clip` | 2 |
 | `manuscripts:format-wechat` | 1 |
 | `manuscripts:get-layout` | 4 |
 | `manuscripts:get-package-state` | 1 |
+| `manuscripts:get-richpost-theme-previews` | 1 |
 | `manuscripts:list` | 3 |
 | `manuscripts:preview-richpost-theme-draft` | 1 |
 | `manuscripts:read` | 5 |
@@ -119,7 +121,7 @@
 | `manuscripts:save-richpost-custom-theme` | 1 |
 | `manuscripts:save-layout` | 3 |
 | `manuscripts:save-richpost-export-archive` | 1 |
-| `manuscripts:get-richpost-theme-previews` | 1 |
+| `manuscripts:upload-richpost-theme-background` | 1 |
 | `manuscripts:set-longform-layout-preset` | 1 |
 | `manuscripts:split-package-clip` | 3 |
 | `manuscripts:update-package-clip` | 2 |

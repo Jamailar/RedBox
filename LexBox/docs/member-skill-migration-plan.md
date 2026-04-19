@@ -80,6 +80,9 @@ Member Skill Package
 - 先做“文件检索底座”和“知识索引”，再做“语言与作用域检索”，最后才做“成员技能化”
 - 先让系统“查得快、查得稳”，再让成员“像这个人”，最后让成员“能安全地做事”
 - 先保留 embedding lane，后续再评估压缩或替换，不在前两阶段直接删掉
+- 检索底座优先走“agent 自主调用搜索工具”的模式，不先做系统主导的重型检索编排器
+- 系统负责知识范围、权限、索引、性能和安全边界；agent 负责决定先搜什么、再读什么、最后引用什么
+- 运行时优先暴露小而清晰的原子工具，而不是把检索决策硬编码进宿主
 
 ### 4.2 迁移顺序
 
@@ -127,13 +130,39 @@ Member Skill Package
 - 维护本地 `catalog index`
 - 将 knowledge 文件系统视图投影为可分页、可筛选、可排序的 summary 层
 - 监听文件变更并自动重建受影响项
-- 支持知识页首屏、后续检索和运行时证据定位复用
+- 支持知识页首屏、agent 搜索工具和后续运行时证据定位复用
 
 关键约束：
 
 - 只做文件/元数据索引，不把本阶段扩展成全文索引
 - 正文、字幕、HTML、图片等 detail 内容按需读取
 - workspace 文件/JSON 继续作为真相层
+- catalog 的职责是“帮助 agent 快速定位候选文件”，不是替 agent 直接完成最终检索决策
+
+建议的 catalog 记录字段：
+
+- `item_id`
+- `workspace_id`
+- `kind`
+- `title`
+- `author`
+- `source_url`
+- `folder_path`
+- `root_path`
+- `preview_text`
+- `language`
+- `tags_json`
+- `sample_files_json`
+- `file_count`
+- `has_video`
+- `has_transcript`
+- `updated_at`
+- `item_hash`
+- `scope`
+- `owner_type`
+- `owner_id`
+
+其中新增的 `scope / owner_type / owner_id` 是后续“成员作用域搜索”的关键基础字段。
 
 ### 5.2 Member Distillation
 
@@ -180,22 +209,75 @@ Member Skill Package
 
 ### 5.4 Retrieval
 
-推荐最终检索形态：
+本计划的检索路线改为：
 
-- 规则 / heuristics / workflow：结构化检索 + BM25
-- 文档 / 笔记 / 字幕 / 案例：Hybrid retrieval
-  - BM25 / FTS
-  - semantic retrieval
-  - metadata filtering
-  - reranking
-- 复杂跨文档关系：Graph lane，仅作补充通道
+**系统提供成员作用域的搜索底座，agent 自主调用搜索工具完成检索。**
 
-语言感知检索规则：
+不采用的路线：
 
-1. 先按 query language 命中同语言 chunk
-2. 再按成员主语言优先
-3. 再回退跨语言 chunk
-4. 混合语料允许多语言召回，但排序中增加 `language_match_score`
+- 宿主在阶段 1 里直接替 agent 完成复杂多段重排
+- 宿主在阶段 1 里直接引入全文索引 / chunk 检索 / vector lane
+
+阶段 1 推荐形态：
+
+- `knowledge_glob`
+  - 在成员可见知识范围内按文件名、路径、kind、tag 查找候选文件
+- `knowledge_grep`
+  - 在成员可见知识范围内按 catalog 字段做内容搜索
+  - 当前只搜 `title / preview / tags / sample_files / path`
+- `knowledge_read`
+  - 按需读取单个知识项详情
+  - 对 note 读 `content.md / transcript / html`
+  - 对 video 读 `summary / subtitle`
+  - 对 docs source 读 source summary 和必要的 sample file
+
+运行时职责边界：
+
+- **系统负责**
+  - 成员知识边界
+  - catalog 索引
+  - 候选文件的权限过滤
+  - 返回结果条数限制
+  - 文件读取与截断
+  - 超时和错误处理
+- **agent 负责**
+  - 先调用 `glob` 还是 `grep`
+  - 搜什么词
+  - 要不要继续 `read`
+  - 哪些文件最终值得引用
+
+阶段 2 才引入：
+
+- query language 检测
+- `language_match_score`
+- 成员 / 项目 / 团队 / 全局作用域权重
+- 必要时的 FTS / semantic lane
+
+这意味着前两阶段的检索主链路是：
+
+```text
+用户问题
+-> 当前 advisor/member 已知
+-> agent 调用 knowledge_glob / knowledge_grep 缩小范围
+-> agent 调用 knowledge_read 打开少量文件详情
+-> agent 基于结果发言
+```
+
+而不是：
+
+```text
+用户问题
+-> 宿主自动重排全库
+-> 宿主自动提取证据
+-> 再把结果塞给 agent
+```
+
+这样做的原因：
+
+- 更贴近 Claude Code 一类 agent 的工作方式
+- 更容易调试 agent 到底为什么搜某个文件
+- 宿主责任更清晰，只做底座和边界
+- 阶段 1 的工程复杂度明显更低
 
 ### 5.5 Tool Policy
 
@@ -257,7 +339,7 @@ Member Skill Package
 
 ### 目标
 
-先把知识库从“页面打开时扫目录、读正文、拼全量对象”升级成“索引驱动的 catalog 视图”，这是后续语言感知检索和成员技能化的底层前提。
+先把知识库从“页面打开时扫目录、读正文、拼全量对象”升级成“索引驱动的 catalog 视图”，并在此基础上提供一组可供 agent 自主调用的成员作用域搜索工具。这是后续语言感知检索和成员技能化的底层前提。
 
 ### 交付物
 
@@ -274,6 +356,10 @@ Member Skill Package
   - `knowledge:get-item-detail`
   - `knowledge:get-index-status`
   - `knowledge:rebuild-catalog`
+- 新增 agent-facing 检索工具命令：
+  - `knowledge:glob`
+  - `knowledge:grep`
+  - `knowledge:read`
 - 新索引文件：
   - `workspace/.redbox/index/knowledge_catalog.sqlite`
 
@@ -284,6 +370,76 @@ Member Skill Package
 3. 新增、修改、删除知识文件后自动触发后台重建
 4. 详情弹层改成懒加载，只有点击后才读 `content.md` / 字幕 / HTML
 5. 知识页搜索先只搜 summary 元数据，不做全文索引
+6. advisor/member 运行时可调用 `knowledge_glob / knowledge_grep / knowledge_read`
+7. 搜索工具默认按成员作用域过滤，不允许 agent 直接越过知识边界搜全库
+
+### 详细技术路线
+
+#### 1. 索引层
+
+宿主维护 `knowledge_catalog.sqlite`，只保存文件级 summary，不保存全文 chunk。
+
+用途分成两类：
+
+- UI 列表和分页
+- agent 搜索工具的候选文件底座
+
+#### 2. 搜索工具层
+
+阶段 1 直接提供 3 个原子工具：
+
+- `knowledge_glob`
+  - 适合按文件名、路径、kind、tag 缩小范围
+  - 典型场景：先找“规范文档”“某成员的历史样例”“某类视频笔记”
+- `knowledge_grep`
+  - 适合按 query 在 summary 字段里搜候选文件
+  - 当前只搜 catalog 字段，不读正文全文
+- `knowledge_read`
+  - 适合打开具体知识项详情
+  - 读取 detail 内容时仍然受成员作用域约束
+
+#### 3. 成员作用域约束
+
+阶段 1 的核心不是智能排序，而是先把边界做对。
+
+每条知识项要能映射到：
+
+- `member-private`
+- `project-shared`
+- `team-shared`
+- `global`
+
+每次工具调用都必须带：
+
+- `advisorId`
+- `spaceId`
+- `includeShared`
+- `includeGlobal`
+
+系统先做权限过滤，再执行搜索。
+
+#### 4. agent 典型检索模式
+
+推荐的使用模式：
+
+1. agent 先用 `knowledge_grep` 搜主题词
+2. 若结果太多，再用 `knowledge_glob` 限定 kind 或路径
+3. 对 top 1-3 个结果使用 `knowledge_read`
+4. 根据读取到的内容再决定是否继续读更多文件
+
+不推荐：
+
+- 首轮直接读大量文件
+- 系统在阶段 1 自动做多轮重排
+- 直接引入全文 FTS 或向量检索
+
+#### 5. 为什么这样设计
+
+这样设计的目标不是“宿主比 agent 更聪明”，而是：
+
+- 宿主提供足够快、足够稳、受限的搜索底座
+- agent 保持自主检索能力
+- 运行时工具调用轨迹可观测、可解释、可审计
 
 ### 主要改动文件
 
@@ -294,6 +450,8 @@ Member Skill Package
   - `src-tauri/src/knowledge.rs`
   - `src-tauri/src/main.rs`
   - `src-tauri/src/workspace_loaders.rs`
+  - `src-tauri/src/runtime/*`
+  - `src-tauri/src/tools/*`
   - `src/pages/Knowledge.tsx`
   - `src/bridge/ipcRenderer.ts`
   - `src/types.d.ts`
@@ -310,6 +468,8 @@ Member Skill Package
 - 文件变化去抖与重建策略
 - summary / detail 分层接口
 - 知识页分页与懒加载链路
+- 成员作用域过滤逻辑
+- `knowledge_glob / knowledge_grep / knowledge_read` 的工具契约
 
 ### 性能目标
 
@@ -318,10 +478,13 @@ Member Skill Package
 - 详情打开 `< 200ms`
 - 列表查询时间不再随着正文长度线性恶化
 - 后台建索引不阻塞页面首次渲染
+- 单次 `knowledge_grep` catalog 查询 `< 120ms`
+- 单次 `knowledge_read` 打开详情 `< 250ms`
 
 ### 明确收益
 
 - 知识页不再随着文件数量增加而明显变慢
+- agent 可以像 Claude Code 一样，自主组合 `glob / grep / read` 做知识检索
 - 后续语言感知检索有稳定的文件索引底座
 - 后续成员技能检索不用再直接扫文件系统
 
@@ -331,6 +494,9 @@ Member Skill Package
 - 再次进入知识页时，不再扫描全文内容
 - 新增 / 删除 / 修改知识文件后，catalog 能自动更新
 - docs source 的 `fileCount` / `sampleFiles` 仍能显示
+- advisor/member runtime 中可调用 `knowledge_glob / knowledge_grep / knowledge_read`
+- 这些工具返回结果已按成员作用域过滤
+- agent 不需要宿主额外重排，也能完成“先搜文件，再读文件”的基本检索闭环
 
 ### 回滚策略
 
@@ -703,17 +869,18 @@ Member Skill Package
 推荐的落地顺序：
 
 1. 阶段 0：补齐观测
-2. 阶段 1：蒸馏技能 + 语言识别
-3. 阶段 2：成员技能进入 runtime
-4. 阶段 3：语言感知检索
-5. 阶段 4：成员工具能力
-6. 阶段 5：自动更新闭环
+2. 阶段 1：文件索引与 agent 可调用检索工具
+3. 阶段 2：语言元数据与语言感知检索
+4. 阶段 3：蒸馏技能与成员技能包落盘
+5. 阶段 4：成员技能进入 runtime
+6. 阶段 5：成员工具能力
+7. 阶段 6：自动更新闭环
 
 如果资源有限，最先保证：
 
 - 阶段 1 全量完成
 - 阶段 2 至少完成 advisor 单聊接入
-- 阶段 3 先完成语言过滤 + 规则全文检索
+- 阶段 3 先完成语言过滤 + 成员作用域路由
 
 这三步完成后，系统就已经具备可用的“成员技能化”主链路。
 
@@ -724,19 +891,19 @@ Member Skill Package
 ### 里程碑 A
 
 - 建立阶段 0 观测
-- 完成 `member-skill-distiller` 的最小落盘链路
-- 完成自动语言识别基础版
+- 完成 `knowledge catalog` 与自动重建
+- 完成 `knowledge_glob / knowledge_grep / knowledge_read` 最小版
 
 ### 里程碑 B
 
-- 成员技能包接入 advisor runtime
-- UI 可预览当前激活成员技能
-- 保留旧 advisor fallback
+- 完成自动语言识别基础版
+- 完成语言感知检索最小版
+- advisor 单聊可稳定使用成员作用域搜索工具
 
 ### 里程碑 C
 
-- 上线语言感知检索
-- 完成成员工具白名单第一版
+- 完成 `member-skill-distiller` 的最小落盘链路
+- 成员技能包接入 advisor runtime
 - 建立最小评测集
 
 ## 12. 完成定义

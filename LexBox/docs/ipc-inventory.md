@@ -107,8 +107,6 @@
 | `manuscripts:delete` | 2 |
 | `manuscripts:delete-package-clip` | 2 |
 | `manuscripts:format-wechat` | 1 |
-| `manuscripts:generate-package-html` | 1 |
-| `manuscripts:generate-package-template` | 1 |
 | `manuscripts:get-layout` | 4 |
 | `manuscripts:get-package-state` | 1 |
 | `manuscripts:list` | 3 |
@@ -117,6 +115,8 @@
 | `manuscripts:save` | 4 |
 | `manuscripts:save-formatted-html` | 1 |
 | `manuscripts:save-layout` | 3 |
+| `manuscripts:save-richpost-export-archive` | 1 |
+| `manuscripts:set-longform-layout-preset` | 1 |
 | `manuscripts:split-package-clip` | 3 |
 | `manuscripts:update-package-clip` | 2 |
 | `manuscripts:upgrade-to-package` | 1 |

@@ -79,10 +79,30 @@ Member Skill Package
 - 先兼容旧 `advisor` 体系，再逐步内化成 `member package`
 - 先做“文件检索底座”和“知识索引”，再做“语言与作用域检索”，最后才做“成员技能化”
 - 先让系统“查得快、查得稳”，再让成员“像这个人”，最后让成员“能安全地做事”
-- 先保留 embedding lane，后续再评估压缩或替换，不在前两阶段直接删掉
+- 弃用向量嵌入作为知识检索主路径；embedding/similarity 模块可以暂时保留，但不再作为默认方案推进
 - 检索底座优先走“agent 自主调用搜索工具”的模式，不先做系统主导的重型检索编排器
 - 系统负责知识范围、权限、索引、性能和安全边界；agent 负责决定先搜什么、再读什么、最后引用什么
 - 运行时优先暴露小而清晰的原子工具，而不是把检索决策硬编码进宿主
+
+### 4.1.1 向量嵌入弃用策略
+
+当前对 embedding / similarity 的处理原则如下：
+
+- **模块保留，但默认弃用**
+  - 现有 `embedding:*`、`similarity:*`、相关 settings 和 cache 结构可以保留，避免一次性大删导致兼容回归
+  - 这些模块不再作为知识检索、成员检索、智囊团发言、runtime 检索的默认依赖
+- **禁止后台自动嵌入**
+  - 不允许 watcher、catalog rebuild、workspace hydration、knowledge ingest、background task、daemon、cron 自动触发 embedding 计算
+  - 文件新增、修改、删除只更新 catalog / file index，不更新向量缓存
+- **禁止主流程隐式调用**
+  - advisor 单聊、creative chat、chatrooms、member runtime、knowledge tools 不得隐式走向量相似度排序
+  - 成员知识检索统一走 `knowledge_glob / knowledge_grep / knowledge_read`
+- **只允许显式、受控、非主路径调用**
+  - 若某个旧功能仍保留 embedding 能力，必须满足“显式触发、可关闭、非后台、非默认开启”
+  - 默认 feature flag 应关闭，且不得影响成员发言与知识检索主链路
+- **后续清理策略**
+  - 在确认没有运行时主依赖后，再决定是否删除 host command、bridge、settings、cache 和文档残留
+  - 在删除前，文档中一律按“已弃用但保留模块”表述，不再按“推荐能力”表述
 
 ### 4.2 迁移顺序
 
@@ -217,6 +237,7 @@ Member Skill Package
 
 - 宿主在阶段 1 里直接替 agent 完成复杂多段重排
 - 宿主在阶段 1 里直接引入全文索引 / chunk 检索 / vector lane
+- 宿主在成员检索主流程中隐式调用 embedding / similarity
 
 阶段 1 推荐形态：
 
@@ -441,6 +462,16 @@ Member Skill Package
 - agent 保持自主检索能力
 - 运行时工具调用轨迹可观测、可解释、可审计
 
+#### 6. 与 embedding 模块的边界
+
+阶段 1 和阶段 2 的知识检索底座，与旧 embedding/similarity 模块的边界必须保持明确：
+
+- catalog index 不负责生成 embedding
+- `knowledge_glob / knowledge_grep / knowledge_read` 不依赖 embedding
+- advisor/member/chatroom runtime 在知识检索上不依赖 embedding
+- language-aware retrieval 也先基于 metadata、scope、language 和 file index，不引入 vector lane
+- 若某个旧页面仍保留相似度排序分支，该分支必须是显式、可关闭、与成员检索主链路解耦的旁路能力
+
 ### 主要改动文件
 
 - 新增：
@@ -514,7 +545,7 @@ Member Skill Package
 - 知识项新增自动语言字段
 - query language 检测接入检索链路
 - 成员/项目/团队/全局作用域检索生效
-- 旧 embedding lane 保留为 fallback
+- 旧 embedding/similarity 模块继续保留但不参与默认检索主路径
 
 ### 功能内容
 

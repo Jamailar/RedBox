@@ -1,0 +1,1 @@
+# Official `cover-template-pack`

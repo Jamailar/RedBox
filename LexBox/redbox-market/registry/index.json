@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "name": "redbox-market",
+  "channels": ["official", "community"],
+  "packageKinds": [
+    "member-pack",
+    "skill-pack",
+    "richpost-theme-pack",
+    "longform-layout-pack",
+    "cover-template-pack",
+    "persona-pack",
+    "workflow-pack",
+    "motion-pack",
+    "react-element-pack"
+  ]
+}

@@ -8,6 +8,7 @@
 
 目标不是一次性推翻现有实现，而是在现有骨架上逐步升级为：
 
+- 先把知识库文件检索与索引底座打稳，让知识页和后续检索不再依赖全量文件扫描
 - 每个成员都可被蒸馏为一个可落盘、可版本化的 `Member Skill Package`
 - 每个成员都能基于自己的知识库进行语言感知检索
 - 每个成员不仅能发言，还能在明确边界内调用工具执行动作
@@ -28,6 +29,7 @@
 
 当前缺失的系统层能力主要有：
 
+- 知识库页面与知识检索仍缺少稳定的文件索引/catalog 层
 - 自动语言识别尚未成为知识库 ingest 的统一元数据层
 - advisor 的 persona 仍偏向“单段 prompt 产物”，不是“可编译技能包”
 - 成员知识检索缺少语言感知与成员作用域路由
@@ -75,8 +77,8 @@ Member Skill Package
 ### 4.1 基本原则
 
 - 先兼容旧 `advisor` 体系，再逐步内化成 `member package`
-- 先做“蒸馏”和“自动识别”，再做“运行时接入”，最后做“自动演化”
-- 先让成员“像这个人”，再让成员“查得对”，最后让成员“能安全地做事”
+- 先做“文件检索底座”和“知识索引”，再做“语言与作用域检索”，最后才做“成员技能化”
+- 先让系统“查得快、查得稳”，再让成员“像这个人”，最后让成员“能安全地做事”
 - 先保留 embedding lane，后续再评估压缩或替换，不在前两阶段直接删掉
 
 ### 4.2 迁移顺序
@@ -84,20 +86,23 @@ Member Skill Package
 建议顺序如下：
 
 1. 阶段 0：基线与观测补全
-2. 阶段 1：蒸馏技能与自动语言识别
-3. 阶段 2：成员技能包接入运行时
-4. 阶段 3：语言感知检索系统
-5. 阶段 4：成员工具能力成员化
-6. 阶段 5：持续蒸馏与自动更新闭环
+2. 阶段 1：文件索引与知识页检索底座
+3. 阶段 2：语言元数据与语言感知检索
+4. 阶段 3：蒸馏技能与成员技能包落盘
+5. 阶段 4：成员技能包接入运行时
+6. 阶段 5：成员工具能力成员化
+7. 阶段 6：持续蒸馏与自动更新闭环
 
 ### 4.3 灰度与开关
 
 每阶段必须挂 feature flag：
 
+- `knowledgeCatalogIndex`
+- `knowledgeLazyDetail`
+- `languageAwareKnowledgeRetrieval`
 - `memberSkillDistillation`
 - `autoKnowledgeLanguageDetection`
 - `memberRuntimeOverlay`
-- `languageAwareRetrieval`
 - `memberToolPolicy`
 - `memberSkillAutoRefresh`
 
@@ -111,7 +116,26 @@ Member Skill Package
 
 ## 5. 核心子系统设计
 
-### 5.1 Member Distillation
+### 5.1 Knowledge Catalog Index
+
+新增知识索引子系统：
+
+- `src-tauri/src/knowledge_index/*`
+
+职责：
+
+- 维护本地 `catalog index`
+- 将 knowledge 文件系统视图投影为可分页、可筛选、可排序的 summary 层
+- 监听文件变更并自动重建受影响项
+- 支持知识页首屏、后续检索和运行时证据定位复用
+
+关键约束：
+
+- 只做文件/元数据索引，不把本阶段扩展成全文索引
+- 正文、字幕、HTML、图片等 detail 内容按需读取
+- workspace 文件/JSON 继续作为真相层
+
+### 5.2 Member Distillation
 
 新增内置技能：
 
@@ -135,7 +159,7 @@ Member Skill Package
 - 真正落盘、校验、版本升级、覆盖保护由 Rust host command 执行
 - 不允许模型直接绕过 host 任意写文件
 
-### 5.2 Language Detection
+### 5.3 Language Detection
 
 知识库语言识别不应再依赖手动填写。
 
@@ -154,7 +178,7 @@ Member Skill Package
 - `mixed_language`
 - `language_confidence`
 
-### 5.3 Retrieval
+### 5.4 Retrieval
 
 推荐最终检索形态：
 
@@ -173,7 +197,7 @@ Member Skill Package
 3. 再回退跨语言 chunk
 4. 混合语料允许多语言召回，但排序中增加 `language_match_score`
 
-### 5.4 Tool Policy
+### 5.5 Tool Policy
 
 每个成员技能包必须自带工具边界：
 
@@ -229,11 +253,146 @@ Member Skill Package
 
 - 若埋点导致明显交互卡顿或日志污染，关闭 diagnostics flag 即回退
 
-## 阶段 1：蒸馏技能与自动语言识别
+## 阶段 1：文件索引与知识页检索底座
 
 ### 目标
 
-把成员知识库从“原始文件集合”升级成“可蒸馏成员技能包”，并让知识语言自动识别成为系统元数据。
+先把知识库从“页面打开时扫目录、读正文、拼全量对象”升级成“索引驱动的 catalog 视图”，这是后续语言感知检索和成员技能化的底层前提。
+
+### 交付物
+
+- 新增本地索引模块：
+  - `src-tauri/src/knowledge_index/mod.rs`
+  - `src-tauri/src/knowledge_index/schema.rs`
+  - `src-tauri/src/knowledge_index/catalog.rs`
+  - `src-tauri/src/knowledge_index/indexer.rs`
+  - `src-tauri/src/knowledge_index/jobs.rs`
+  - `src-tauri/src/knowledge_index/watcher.rs`
+  - `src-tauri/src/knowledge_index/fingerprint.rs`
+- 新命令：
+  - `knowledge:list-page`
+  - `knowledge:get-item-detail`
+  - `knowledge:get-index-status`
+  - `knowledge:rebuild-catalog`
+- 新索引文件：
+  - `workspace/.redbox/index/knowledge_catalog.sqlite`
+
+### 功能内容
+
+1. 首屏列表只读取 catalog summary，不读取正文全文
+2. note / YouTube / docs source 统一进入索引层
+3. 新增、修改、删除知识文件后自动触发后台重建
+4. 详情弹层改成懒加载，只有点击后才读 `content.md` / 字幕 / HTML
+5. 知识页搜索先只搜 summary 元数据，不做全文索引
+
+### 主要改动文件
+
+- 新增：
+  - `src-tauri/src/knowledge_index/*`
+- 修改：
+  - `src-tauri/src/commands/library.rs`
+  - `src-tauri/src/knowledge.rs`
+  - `src-tauri/src/main.rs`
+  - `src-tauri/src/workspace_loaders.rs`
+  - `src/pages/Knowledge.tsx`
+  - `src/bridge/ipcRenderer.ts`
+  - `src/types.d.ts`
+
+### 必须使用的现成库
+
+- `rusqlite`
+- `notify`
+- 文件指纹与哈希库，或本地稳定哈希实现
+
+### 必须自研的部分
+
+- catalog schema
+- 文件变化去抖与重建策略
+- summary / detail 分层接口
+- 知识页分页与懒加载链路
+
+### 性能目标
+
+- 知识页热启动首屏 `< 150ms`
+- 知识页冷启动首屏 `< 400ms`
+- 详情打开 `< 200ms`
+- 列表查询时间不再随着正文长度线性恶化
+- 后台建索引不阻塞页面首次渲染
+
+### 明确收益
+
+- 知识页不再随着文件数量增加而明显变慢
+- 后续语言感知检索有稳定的文件索引底座
+- 后续成员技能检索不用再直接扫文件系统
+
+### 验收标准
+
+- 首次无索引时，页面壳能立即显示，索引后台构建完成后自动刷新
+- 再次进入知识页时，不再扫描全文内容
+- 新增 / 删除 / 修改知识文件后，catalog 能自动更新
+- docs source 的 `fileCount` / `sampleFiles` 仍能显示
+
+### 回滚策略
+
+- 关闭 `knowledgeCatalogIndex` 后回退到旧 knowledge list 链路
+- 关闭 `knowledgeLazyDetail` 后恢复旧的全量详情对象方式
+
+## 阶段 2：语言元数据与语言感知检索
+
+### 目标
+
+在 catalog index 基础上，把语言识别变成知识元数据层，并让检索能够优先按语言、作用域、证据权重返回更正确的结果。
+
+### 交付物
+
+- 知识项新增自动语言字段
+- query language 检测接入检索链路
+- 成员/项目/团队/全局作用域检索生效
+- 旧 embedding lane 保留为 fallback
+
+### 功能内容
+
+1. 上传知识或索引重建时自动识别语言
+2. 检索优先命中 query 同语言内容
+3. 在排序层引入 `language_match` 与 `scope` 权重
+4. UI 显示命中语言与命中来源摘要
+
+### 主要改动文件
+
+- `src-tauri/src/knowledge.rs`
+- `src-tauri/src/commands/runtime_query.rs`
+- `src-tauri/src/commands/workspace_data.rs`
+- `src-tauri/src/search/*`
+- `src/pages/Knowledge.tsx`
+
+### 性能目标
+
+- 本地小中型知识库平均检索耗时 `< 250ms`
+- 大型知识库平均检索耗时 `< 600ms`
+- 同语言 top-5 命中准确率提升 `>= 25%`
+
+### 明确收益
+
+- 中英混合知识库命中更稳
+- 作用域更清晰，为成员技能层提供可复用检索底座
+- 后续 member package 不需要自己实现底层检索
+
+### 验收标准
+
+- 中文 query 优先命中中文内容
+- 英文 query 优先命中英文内容
+- UI 可见命中语言与命中原因
+- 作用域过滤正确，不会误串成员私有知识
+
+### 回滚策略
+
+- `languageAwareKnowledgeRetrieval=false` 时回退到 catalog + 旧检索链路
+
+## 阶段 3：蒸馏技能与成员技能包落盘
+
+### 目标
+
+把成员知识库从“原始文件集合”升级成“可蒸馏成员技能包”，但暂不让它主导运行时，只先完成结构化落盘与预览。
 
 ### 交付物
 
@@ -268,16 +427,6 @@ Member Skill Package
   - `src-tauri/src/workspace_loaders.rs`
   - `src/pages/Advisors.tsx`
 
-### 必须使用的现成库
-
-- `lingua-rs`
-
-### 必须自研的部分
-
-- 语言聚合策略
-- 技能包落盘结构
-- 蒸馏候选预览与确认流程
-
 ### 性能目标
 
 - 小型知识库语言识别 `< 1s`
@@ -290,8 +439,8 @@ Member Skill Package
 ### 明确收益
 
 - 减少手动设错知识语言导致的 persona 偏差
-- 为后续语言感知检索奠定统一元数据层
 - 成员 persona 不再只是单段 prompt，而开始成为可版本化技能包
+- 为运行时接入做准备，但不提前耦合
 
 ### 验收标准
 
@@ -305,7 +454,7 @@ Member Skill Package
 - 若蒸馏链路不稳定，保留旧 advisor prompt 生成功能
 - 若自动语言识别异常，退回手动覆盖模式
 
-## 阶段 2：成员技能包接入运行时
+## 阶段 4：成员技能包接入运行时
 
 ### 目标
 
@@ -357,84 +506,7 @@ Member Skill Package
 
 - 关闭 `memberRuntimeOverlay` 后恢复旧 advisor 链路
 
-## 阶段 3：语言感知检索系统
-
-### 目标
-
-让成员能够按语言、作用域、证据权重检索到更正确的知识内容。
-
-### 交付物
-
-- 规则检索：结构化 + BM25
-- 文档检索：Hybrid retrieval
-- chunk 级语言元数据生效
-- 成员作用域检索：
-  - personal
-  - project
-  - team
-  - global
-
-### 实施策略
-
-短期过渡：
-
-- 规则层与小规模全文层：`SQLite FTS5`
-- 语义 lane：保留现有 embedding
-
-中期目标：
-
-- 文档主索引迁移到 `Tantivy`
-- 中文分词接 `tantivy-jieba`
-
-### 排序公式
-
-```text
-final_score =
-0.30 * bm25 +
-0.20 * semantic +
-0.20 * rerank +
-0.15 * scope +
-0.10 * language_match +
-0.05 * freshness
-```
-
-### 主要改动文件
-
-- 新增：
-  - `src-tauri/src/member_skill/retrieval_scope.rs`
-  - `src-tauri/src/search/*`
-- 修改：
-  - `src-tauri/src/knowledge.rs`
-  - `src-tauri/src/commands/runtime_query.rs`
-  - `src-tauri/src/commands/workspace_data.rs`
-  - `src/pages/Advisors.tsx` 或相关检索预览页
-
-### 性能目标
-
-- 本地小中型知识库平均检索耗时 `< 250ms`
-- 大型知识库平均检索耗时 `< 600ms`
-- 同语言 top-5 命中准确率提升 `>= 25%`
-- 无效召回率下降 `>= 30%`
-
-### 明确收益
-
-- 中英混合、双语文档、字幕语料下命中更稳
-- 精确术语和规范规则更容易命中
-- 成员更容易检索到“自己的证据”而不是全局噪音
-
-### 验收标准
-
-- 中文 query 优先命中中文 chunk
-- 英文 query 优先命中英文 chunk
-- UI 能展示命中 chunk 的语言与命中原因
-- 作用域过滤正确：成员私有知识不会误串给其他成员
-
-### 回滚策略
-
-- 保留旧 embedding-only lane 作为 fallback
-- `languageAwareRetrieval=false` 时恢复旧检索策略
-
-## 阶段 4：成员工具能力成员化
+## 阶段 5：成员工具能力成员化
 
 ### 目标
 
@@ -493,7 +565,7 @@ final_score =
 
 - 关闭 `memberToolPolicy` 后回退为 runtimeMode 默认工具包
 
-## 阶段 5：持续蒸馏与自动更新闭环
+## 阶段 6：持续蒸馏与自动更新闭环
 
 ### 目标
 

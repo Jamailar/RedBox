@@ -36,6 +36,7 @@
 ## Coding And Change Rules
 
 - Preserve the local style of the file you touch. This repo mixes older and newer code; do not restyle unrelated sections.
+- Every self-contained small feature fix or bug fix must be committed immediately as its own Git commit once the code change and local verification are complete. Do not batch multiple unrelated small fixes into one commit unless the user explicitly asks for that.
 - The product name is `RedBox`. User-visible UI text, settings copy, documentation titles, bundle metadata, runtime labels, temp-file prefixes, local persistence paths, aliases, and internal identifiers should use `RedBox` / `redbox` consistently.
 - Do not introduce or reintroduce any legacy pre-rename product name anywhere in repo content unless the user explicitly asks for a one-time migration compatibility exception.
 - Prefer existing `window.ipcRenderer` helpers over direct `invoke()`/`listen()` usage in page code. If a new host channel is needed, add or extend the bridge instead of scattering raw channel strings.

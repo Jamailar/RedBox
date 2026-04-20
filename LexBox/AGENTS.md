@@ -65,6 +65,28 @@
   - runtime/tool layers enforce validation and safety
 - If a constraint is necessary, prefer typed state, explicit contracts, and narrow validation over brittle string matching on user messages.
 
+## Tool Governance Rules
+
+- Keep the top-level AI tool surface small and general-purpose. Default to these canonical tools:
+  - `bash` for read-only shell inspection
+  - `redbox_fs` for structured file access
+  - `app_cli` for app/business operations
+  - `redbox_editor` only for editor-native mutations
+- Do not add a new top-level tool when an existing canonical tool can express the job with a subcommand, action, scope, or typed payload.
+- Theme, template, layout, manuscript, profile, skill, MCP, runtime, and similar domain features must not become new top-level tools by default. They belong under `app_cli` or `redbox_editor`, and file reads/writes belong under `redbox_fs`.
+- Do not split one capability into multiple sibling tools just because the UI has multiple panels or the data lives in different files. UI structure is not a valid reason to create more AI tools.
+- Prefer one generic file tool over many domain-specific read/list/search tools. If the only difference is scope, path root, or file kind, model it as parameters on `redbox_fs` instead of a new tool.
+- Prefer one generic app command surface over many domain-specific action tools. If the capability routes to existing host commands, expose it as a namespaced `app_cli` command instead of a new top-level tool.
+- Compatibility aliases are temporary migration shims, not product surface. Do not expose new aliases in prompts, skills, or runtime packs, and remove old aliases once callers migrate.
+- Skill `allowedTools` should reference canonical tool names only. Do not pin skills to temporary aliases or narrowly-scoped domain tools unless there is a hard runtime boundary that cannot be represented by the canonical set.
+- Tool packs must stay minimal. A runtime should receive the fewest tools needed for that mode; diagnostics may inspect more, but diagnostics breadth must not leak into normal runtime packs.
+- Before introducing any new tool or action family, document why `bash`, `redbox_fs`, `app_cli`, or `redbox_editor` cannot represent it safely and clearly. Without that proof, do not add the new surface.
+- When a capability looks fragmented, fix the abstraction first:
+  - merge top-level tools before adding more prompts or skills
+  - merge domain-specific file tools into `redbox_fs`
+  - merge domain-specific host tools into `app_cli`
+  - keep editor-only protocol inside `redbox_editor`
+
 ## State, Loading, And Lock Rules
 
 - Existing visible data must not be replaced by a blocking loading screen just because a refresh starts.

@@ -15,6 +15,7 @@
 - [architecture/system-overview.md](/Users/Jam/LocalDev/GitHub/RedConvert/LexBox/docs/architecture/system-overview.md)
 - [migration-architecture.md](/Users/Jam/LocalDev/GitHub/RedConvert/LexBox/docs/migration-architecture.md)
 - [ai-runtime-maintenance-overview.md](/Users/Jam/LocalDev/GitHub/RedConvert/LexBox/docs/ai-runtime-maintenance-overview.md)
+- [agent-collaboration-upgrade-plan.md](/Users/Jam/LocalDev/GitHub/RedConvert/LexBox/docs/agent-collaboration-upgrade-plan.md)
 - [skill-runtime-v2.md](/Users/Jam/LocalDev/GitHub/RedConvert/LexBox/docs/skill-runtime-v2.md)
 
 ### Development

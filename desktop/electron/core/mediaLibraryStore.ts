@@ -140,6 +140,37 @@ function sanitizeImportedFileBaseName(fileName: string): string {
   return normalizedBase || `asset_${Date.now()}`;
 }
 
+function parseDataUrl(value: string): { mimeType: string; buffer: Buffer } | null {
+  const match = String(value || '').match(/^data:([^;]+);base64,(.+)$/i);
+  if (!match) return null;
+  return {
+    mimeType: String(match[1] || 'application/octet-stream').toLowerCase(),
+    buffer: Buffer.from(String(match[2] || ''), 'base64'),
+  };
+}
+
+function inferFileNameBase(input: { title?: string; source?: string }, fallbackPrefix = 'asset'): string {
+  const title = String(input.title || '').trim();
+  if (title) {
+    return sanitizeImportedFileBaseName(title);
+  }
+
+  const source = String(input.source || '').trim();
+  if (source) {
+    try {
+      const url = new URL(source);
+      const lastSegment = decodeURIComponent(url.pathname.split('/').filter(Boolean).pop() || '').trim();
+      if (lastSegment) {
+        return sanitizeImportedFileBaseName(path.basename(lastSegment, path.extname(lastSegment)));
+      }
+    } catch {
+      // ignore invalid URL parsing
+    }
+  }
+
+  return `${fallbackPrefix}_${Date.now()}`;
+}
+
 async function updateManuscriptBinding(
   manuscriptPath: string,
   asset: MediaAsset,
@@ -509,6 +540,70 @@ export async function importMediaFiles(filePaths: string[]): Promise<MediaAsset[
       source: 'imported',
       title: path.basename(sourceName, ext) || safeBaseName,
       mimeType,
+      relativePath,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
+    catalog.assets.push(asset);
+    imported.push(asset);
+  }
+
+  if (imported.length > 0) {
+    await writeCatalog(catalog);
+  }
+
+  return imported;
+}
+
+export async function importMediaSources(items: Array<{ title?: string; source: string }>): Promise<MediaAsset[]> {
+  await ensureMediaDirs();
+  const catalog = await readCatalog();
+  const imported: MediaAsset[] = [];
+
+  for (const item of items) {
+    const source = String(item?.source || '').trim();
+    if (!source) continue;
+
+    let buffer: Buffer | null = null;
+    let mimeType = 'application/octet-stream';
+
+    const dataUrl = parseDataUrl(source);
+    if (dataUrl) {
+      buffer = dataUrl.buffer;
+      mimeType = dataUrl.mimeType;
+    } else if (/^https?:\/\//i.test(source)) {
+      const response = await fetch(source, {
+        headers: {
+          'Accept': '*/*',
+        },
+      });
+      if (!response.ok) {
+        throw new Error(`Failed to fetch media source: ${response.status} ${response.statusText}`);
+      }
+      buffer = Buffer.from(await response.arrayBuffer());
+      mimeType = String(response.headers.get('content-type') || '').split(';')[0].trim().toLowerCase() || guessMimeTypeByExtension(source);
+    } else {
+      throw new Error(`Unsupported media source: ${source.slice(0, 80)}`);
+    }
+
+    if (!buffer || buffer.length === 0) {
+      throw new Error('Empty media source payload');
+    }
+
+    const assetId = `media_${Date.now()}_${randomUUID().slice(0, 8)}`;
+    const ext = extByMime(mimeType || guessMimeTypeByExtension(source));
+    const baseName = inferFileNameBase(item, 'imported');
+    const targetFileName = `${assetId}_${baseName}.${ext}`;
+    const relativePath = normalizePathForStore(path.join('imported', targetFileName));
+    const absolutePath = path.join(getMediaRootDir(), relativePath);
+    await fs.writeFile(absolutePath, buffer);
+
+    const timestamp = nowIso();
+    const asset: MediaAsset = {
+      id: assetId,
+      source: 'imported',
+      title: String(item?.title || '').trim() || baseName,
+      mimeType: mimeType || guessMimeTypeByExtension(targetFileName),
       relativePath,
       createdAt: timestamp,
       updatedAt: timestamp,

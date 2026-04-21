@@ -14,10 +14,12 @@ interface Note { type?: string; sourceUrl?: string;
     id: string;
     title: string;
     author: string;
+    authorProfileUrl?: string;
     content: string;
     excerpt?: string;
     siteName?: string;
     captureKind?: string;
+    publishedAt?: string;
     htmlFile?: string;
     htmlFileUrl?: string;
     images: string[];
@@ -27,9 +29,19 @@ interface Note { type?: string; sourceUrl?: string;
     videoUrl?: string;
     transcript?: string;
     transcriptionStatus?: 'processing' | 'completed' | 'failed';
+    commentsSnapshot?: Array<{
+        author?: string;
+        text?: string;
+        likes?: number;
+        replies?: number;
+        createdAt?: string;
+        location?: string;
+    }>;
     stats: {
         likes: number;
         collects?: number;
+        comments?: number;
+        shares?: number;
     };
     createdAt: string;
     folderPath?: string;
@@ -51,7 +63,7 @@ interface YouTubeVideo {
     folderPath?: string;
 }
 
-type KnowledgeTypeFilter = 'all' | 'xhs-image' | 'xhs-video' | 'link-article' | 'wechat-article' | 'youtube' | 'docs';
+type KnowledgeTypeFilter = 'all' | 'xhs-image' | 'xhs-video' | 'douyin-video' | 'link-article' | 'wechat-article' | 'youtube' | 'docs';
 
 interface DocumentKnowledgeSource {
     id: string;
@@ -435,6 +447,7 @@ export function Knowledge({ onNavigateToChat, onNavigateToRedClaw, isEmbedded = 
     const getNoteContextType = useCallback((note: Note): string => {
         if (note.captureKind === 'wechat-article') return 'wechat-article';
         if (note.type === 'link-article') return 'link-article';
+        if (note.type === 'douyin-video') return 'douyin_video';
         if (note.video) return 'xiaohongshu_video';
         return 'xiaohongshu_note';
     }, []);
@@ -621,13 +634,15 @@ export function Knowledge({ onNavigateToChat, onNavigateToRedClaw, isEmbedded = 
     const knowledgeItems = useMemo<KnowledgeCardItem[]>(() => {
         const noteItems: KnowledgeCardItem[] = notes.map((note) => {
             const orderedImages = orderImages(note.images || []);
-            const kind: KnowledgeCardItem['kind'] = (note.type === 'link-article' || note.type === 'text')
-                ? note.captureKind === 'wechat-article'
-                    ? 'wechat-article'
-                    : 'link-article'
-                : note.video
-                    ? 'xhs-video'
-                    : 'xhs-image';
+            const kind: KnowledgeCardItem['kind'] = note.type === 'douyin-video'
+                ? 'douyin-video'
+                : (note.type === 'link-article' || note.type === 'text')
+                    ? note.captureKind === 'wechat-article'
+                        ? 'wechat-article'
+                        : 'link-article'
+                    : note.video
+                        ? 'xhs-video'
+                        : 'xhs-image';
 
             return {
                 id: note.id,
@@ -639,9 +654,11 @@ export function Knowledge({ onNavigateToChat, onNavigateToRedClaw, isEmbedded = 
                     note.title,
                     note.author,
                     note.siteName,
+                    note.publishedAt,
                     note.excerpt,
                     note.content,
                     note.sourceUrl,
+                    ...(Array.isArray(note.commentsSnapshot) ? note.commentsSnapshot.flatMap((item) => [item?.author, item?.text, item?.location]) : []),
                     ...(note.tags || []),
                 ].join('\n').toLowerCase(),
                 cover: note.cover || orderedImages[0] || note.video || '',
@@ -680,6 +697,7 @@ export function Knowledge({ onNavigateToChat, onNavigateToRedClaw, isEmbedded = 
         const counts: Record<Exclude<KnowledgeTypeFilter, 'all'>, number> = {
             'xhs-image': 0,
             'xhs-video': 0,
+            'douyin-video': 0,
             'link-article': 0,
             'wechat-article': 0,
             'youtube': 0,
@@ -692,6 +710,7 @@ export function Knowledge({ onNavigateToChat, onNavigateToRedClaw, isEmbedded = 
             { key: 'all' as const, label: '全部', count: knowledgeItems.length },
             { key: 'xhs-image' as const, label: '小红书图文', count: counts['xhs-image'] },
             { key: 'xhs-video' as const, label: '小红书视频', count: counts['xhs-video'] },
+            { key: 'douyin-video' as const, label: '抖音视频', count: counts['douyin-video'] },
             { key: 'link-article' as const, label: '链接文章', count: counts['link-article'] },
             ...(SHOW_WECHAT_KNOWLEDGE_ACTIONS ? [{ key: 'wechat-article' as const, label: '公众号文章', count: counts['wechat-article'] }] : []),
             { key: 'youtube' as const, label: 'YouTube', count: counts.youtube },
@@ -1051,6 +1070,8 @@ export function Knowledge({ onNavigateToChat, onNavigateToRedClaw, isEmbedded = 
                 return '小红书图文';
             case 'xhs-video':
                 return '小红书视频';
+            case 'douyin-video':
+                return '抖音视频';
             case 'link-article':
                 return '链接文章';
             case 'wechat-article':
@@ -1070,6 +1091,8 @@ export function Knowledge({ onNavigateToChat, onNavigateToRedClaw, isEmbedded = 
                 return 'bg-rose-500/90 text-white';
             case 'xhs-video':
                 return 'bg-red-500/90 text-white';
+            case 'douyin-video':
+                return 'bg-neutral-900/90 text-white';
             case 'link-article':
                 return 'bg-sky-500/90 text-white';
             case 'wechat-article':
@@ -1113,6 +1136,48 @@ export function Knowledge({ onNavigateToChat, onNavigateToRedClaw, isEmbedded = 
                 <pre className="text-sm text-text-primary whitespace-pre-wrap font-sans leading-relaxed">
                     {note.content}
                 </pre>
+            </div>
+        );
+    };
+
+    const renderCommentSnapshot = (note: Note, compact = false) => {
+        const comments = Array.isArray(note.commentsSnapshot)
+            ? note.commentsSnapshot.filter((item) => item?.author || item?.text)
+            : [];
+        if (comments.length === 0) return null;
+
+        return (
+            <div className="bg-surface-secondary/50 rounded-lg border border-border overflow-hidden">
+                <div className={clsx('border-b border-border font-semibold text-text-primary', compact ? 'px-3 py-2 text-xs' : 'px-4 py-3 text-sm')}>
+                    评论快照
+                </div>
+                <div className={clsx('space-y-3', compact ? 'p-3' : 'p-4')}>
+                    {comments.map((comment, index) => {
+                        const meta = [
+                            comment.author,
+                            comment.location,
+                            comment.createdAt,
+                        ].filter(Boolean).join(' · ');
+                        return (
+                            <div key={`${comment.author || 'comment'}-${index}`} className="rounded-lg border border-border/70 bg-surface-primary/70 p-3">
+                                {meta && (
+                                    <div className={clsx('mb-1 font-medium text-text-primary', compact ? 'text-[11px]' : 'text-xs')}>
+                                        {meta}
+                                    </div>
+                                )}
+                                <div className={clsx('whitespace-pre-wrap text-text-secondary', compact ? 'text-[11px] leading-relaxed' : 'text-sm leading-relaxed')}>
+                                    {comment.text}
+                                </div>
+                                {(comment.likes || comment.replies) ? (
+                                    <div className={clsx('mt-2 flex items-center gap-3 text-text-tertiary', compact ? 'text-[10px]' : 'text-xs')}>
+                                        {comment.likes ? <span>点赞 {comment.likes}</span> : null}
+                                        {comment.replies ? <span>回复 {comment.replies}</span> : null}
+                                    </div>
+                                ) : null}
+                            </div>
+                        );
+                    })}
+                </div>
             </div>
         );
     };
@@ -1166,6 +1231,29 @@ export function Knowledge({ onNavigateToChat, onNavigateToRedClaw, isEmbedded = 
                 </div>
 
                 <h1 className="text-xl font-bold text-text-primary mb-2">{selectedNote.title}</h1>
+                <div className="flex flex-wrap items-center gap-3 mb-4 text-xs text-text-tertiary">
+                    <span>作者: {selectedNote.author}</span>
+                    {selectedNote.siteName && <span>{selectedNote.siteName}</span>}
+                    {selectedNote.publishedAt && <span>发布时间: {selectedNote.publishedAt}</span>}
+                    <span className="flex items-center gap-1">
+                        <Heart className="w-3 h-3" /> {selectedNote.stats?.likes || 0}
+                    </span>
+                    {typeof selectedNote.stats?.comments === 'number' && (
+                        <span className="flex items-center gap-1">
+                            <MessageCircle className="w-3 h-3" /> {selectedNote.stats.comments}
+                        </span>
+                    )}
+                    {typeof selectedNote.stats?.collects === 'number' && (
+                        <span className="flex items-center gap-1">
+                            <Star className="w-3 h-3" /> {selectedNote.stats.collects}
+                        </span>
+                    )}
+                    {typeof selectedNote.stats?.shares === 'number' && (
+                        <span className="flex items-center gap-1">
+                            <ExternalLink className="w-3 h-3" /> {selectedNote.stats.shares}
+                        </span>
+                    )}
+                </div>
                 
                 {selectedNote.video && (
                     <div className="relative mx-auto w-full mb-4">
@@ -1221,6 +1309,8 @@ export function Knowledge({ onNavigateToChat, onNavigateToRedClaw, isEmbedded = 
                 <div className="whitespace-pre-wrap text-sm text-text-secondary font-sans leading-relaxed mb-4">
                     {selectedNote.content}
                 </div>
+
+                {renderCommentSnapshot(selectedNote, true)}
 
                 {selectedNote.video && selectedNote.transcript && (
                     <div className="bg-surface-secondary/50 rounded-lg border border-border overflow-hidden">
@@ -1910,12 +2000,25 @@ export function Knowledge({ onNavigateToChat, onNavigateToRedClaw, isEmbedded = 
                                     {selectedNote.siteName && (
                                         <span>{selectedNote.siteName}</span>
                                     )}
+                                    {selectedNote.publishedAt && (
+                                        <span>发布时间: {selectedNote.publishedAt}</span>
+                                    )}
                                     <span className="flex items-center gap-1">
                                         <Heart className="w-3 h-3" /> {selectedNote.stats?.likes || 0}
                                     </span>
+                                    {typeof selectedNote.stats?.comments === 'number' && (
+                                        <span className="flex items-center gap-1">
+                                            <MessageCircle className="w-3 h-3" /> {selectedNote.stats.comments}
+                                        </span>
+                                    )}
                                     {typeof selectedNote.stats?.collects === 'number' && (
                                         <span className="flex items-center gap-1">
                                             <Star className="w-3 h-3" /> {selectedNote.stats.collects}
+                                        </span>
+                                    )}
+                                    {typeof selectedNote.stats?.shares === 'number' && (
+                                        <span className="flex items-center gap-1">
+                                            <ExternalLink className="w-3 h-3" /> {selectedNote.stats.shares}
                                         </span>
                                     )}
                                 </div>
@@ -1926,7 +2029,21 @@ export function Knowledge({ onNavigateToChat, onNavigateToRedClaw, isEmbedded = 
                                         selectedNote.id,
                                         getNoteContextType(selectedNote),
                                         selectedNote.title,
-                                        selectedNote.content + (selectedNote.transcript ? `\n\nVideo Transcript:\n${selectedNote.transcript}` : '')
+                                        [
+                                            selectedNote.content,
+                                            selectedNote.publishedAt ? `发布时间：${selectedNote.publishedAt}` : '',
+                                            Array.isArray(selectedNote.commentsSnapshot) && selectedNote.commentsSnapshot.length > 0
+                                                ? `评论快照：\n${selectedNote.commentsSnapshot.map((item, index) => {
+                                                    const meta = [
+                                                        item.author,
+                                                        item.location,
+                                                        item.createdAt,
+                                                    ].filter(Boolean).join(' · ');
+                                                    return `${index + 1}. ${meta}\n${item.text || ''}`;
+                                                }).join('\n\n')}`
+                                                : '',
+                                            selectedNote.transcript ? `Video Transcript:\n${selectedNote.transcript}` : '',
+                                        ].filter(Boolean).join('\n\n')
                                     )}
                                     className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-text-primary bg-surface-secondary border border-border rounded-lg hover:bg-surface-hover transition-all"
                                 >
@@ -2045,6 +2162,8 @@ export function Knowledge({ onNavigateToChat, onNavigateToRedClaw, isEmbedded = 
                                     />
                                 </div>
                             ) : renderNoteBody(selectedNote)}
+
+                            {renderCommentSnapshot(selectedNote)}
 
                             {selectedNote.video && selectedNote.transcript && (
                                 <div className="bg-surface-secondary/50 rounded-lg border border-border overflow-hidden">

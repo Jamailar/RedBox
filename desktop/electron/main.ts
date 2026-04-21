@@ -89,6 +89,7 @@ import {
   updateMediaAssetMetadata,
   deleteMediaAsset,
   importMediaFiles,
+  importMediaSources,
   getAbsoluteMediaPath,
   type MediaAsset,
 } from './core/mediaLibraryStore';
@@ -9241,6 +9242,476 @@ const localizeGenericArticleHtml = async (
   }
 };
 
+type KnowledgeEntryPayload = {
+  kind?: string;
+  source?: {
+    sourceLink?: string;
+    sourceUrl?: string;
+    sourceDomain?: string;
+    externalId?: string;
+  };
+  content?: {
+    title?: string;
+    text?: string;
+    excerpt?: string;
+    description?: string;
+    html?: string;
+    indexText?: string;
+    author?: string;
+    authorProfileUrl?: string;
+    siteName?: string;
+    tags?: string[];
+    publishedAt?: string;
+    commentsSnapshot?: Array<{
+      author?: string;
+      text?: string;
+      likes?: number;
+      replies?: number;
+      createdAt?: string;
+      location?: string;
+    }>;
+    stats?: {
+      likes?: number;
+      collects?: number;
+      comments?: number;
+      shares?: number;
+    };
+  };
+  assets?: {
+    coverUrl?: string;
+    imageUrls?: string[];
+    videoUrl?: string;
+    thumbnailUrl?: string;
+  };
+  options?: {
+    allowUpdate?: boolean;
+    transcribe?: boolean;
+  };
+};
+
+function extByMimeLoose(mimeType: string, fallback = 'bin'): string {
+  const lower = String(mimeType || '').toLowerCase();
+  if (lower.includes('jpeg') || lower.includes('jpg')) return 'jpg';
+  if (lower.includes('png')) return 'png';
+  if (lower.includes('webp')) return 'webp';
+  if (lower.includes('gif')) return 'gif';
+  if (lower.includes('bmp')) return 'bmp';
+  if (lower.includes('svg')) return 'svg';
+  if (lower.includes('mp4')) return 'mp4';
+  if (lower.includes('webm')) return 'webm';
+  if (lower.includes('quicktime') || lower.includes('mov')) return 'mov';
+  if (lower.includes('mpeg')) return 'mp3';
+  if (lower.includes('wav')) return 'wav';
+  return fallback;
+}
+
+function decodeBase64DataUrl(raw: string): { mimeType: string; buffer: Buffer } | null {
+  const match = String(raw || '').trim().match(/^data:([^;]+);base64,(.+)$/i);
+  if (!match) return null;
+  return {
+    mimeType: String(match[1] || 'application/octet-stream').toLowerCase(),
+    buffer: Buffer.from(String(match[2] || ''), 'base64'),
+  };
+}
+
+function inferExtensionFromUrl(raw: string, fallback = 'bin'): string {
+  try {
+    const pathname = new URL(String(raw || '').trim()).pathname || '';
+    const ext = path.extname(pathname).replace(/^\./, '').trim().toLowerCase();
+    return ext || fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function ensureFileNameWithExtension(fileName: string, ext: string): string {
+  const normalized = String(fileName || '').trim();
+  if (!normalized) {
+    return `asset.${ext}`;
+  }
+  if (path.extname(normalized)) {
+    return normalized;
+  }
+  return `${normalized}.${ext}`;
+}
+
+function sanitizeKnowledgeEntryId(raw: string, fallbackPrefix: string): string {
+  const normalized = String(raw || '').trim();
+  if (!normalized) {
+    return `${fallbackPrefix}_${Date.now()}`;
+  }
+  const sanitized = normalized
+    .normalize('NFKD')
+    .replace(/[^\w\-.一-龥]+/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_+|_+$/g, '');
+  return sanitized || `${fallbackPrefix}_${Date.now()}`;
+}
+
+function countTruthyDirectoryEntries(entries: Array<string | fsSync.Dirent>): number {
+  return entries.filter(Boolean).length;
+}
+
+function createKnowledgeAssetPersister(noteDir: string) {
+  const persistedBySource = new Map<string, string>();
+  let nextImageIndex = 0;
+
+  const persistAsset = async (input: {
+    source: string;
+    preferredName?: string;
+    kind: 'image' | 'video';
+  }): Promise<string> => {
+    const source = String(input.source || '').trim();
+    if (!source) return '';
+    if (persistedBySource.has(source)) {
+      return persistedBySource.get(source) || '';
+    }
+
+    const targetDir = input.kind === 'image' ? path.join(noteDir, 'images') : noteDir;
+    await fs.mkdir(targetDir, { recursive: true });
+
+    const decoded = decodeBase64DataUrl(source);
+    const fallbackExt = input.kind === 'image'
+      ? 'jpg'
+      : 'mp4';
+    const ext = decoded
+      ? extByMimeLoose(decoded.mimeType, fallbackExt)
+      : inferExtensionFromUrl(source, fallbackExt);
+    const defaultFileName = input.kind === 'image'
+      ? `${nextImageIndex++}.${ext}`
+      : `video.${ext}`;
+    const fileName = ensureFileNameWithExtension(input.preferredName || defaultFileName, ext);
+    const outputPath = path.join(targetDir, fileName);
+
+    if (decoded) {
+      await fs.writeFile(outputPath, decoded.buffer);
+    } else if (/^https?:\/\//i.test(source)) {
+      if (input.kind === 'image') {
+        await downloadImageToFile(source, outputPath);
+      } else {
+        await downloadFile(source, outputPath);
+      }
+    } else {
+      return '';
+    }
+
+    const relativePath = path.relative(noteDir, outputPath).replace(/\\/g, '/');
+    persistedBySource.set(source, relativePath);
+    return relativePath;
+  };
+
+  return {
+    persistImage: async (source: string, preferredName?: string) => {
+      return persistAsset({ source, preferredName, kind: 'image' });
+    },
+    persistVideo: async (source: string, preferredName?: string) => {
+      return persistAsset({ source, preferredName, kind: 'video' });
+    },
+  };
+}
+
+async function queueKnowledgeVideoTranscription(input: {
+  noteId: string;
+  noteDir: string;
+  metaPath: string;
+  meta: Record<string, any>;
+}) {
+  if (!input?.meta?.video) {
+    return;
+  }
+
+  const noteId = String(input.noteId || '').trim();
+  const noteDir = input.noteDir;
+  const metaPath = input.metaPath;
+  const meta = input.meta;
+
+  (async () => {
+    const videoPath = path.join(noteDir, String(meta.video));
+    const transcriptResult = await transcribeVideoToText(videoPath);
+    const transcript = transcriptResult.text;
+    if (transcript) {
+      meta.transcript = transcript;
+      meta.transcriptFile = 'transcript.txt';
+      meta.transcriptionStatus = 'completed';
+      await fs.writeFile(path.join(noteDir, meta.transcriptFile), transcript);
+      await fs.writeFile(metaPath, JSON.stringify(meta, null, 2));
+      indexManager.addToQueue(normalizeVideo(
+        noteId,
+        meta,
+        transcript,
+        'user'
+      ));
+      win?.webContents.send('knowledge:note-updated', { noteId, hasTranscript: true, transcriptionStatus: 'completed' });
+    } else if (transcriptResult.error) {
+      meta.transcriptionStatus = 'failed';
+      await fs.writeFile(metaPath, JSON.stringify(meta, null, 2));
+      console.warn(`[Transcription] Skipped background transcript for ${noteId}: ${transcriptResult.error}`);
+      win?.webContents.send('knowledge:note-updated', { noteId, hasTranscript: false, transcriptionStatus: 'failed' });
+    }
+  })().catch((err) => {
+    console.error('Failed to transcribe video:', err);
+    meta.transcriptionStatus = 'failed';
+    fs.writeFile(metaPath, JSON.stringify(meta, null, 2)).catch(() => {});
+    win?.webContents.send('knowledge:note-updated', { noteId, hasTranscript: false, transcriptionStatus: 'failed' });
+  });
+}
+
+async function persistStructuredKnowledgeNote(input: {
+  noteId: string;
+  kind: string;
+  title: string;
+  content: string;
+  indexText?: string;
+  sourceUrl?: string;
+  siteName?: string;
+  author?: string;
+  authorProfileUrl?: string;
+  excerpt?: string;
+  tags?: string[];
+  publishedAt?: string;
+  commentsSnapshot?: Array<{
+    author?: string;
+    text?: string;
+    likes?: number;
+    replies?: number;
+    createdAt?: string;
+    location?: string;
+  }>;
+  stats?: { likes?: number; collects?: number; comments?: number; shares?: number };
+  coverUrl?: string;
+  imageUrls?: string[];
+  videoUrl?: string;
+  videoSourceUrl?: string;
+  html?: string;
+  allowUpdate?: boolean;
+  transcribe?: boolean;
+}): Promise<{ success: boolean; noteId?: string; duplicate?: boolean; updated?: boolean; error?: string }> {
+  const noteId = sanitizeKnowledgeEntryId(input.noteId, 'entry');
+  const noteDir = path.join(getKnowledgeRedbookDir(), noteId);
+  const metaPath = path.join(noteDir, 'meta.json');
+
+  try {
+    await fs.mkdir(noteDir, { recursive: true });
+
+    let existingMeta: Record<string, any> | null = null;
+    try {
+      existingMeta = JSON.parse(await fs.readFile(metaPath, 'utf-8'));
+    } catch {
+      existingMeta = null;
+    }
+
+    if (existingMeta && !input.allowUpdate) {
+      return { success: true, noteId, duplicate: true };
+    }
+
+    const { persistImage, persistVideo } = createKnowledgeAssetPersister(noteDir);
+    const meta: Record<string, any> = {
+      id: noteId,
+      type: input.kind || 'webpage',
+      title: input.title || existingMeta?.title || '未命名内容',
+      author: input.author || existingMeta?.author || '未知',
+      authorProfileUrl: input.authorProfileUrl || existingMeta?.authorProfileUrl || '',
+      content: input.content || '',
+      indexText: input.indexText || existingMeta?.indexText || input.content || '',
+      sourceUrl: input.sourceUrl || existingMeta?.sourceUrl || '',
+      siteName: input.siteName || existingMeta?.siteName || '',
+      excerpt: input.excerpt || buildExcerpt(input.content || '', 180),
+      publishedAt: input.publishedAt || existingMeta?.publishedAt || '',
+      stats: {
+        likes: Number(input.stats?.likes ?? existingMeta?.stats?.likes ?? 0),
+        collects: Number(input.stats?.collects ?? existingMeta?.stats?.collects ?? 0),
+        comments: Number(input.stats?.comments ?? existingMeta?.stats?.comments ?? 0),
+        shares: Number(input.stats?.shares ?? existingMeta?.stats?.shares ?? 0),
+      },
+      commentsSnapshot: Array.isArray(input.commentsSnapshot)
+        ? input.commentsSnapshot.filter((item) => item && (item.author || item.text))
+        : Array.isArray(existingMeta?.commentsSnapshot)
+          ? existingMeta.commentsSnapshot
+          : [],
+      images: [],
+      cover: '',
+      tags: Array.isArray(input.tags) ? input.tags.filter(Boolean) : [],
+      createdAt: String(existingMeta?.createdAt || new Date().toISOString()),
+      updatedAt: new Date().toISOString(),
+    };
+
+    if (typeof input.coverUrl === 'string' && input.coverUrl.trim()) {
+      try {
+        const coverPath = await persistImage(input.coverUrl.trim(), 'cover');
+        if (coverPath) {
+          meta.cover = coverPath;
+          meta.images.push(coverPath);
+        }
+      } catch (error) {
+        console.error('Failed to persist knowledge cover:', error);
+      }
+    }
+
+    if (Array.isArray(input.imageUrls)) {
+      for (const imageSource of input.imageUrls) {
+        try {
+          const imagePath = await persistImage(String(imageSource || '').trim());
+          if (imagePath && !meta.images.includes(imagePath)) {
+            meta.images.push(imagePath);
+          }
+        } catch (error) {
+          console.error('Failed to persist knowledge image:', error);
+        }
+      }
+    }
+
+    if (!meta.cover && meta.images.length > 0) {
+      meta.cover = meta.images[0];
+    }
+
+    if (typeof input.videoUrl === 'string' && input.videoUrl.trim()) {
+      try {
+        const videoPath = await persistVideo(input.videoUrl.trim(), 'video');
+        if (videoPath) {
+          const absoluteVideoPath = path.join(noteDir, videoPath);
+          await verifyVideoFileDecodable(absoluteVideoPath);
+          meta.video = videoPath;
+          meta.videoUrl = input.videoSourceUrl || input.videoUrl;
+          if (input.transcribe) {
+            meta.transcriptionStatus = 'processing';
+          }
+        }
+      } catch (error) {
+        console.error('Failed to persist knowledge video:', error);
+        if (input.transcribe) {
+          meta.transcriptionStatus = 'failed';
+        }
+      }
+    }
+
+    if (typeof input.html === 'string' && input.html.trim()) {
+      const htmlFile = 'content.html';
+      const localizedHtml = await localizeGenericArticleHtml(
+        input.html,
+        noteDir,
+        async (imageSource, preferredName) => {
+          const imagePath = await persistImage(imageSource, preferredName);
+          if (imagePath && !meta.images.includes(imagePath)) {
+            meta.images.push(imagePath);
+          }
+          return imagePath;
+        },
+      );
+      if (!meta.cover && meta.images.length > 0) {
+        meta.cover = meta.images[0];
+      }
+      await fs.writeFile(path.join(noteDir, htmlFile), localizedHtml, 'utf-8');
+      meta.htmlFile = htmlFile;
+    }
+
+    await fs.writeFile(metaPath, JSON.stringify(meta, null, 2));
+    await fs.writeFile(path.join(noteDir, 'content.md'), meta.content || '', 'utf-8');
+
+    indexManager.addToQueue(normalizeNote(noteId, meta, meta.indexText || meta.content || ''));
+    if (existingMeta) {
+      win?.webContents.send('knowledge:note-updated', { noteId, hasTranscript: Boolean(meta.transcript), transcriptionStatus: meta.transcriptionStatus });
+    } else {
+      win?.webContents.send('knowledge:new-note', { noteId, title: meta.title });
+    }
+    win?.webContents.send('knowledge-updated');
+
+    if (meta.video && input.transcribe) {
+      await queueKnowledgeVideoTranscription({
+        noteId,
+        noteDir,
+        metaPath,
+        meta,
+      });
+    }
+
+    return {
+      success: true,
+      noteId,
+      duplicate: false,
+      updated: Boolean(existingMeta),
+    };
+  } catch (error) {
+    console.error('Failed to persist structured knowledge note:', error);
+    return { success: false, error: String(error) };
+  }
+}
+
+async function persistKnowledgeEntry(entry: KnowledgeEntryPayload): Promise<{ success: boolean; entryId?: string; duplicate?: boolean; updated?: boolean; error?: string }> {
+  const kind = String(entry?.kind || '').trim();
+  const source = entry?.source || {};
+  const content = entry?.content || {};
+  const assets = entry?.assets || {};
+  const options = entry?.options || {};
+  const sourceLink = String(source?.sourceLink || source?.sourceUrl || '').trim();
+  const externalId = String(source?.externalId || '').trim();
+
+  if (kind === 'youtube-video') {
+    const videoUrl = String(sourceLink || '').trim();
+    const videoId = externalId || (() => {
+      try {
+        const parsed = new URL(videoUrl);
+        if (parsed.hostname === 'youtu.be') {
+          return parsed.pathname.split('/').filter(Boolean).pop() || '';
+        }
+        return parsed.searchParams.get('v') || '';
+      } catch {
+        return '';
+      }
+    })();
+    const result = await persistYoutubeNote({
+      videoId,
+      videoUrl,
+      title: String(content?.title || '').trim(),
+      description: String(content?.description || content?.text || '').trim(),
+      thumbnailUrl: String(assets?.thumbnailUrl || assets?.coverUrl || '').trim(),
+    });
+    return {
+      success: result.success,
+      entryId: result.noteId,
+      duplicate: result.duplicate,
+      updated: false,
+      error: result.error,
+    };
+  }
+
+  const rawVideoSource = String(assets?.videoUrl || '').trim();
+  const persistedVideoSource = rawVideoSource.startsWith('data:')
+    ? rawVideoSource
+    : rawVideoSource || '';
+
+  const result = await persistStructuredKnowledgeNote({
+    noteId: externalId || `${kind || 'entry'}_${Date.now()}`,
+    kind: kind || 'webpage',
+    title: String(content?.title || '').trim() || '未命名内容',
+    content: String(content?.text || content?.description || '').trim(),
+    indexText: String(content?.indexText || content?.text || content?.description || '').trim(),
+    sourceUrl: sourceLink,
+    siteName: String(content?.siteName || source?.sourceDomain || '').trim(),
+    author: String(content?.author || '').trim(),
+    authorProfileUrl: String(content?.authorProfileUrl || '').trim(),
+    excerpt: String(content?.excerpt || '').trim(),
+    tags: Array.isArray(content?.tags) ? content.tags.filter(Boolean) : [],
+    publishedAt: String(content?.publishedAt || '').trim(),
+    commentsSnapshot: Array.isArray(content?.commentsSnapshot) ? content.commentsSnapshot : [],
+    stats: content?.stats,
+    coverUrl: String(assets?.coverUrl || assets?.thumbnailUrl || '').trim(),
+    imageUrls: Array.isArray(assets?.imageUrls) ? assets.imageUrls.filter(Boolean) : [],
+    videoUrl: persistedVideoSource,
+    videoSourceUrl: rawVideoSource.startsWith('data:') ? sourceLink : rawVideoSource,
+    html: String(content?.html || '').trim(),
+    allowUpdate: Boolean(options?.allowUpdate),
+    transcribe: Boolean(options?.transcribe),
+  });
+
+  return {
+    success: result.success,
+    entryId: result.noteId,
+    duplicate: result.duplicate,
+    updated: result.updated,
+    error: result.error,
+  };
+}
+
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const fetchWithRetries = async (
@@ -10062,7 +10533,7 @@ ipcMain.handle('indexing:rebuild-all', async () => {
         indexManager.addToQueue(normalizeNote(
           dir.name,
           meta,
-          meta.content || meta.transcript || ''
+          meta.indexText || meta.content || meta.transcript || ''
         ));
       } catch {}
     }
@@ -10334,36 +10805,14 @@ async function persistXhsNote(note: any): Promise<{ success: boolean; noteId?: s
 
     indexManager.addToQueue(normalizeNote(noteId, meta, noteContent || ''));
     win?.webContents.send('knowledge:new-note', { noteId, title: meta.title });
+    win?.webContents.send('knowledge-updated');
 
     if (meta.video) {
-      (async () => {
-        const videoPath = path.join(noteDir, meta.video as string);
-        const transcriptResult = await transcribeVideoToText(videoPath);
-        const transcript = transcriptResult.text;
-        if (transcript) {
-          meta.transcript = transcript;
-          meta.transcriptFile = 'transcript.txt';
-          meta.transcriptionStatus = 'completed';
-          await fs.writeFile(path.join(noteDir, meta.transcriptFile), transcript);
-          await fs.writeFile(metaPath, JSON.stringify(meta, null, 2));
-          indexManager.addToQueue(normalizeVideo(
-            noteId,
-            meta,
-            transcript,
-            'user'
-          ));
-          win?.webContents.send('knowledge:note-updated', { noteId, hasTranscript: true, transcriptionStatus: 'completed' });
-        } else if (transcriptResult.error) {
-          meta.transcriptionStatus = 'failed';
-          await fs.writeFile(metaPath, JSON.stringify(meta, null, 2));
-          console.warn(`[Transcription] Skipped background transcript for ${noteId}: ${transcriptResult.error}`);
-          win?.webContents.send('knowledge:note-updated', { noteId, hasTranscript: false, transcriptionStatus: 'failed' });
-        }
-      })().catch((err) => {
-        console.error('Failed to transcribe video:', err);
-        meta.transcriptionStatus = 'failed';
-        fs.writeFile(metaPath, JSON.stringify(meta, null, 2)).catch(() => {});
-        win?.webContents.send('knowledge:note-updated', { noteId, hasTranscript: false, transcriptionStatus: 'failed' });
+      await queueKnowledgeVideoTranscription({
+        noteId,
+        noteDir,
+        metaPath,
+        meta,
       });
     }
 
@@ -10666,6 +11115,100 @@ function startHttpServer() {
     if (req.method === 'OPTIONS') {
       res.writeHead(204);
       res.end();
+      return;
+    }
+
+    if (req.method === 'GET' && req.url === '/api/knowledge/health') {
+      try {
+        await ensureKnowledgeRedbookDir();
+        await ensureKnowledgeYoutubeDir();
+        const [redbookDirs, youtubeDirs, mediaAssets] = await Promise.all([
+          fs.readdir(getKnowledgeRedbookDir(), { withFileTypes: true }).catch(() => []),
+          fs.readdir(getKnowledgeYoutubeDir(), { withFileTypes: true }).catch(() => []),
+          listMediaAssets(5000).catch(() => []),
+        ]);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          success: true,
+          status: 'ok',
+          app: 'RedConvert',
+          counts: {
+            redbook: countTruthyDirectoryEntries(redbookDirs.filter((entry: fsSync.Dirent) => entry.isDirectory())),
+            youtube: countTruthyDirectoryEntries(youtubeDirs.filter((entry: fsSync.Dirent) => entry.isDirectory())),
+            media: Array.isArray(mediaAssets) ? mediaAssets.length : 0,
+          },
+        }));
+      } catch (error) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, error: String(error) }));
+      }
+      return;
+    }
+
+    if (req.method === 'POST' && req.url === '/api/knowledge/entries') {
+      let body = '';
+      req.on('data', (chunk) => { body += chunk; });
+      req.on('end', async () => {
+        try {
+          const payload = JSON.parse(body || '{}') as KnowledgeEntryPayload;
+          const result = await persistKnowledgeEntry(payload);
+          if (!result.success) {
+            throw new Error(result.error || '保存失败');
+          }
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({
+            success: true,
+            entryId: result.entryId,
+            duplicate: Boolean(result.duplicate),
+            updated: Boolean(result.updated),
+          }));
+        } catch (error) {
+          console.error('Failed to persist knowledge entry:', error);
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ success: false, error: String(error) }));
+        }
+      });
+      return;
+    }
+
+    if (req.method === 'POST' && req.url === '/api/knowledge/media-assets') {
+      let body = '';
+      req.on('data', (chunk) => { body += chunk; });
+      req.on('end', async () => {
+        try {
+          const payload = JSON.parse(body || '{}') as {
+            items?: Array<{ title?: string; source?: string }>;
+          };
+          const items = Array.isArray(payload?.items)
+            ? payload.items
+                .map((item) => ({
+                  title: String(item?.title || '').trim(),
+                  source: String(item?.source || '').trim(),
+                }))
+                .filter((item) => item.source)
+            : [];
+          if (items.length === 0) {
+            throw new Error('items is required');
+          }
+          const imported = await importMediaSources(items);
+          emitRendererDataChanged('media', { action: 'import' });
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({
+            success: true,
+            imported: imported.length,
+            items: imported.map((asset) => ({
+              id: asset.id,
+              title: asset.title,
+              mimeType: asset.mimeType,
+              relativePath: asset.relativePath,
+            })),
+          }));
+        } catch (error) {
+          console.error('Failed to import media assets:', error);
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ success: false, error: String(error) }));
+        }
+      });
       return;
     }
 

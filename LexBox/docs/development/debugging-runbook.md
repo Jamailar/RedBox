@@ -38,6 +38,22 @@ Status: Current
 - 看 `src/runtime/runtimeEventStream.ts`
 - 检查 sessionId、taskId、runtimeId 是否正确传递
 
+### Runtime Perf Benchmark
+
+开发者模式开启后，可在 `Settings -> Tools -> AI Runtime 性能测试` 里直接跑真实 benchmark。
+
+推荐用法：
+
+1. 先跑 `延迟冒烟`，确认 `thinking` 和首个 `response` 的时间。
+2. 再跑 `工具探测`，确认 `tool-start / tool-end` 是否落地。
+3. 最后看单轮时间线，定位卡在 phase、tool 还是 checkpoint。
+
+这个模块会：
+
+- 为每轮测试创建独立 session，避免历史上下文污染。
+- 订阅统一 `runtime:event`，记录 phase、首 token、tool、checkpoint、done。
+- 回读 `runtime diagnostics summary / checkpoints / tool results`，补齐 prompt chars、skill 数和持久化结果。
+
 ## Video Problems
 
 - 先查 `src/components/manuscripts/`

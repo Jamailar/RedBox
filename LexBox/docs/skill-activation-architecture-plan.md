@@ -1,8 +1,8 @@
 ---
 doc_type: plan
-execution_status: not_started
+execution_status: in_progress
 last_updated: 2026-04-21
-execution_stage: architecture_defined
+execution_stage: catalog_activation_prompt_executor_in_progress
 owner: codex
 target_files:
   - src-tauri/src/skills/catalog.rs
@@ -42,6 +42,21 @@ success_metrics:
 - 技能激活是独立状态机。
 - prompt 注入只消费激活快照。
 - skill 执行拥有统一入口，并能把上下文修饰安全回流到运行时。
+
+## Execution Update
+
+截至 2026-04-21，以下基础重构已经落地：
+
+- `Skill Catalog` 基础层已拆出，builtin registry 不再散落在 persistence 内。
+- session 里的技能状态已升级为 typed `sessionSkillState`，业务层不再直接操纵裸 `metadata.activeSkills`。
+- `Skill Activation Engine` 与 `Prompt Assembly` 已分离，system prompt 入口改为消费 `ResolvedSkillSet` 和 `SkillPromptBundle`。
+- 显式 `skills invoke` 已下沉到独立 `executor`，命令层仅做路由、日志和响应包装。
+
+尚未完成的部分：
+
+- `conditional.rs` 的条件命中层
+- `discovery.rs` 的进一步目录发现收口
+- 删除兼容期 legacy shadow 后的最终清理
 
 ## Why Current Architecture Fails
 

@@ -240,6 +240,90 @@ let appShutdownInProgress = false;
 let appShutdownPromise: Promise<void> | null = null;
 const MANUSCRIPT_TREE_CACHE_TTL_MS = 4000;
 const manuscriptTreeCache = new Map<string, { tree: unknown[]; generatedAt: number }>();
+type EditorRuntimeStateRecord = {
+  filePath: string;
+  sessionId?: string;
+  playheadSeconds: number;
+  selectedClipId?: string;
+  selectedClipIds?: unknown;
+  activeTrackId?: string;
+  selectedTrackIds?: unknown;
+  selectedSceneId?: string;
+  previewTab?: string;
+  canvasRatioPreset?: string;
+  activePanel?: string;
+  drawerPanel?: string;
+  sceneItemTransforms?: unknown;
+  sceneItemVisibility?: unknown;
+  sceneItemOrder?: unknown;
+  sceneItemLocks?: unknown;
+  sceneItemGroups?: unknown;
+  focusedGroupId?: string;
+  trackUi?: unknown;
+  viewportScrollLeft: number;
+  viewportMaxScrollLeft: number;
+  viewportScrollTop: number;
+  viewportMaxScrollTop: number;
+  timelineZoomPercent: number;
+  undoStack: unknown[];
+  redoStack: unknown[];
+  updatedAt: number;
+};
+const editorRuntimeStates = new Map<string, EditorRuntimeStateRecord>();
+
+function nowMs() {
+  return Date.now();
+}
+
+function buildEmptyEditorRuntimeState(filePath: string): EditorRuntimeStateRecord {
+  return {
+    filePath,
+    playheadSeconds: 0,
+    viewportScrollLeft: 0,
+    viewportMaxScrollLeft: 0,
+    viewportScrollTop: 0,
+    viewportMaxScrollTop: 0,
+    timelineZoomPercent: 100,
+    selectedClipIds: [],
+    selectedTrackIds: [],
+    undoStack: [],
+    redoStack: [],
+    updatedAt: nowMs(),
+  };
+}
+
+function serializeEditorRuntimeState(filePath: string) {
+  const state = editorRuntimeStates.get(filePath) || buildEmptyEditorRuntimeState(filePath);
+  return {
+    filePath: state.filePath,
+    sessionId: state.sessionId ?? null,
+    playheadSeconds: state.playheadSeconds,
+    selectedClipId: state.selectedClipId ?? null,
+    selectedClipIds: state.selectedClipIds ?? [],
+    activeTrackId: state.activeTrackId ?? null,
+    selectedTrackIds: state.selectedTrackIds ?? [],
+    selectedSceneId: state.selectedSceneId ?? null,
+    previewTab: state.previewTab ?? null,
+    canvasRatioPreset: state.canvasRatioPreset ?? null,
+    activePanel: state.activePanel ?? null,
+    drawerPanel: state.drawerPanel ?? null,
+    sceneItemTransforms: state.sceneItemTransforms ?? null,
+    sceneItemVisibility: state.sceneItemVisibility ?? null,
+    sceneItemOrder: state.sceneItemOrder ?? null,
+    sceneItemLocks: state.sceneItemLocks ?? null,
+    sceneItemGroups: state.sceneItemGroups ?? null,
+    focusedGroupId: state.focusedGroupId ?? null,
+    trackUi: state.trackUi ?? null,
+    viewportScrollLeft: state.viewportScrollLeft,
+    viewportMaxScrollLeft: state.viewportMaxScrollLeft,
+    viewportScrollTop: state.viewportScrollTop,
+    viewportMaxScrollTop: state.viewportMaxScrollTop,
+    timelineZoomPercent: state.timelineZoomPercent,
+    canUndo: state.undoStack.length > 0,
+    canRedo: state.redoStack.length > 0,
+    updatedAt: state.updatedAt,
+  };
+}
 
 function emitRendererDataChanged(scope: string, payload: Record<string, unknown> = {}) {
   for (const browserWindow of BrowserWindow.getAllWindows()) {
@@ -7484,6 +7568,115 @@ ipcMain.handle('manuscripts:get-package-state', async (_, filePath: string) => {
     console.error('Failed to get manuscript package state:', error);
     return { success: false, error: error instanceof Error ? error.message : String(error) };
   }
+});
+
+ipcMain.handle('manuscripts:get-editor-runtime-state', async (_, payload?: string | { filePath?: string }) => {
+  const filePath = typeof payload === 'string'
+    ? payload.trim()
+    : String(payload?.filePath || '').trim();
+  if (!filePath) {
+    return { success: false, error: 'filePath is required' };
+  }
+  return {
+    success: true,
+    state: serializeEditorRuntimeState(filePath),
+  };
+});
+
+ipcMain.handle('manuscripts:update-editor-runtime-state', async (_, payload?: {
+  filePath?: string;
+  sessionId?: string;
+  playheadSeconds?: number;
+  selectedClipId?: string;
+  selectedClipIds?: unknown;
+  activeTrackId?: string;
+  selectedTrackIds?: unknown;
+  selectedSceneId?: string;
+  previewTab?: string;
+  canvasRatioPreset?: string;
+  activePanel?: string;
+  drawerPanel?: string;
+  sceneItemTransforms?: unknown;
+  sceneItemVisibility?: unknown;
+  sceneItemOrder?: unknown;
+  sceneItemLocks?: unknown;
+  sceneItemGroups?: unknown;
+  focusedGroupId?: string;
+  trackUi?: unknown;
+  viewportScrollLeft?: number;
+  viewportMaxScrollLeft?: number;
+  viewportScrollTop?: number;
+  viewportMaxScrollTop?: number;
+  timelineZoomPercent?: number;
+}) => {
+  const filePath = String(payload?.filePath || '').trim();
+  if (!filePath) {
+    return { success: false, error: 'filePath is required' };
+  }
+
+  const previous = editorRuntimeStates.get(filePath) || buildEmptyEditorRuntimeState(filePath);
+  const next: EditorRuntimeStateRecord = {
+    ...previous,
+    filePath,
+    sessionId: String(payload?.sessionId || '').trim() || undefined,
+    playheadSeconds: Number.isFinite(Number(payload?.playheadSeconds))
+      ? Number(payload?.playheadSeconds)
+      : previous.playheadSeconds,
+    selectedClipId: String(payload?.selectedClipId || '').trim() || undefined,
+    selectedClipIds: payload && Object.prototype.hasOwnProperty.call(payload, 'selectedClipIds')
+      ? payload.selectedClipIds
+      : previous.selectedClipIds,
+    activeTrackId: String(payload?.activeTrackId || '').trim() || undefined,
+    selectedTrackIds: payload && Object.prototype.hasOwnProperty.call(payload, 'selectedTrackIds')
+      ? payload.selectedTrackIds
+      : previous.selectedTrackIds,
+    selectedSceneId: String(payload?.selectedSceneId || '').trim() || undefined,
+    previewTab: String(payload?.previewTab || '').trim() || undefined,
+    canvasRatioPreset: String(payload?.canvasRatioPreset || '').trim() || undefined,
+    activePanel: String(payload?.activePanel || '').trim() || undefined,
+    drawerPanel: String(payload?.drawerPanel || '').trim() || undefined,
+    sceneItemTransforms: payload && Object.prototype.hasOwnProperty.call(payload, 'sceneItemTransforms')
+      ? payload.sceneItemTransforms
+      : previous.sceneItemTransforms,
+    sceneItemVisibility: payload && Object.prototype.hasOwnProperty.call(payload, 'sceneItemVisibility')
+      ? payload.sceneItemVisibility
+      : previous.sceneItemVisibility,
+    sceneItemOrder: payload && Object.prototype.hasOwnProperty.call(payload, 'sceneItemOrder')
+      ? payload.sceneItemOrder
+      : previous.sceneItemOrder,
+    sceneItemLocks: payload && Object.prototype.hasOwnProperty.call(payload, 'sceneItemLocks')
+      ? payload.sceneItemLocks
+      : previous.sceneItemLocks,
+    sceneItemGroups: payload && Object.prototype.hasOwnProperty.call(payload, 'sceneItemGroups')
+      ? payload.sceneItemGroups
+      : previous.sceneItemGroups,
+    focusedGroupId: String(payload?.focusedGroupId || '').trim() || undefined,
+    trackUi: payload && Object.prototype.hasOwnProperty.call(payload, 'trackUi')
+      ? payload.trackUi
+      : previous.trackUi,
+    viewportScrollLeft: Number.isFinite(Number(payload?.viewportScrollLeft))
+      ? Number(payload?.viewportScrollLeft)
+      : previous.viewportScrollLeft,
+    viewportMaxScrollLeft: Number.isFinite(Number(payload?.viewportMaxScrollLeft))
+      ? Number(payload?.viewportMaxScrollLeft)
+      : previous.viewportMaxScrollLeft,
+    viewportScrollTop: Number.isFinite(Number(payload?.viewportScrollTop))
+      ? Number(payload?.viewportScrollTop)
+      : previous.viewportScrollTop,
+    viewportMaxScrollTop: Number.isFinite(Number(payload?.viewportMaxScrollTop))
+      ? Number(payload?.viewportMaxScrollTop)
+      : previous.viewportMaxScrollTop,
+    timelineZoomPercent: Number.isFinite(Number(payload?.timelineZoomPercent))
+      ? Number(payload?.timelineZoomPercent)
+      : previous.timelineZoomPercent,
+    updatedAt: nowMs(),
+  };
+
+  editorRuntimeStates.set(filePath, next);
+  return {
+    success: true,
+    state: serializeEditorRuntimeState(filePath),
+  };
 });
 
 ipcMain.handle('manuscripts:update-package-clip', async (_, payload?: {

@@ -84,6 +84,11 @@ import {
 } from './core/fileMemoryStore';
 import { getRedClawProject, listRedClawProjects } from './core/redclawStore';
 import {
+  handleRedClawOnboardingTurn,
+  loadRedClawProfilePromptBundle,
+  updateRedClawProfileDocument,
+} from './core/redclawProfileStore';
+import {
   listMediaAssets,
   bindMediaAssetToManuscript,
   updateMediaAssetMetadata,
@@ -3121,6 +3126,100 @@ ipcMain.handle('redclaw:list-projects', async (_, { limit }: { limit?: number } 
   } catch (error) {
     console.error('Failed to list RedClaw projects:', error);
     return [];
+  }
+});
+
+ipcMain.handle('redclaw:profile:get-bundle', async () => {
+  try {
+    const bundle = await loadRedClawProfilePromptBundle();
+    return {
+      success: true,
+      profileRoot: bundle.profileRoot,
+      agent: bundle.files.agent,
+      soul: bundle.files.soul,
+      identity: bundle.files.identity,
+      user: bundle.files.user,
+      creatorProfile: bundle.files.creatorProfile,
+      bootstrap: bundle.files.bootstrap,
+      onboardingState: bundle.onboardingState,
+    };
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+});
+
+ipcMain.handle('redclaw:profile:update-doc', async (_, payload?: {
+  docType?: 'agent' | 'soul' | 'user' | 'creator_profile';
+  markdown?: string;
+  reason?: string;
+}) => {
+  const docType = payload?.docType;
+  const markdown = String(payload?.markdown || '');
+  if (!docType) {
+    return { success: false, error: 'docType is required' };
+  }
+  if (!markdown.trim()) {
+    return { success: false, error: 'markdown is required' };
+  }
+
+  try {
+    const result = await updateRedClawProfileDocument(docType, markdown);
+    return {
+      success: true,
+      docType: result.docType,
+      fileName: path.basename(result.path),
+      path: result.path,
+      content: result.content,
+      reason: String(payload?.reason || '').trim() || undefined,
+    };
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+});
+
+ipcMain.handle('redclaw:profile:onboarding-status', async () => {
+  try {
+    const bundle = await loadRedClawProfilePromptBundle();
+    return {
+      success: true,
+      completed: Boolean(bundle.onboardingState.completedAt),
+      state: bundle.onboardingState,
+    };
+  } catch (error) {
+    return {
+      success: false,
+      completed: false,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+});
+
+ipcMain.handle('redclaw:profile:onboarding-turn', async (_, payload?: { input?: string }) => {
+  try {
+    const result = await handleRedClawOnboardingTurn(String(payload?.input || ''));
+    return {
+      success: true,
+      handled: result.handled,
+      completed: Boolean(result.completed),
+      responseText: result.responseText,
+      result: {
+        responseText: result.responseText,
+        completed: Boolean(result.completed),
+      },
+    };
+  } catch (error) {
+    return {
+      success: false,
+      handled: false,
+      completed: false,
+      error: error instanceof Error ? error.message : String(error),
+    };
   }
 });
 

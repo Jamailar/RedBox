@@ -325,6 +325,50 @@ function serializeEditorRuntimeState(filePath: string) {
   };
 }
 
+function normalizeBindingText(value: unknown): string {
+  return String(value || '').trim();
+}
+
+function normalizeBindingMetadata(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? { ...(value as Record<string, unknown>) }
+    : {};
+}
+
+function deriveEditorBindingInitialContext(
+  binding: {
+    filePath?: string;
+    contextId: string;
+    modeLabel?: string;
+    targetTypeLabel?: string;
+    targetPath?: string;
+    initialContext?: string;
+  },
+  metadata: Record<string, unknown>,
+): string | undefined {
+  const explicit = normalizeBindingText(binding.initialContext);
+  if (explicit) {
+    return explicit;
+  }
+
+  const modeLabel = normalizeBindingText(binding.modeLabel)
+    || normalizeBindingText(metadata.associatedPackageWorkspaceModeLabel)
+    || normalizeBindingText(metadata.associatedPackageWorkspaceMode)
+    || '文件';
+  const targetTypeLabel = normalizeBindingText(binding.targetTypeLabel)
+    || normalizeBindingText(metadata.associatedPackageKind)
+    || '文件';
+  const targetPath = normalizeBindingText(binding.targetPath)
+    || normalizeBindingText(metadata.associatedFilePath)
+    || normalizeBindingText(binding.filePath)
+    || normalizeBindingText(binding.contextId);
+  if (!targetPath) {
+    return undefined;
+  }
+
+  return `当前聊天窗口正处于${modeLabel}模式，正在编辑的${targetTypeLabel}文件路径是${targetPath}`;
+}
+
 function emitRendererDataChanged(scope: string, payload: Record<string, unknown> = {}) {
   for (const browserWindow of BrowserWindow.getAllWindows()) {
     if (browserWindow.isDestroyed()) continue;
@@ -3087,6 +3131,106 @@ ipcMain.handle('chat:update-session-metadata', async (_, payload?: {
   };
   updateChatSessionMetadata(sessionId, nextMetadata);
   return { success: true };
+});
+
+ipcMain.handle('chat:bind-editor-session', async (_, payload?: {
+  session?: {
+    scope?: string;
+    filePath?: string;
+    contextType?: string;
+    contextId?: string;
+    title?: string;
+    modeLabel?: string;
+    targetTypeLabel?: string;
+    targetPath?: string;
+    initialContext?: string;
+  };
+  metadata?: Record<string, unknown>;
+}) => {
+  try {
+    const binding = payload?.session;
+    const scope = normalizeBindingText(binding?.scope).toLowerCase() || 'file';
+    const contextType = normalizeBindingText(binding?.contextType) || 'file';
+    const contextId = normalizeBindingText(binding?.contextId);
+    const filePath = normalizeBindingText(binding?.filePath) || contextId;
+    const metadata = normalizeBindingMetadata(payload?.metadata);
+    const title = normalizeBindingText(binding?.title)
+      || (filePath ? stripManuscriptExtension(path.basename(filePath)) : 'New Chat');
+
+    let session = null as ReturnType<typeof getChatSession> | null;
+    if (scope === 'context') {
+      if (!contextId) {
+        return { success: false, error: 'contextId is required for context-bound editor chat' };
+      }
+      session = getChatSessionByContext(contextId, contextType);
+      if (!session) {
+        const sessionId = `session_${Date.now()}`;
+        session = createChatSession(sessionId, title, {
+          contextType,
+          contextId,
+          isContextBound: true,
+        });
+      }
+    } else if (scope === 'file') {
+      if (!filePath) {
+        return { success: false, error: 'filePath is required for file-bound editor chat' };
+      }
+      session = getChatSessionByFile(filePath);
+      if (!session) {
+        const sessionId = `session_${Date.now()}`;
+        session = createChatSession(sessionId, title, {
+          associatedFilePath: filePath,
+        });
+      }
+    } else {
+      return { success: false, error: `unsupported editor chat binding scope: ${scope}` };
+    }
+
+    if (!session) {
+      return { success: false, error: 'failed to create editor chat session' };
+    }
+
+    const currentMetadata = (() => {
+      if (!session?.metadata) return {};
+      try {
+        return JSON.parse(session.metadata) as Record<string, unknown>;
+      } catch {
+        return {};
+      }
+    })();
+    const nextMetadata = {
+      ...currentMetadata,
+      ...metadata,
+      contextType,
+      contextId,
+      isContextBound: true,
+      editorBindingVersion: currentMetadata.editorBindingVersion ?? metadata.editorBindingVersion ?? 1,
+      editorBindingScope: scope,
+    } as Record<string, unknown>;
+    if (!normalizeBindingText(nextMetadata.associatedFilePath) && filePath) {
+      nextMetadata.associatedFilePath = filePath;
+    }
+
+    const derivedInitialContext = deriveEditorBindingInitialContext({
+      filePath,
+      contextId,
+      modeLabel: binding?.modeLabel,
+      targetTypeLabel: binding?.targetTypeLabel,
+      targetPath: binding?.targetPath,
+      initialContext: binding?.initialContext,
+    }, nextMetadata);
+    if (derivedInitialContext) {
+      nextMetadata.initialContext = derivedInitialContext;
+    }
+
+    updateChatSessionMetadata(session.id, nextMetadata);
+    return getChatSession(session.id) || session;
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
 });
 
 // 获取或创建上下文关联的会话 (知识库聊天)

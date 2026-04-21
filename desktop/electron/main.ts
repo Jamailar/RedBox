@@ -4826,6 +4826,12 @@ ipcMain.on('ai:confirm-tool', (_, callId: string, confirmed: boolean) => {
   }
 })
 
+ipcMain.on('chat:confirm-tool', (_, payload?: { callId?: string; confirmed?: boolean }) => {
+  const callId = String(payload?.callId || '').trim();
+  if (!callId) return;
+  ipcMain.emit('ai:confirm-tool', {} as Electron.IpcMainEvent, callId, payload?.confirmed === true)
+})
+
 // 取消 Agent 执行（旧版）
 ipcMain.on('ai:cancel', () => {
   if (currentAgent) {

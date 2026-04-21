@@ -101,6 +101,12 @@ import {
   saveCoverTemplateImage,
   type CoverAsset,
 } from './core/coverStudioStore';
+import {
+  deleteCoverTemplate,
+  importLegacyCoverTemplates,
+  listCoverTemplates,
+  saveCoverTemplate,
+} from './core/coverTemplateStore';
 import { loadOfficialFeatureModule } from './officialFeatureBridge';
 import { applyGlobalNetworkProxy } from './core/networkProxy';
 import {
@@ -1817,6 +1823,29 @@ ipcMain.handle('db:get-settings', () => {
   return getSettings()
 })
 
+ipcMain.handle('settings:pick-workspace-dir', async () => {
+  try {
+    const picker = await dialog.showOpenDialog({
+      title: '选择工作区目录',
+      properties: ['openDirectory', 'createDirectory'],
+      defaultPath: getDefaultWorkspaceDir(),
+    });
+    if (picker.canceled || !picker.filePaths.length) {
+      return { success: true, canceled: true, path: null };
+    }
+    return {
+      success: true,
+      canceled: false,
+      path: picker.filePaths[0],
+    };
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+});
+
 ipcMain.handle('debug:get-status', () => {
   const settings = (getSettings() || {}) as { debug_log_enabled?: boolean } | undefined;
   return {
@@ -1829,6 +1858,23 @@ ipcMain.handle('debug:get-recent', (_event, payload?: { limit?: number }) => {
   const limit = Number(payload?.limit || 200);
   return {
     lines: getRecentDebugLogs(Number.isFinite(limit) ? Math.max(1, Math.min(limit, 1000)) : 200),
+  };
+});
+
+ipcMain.handle('debug:get-runtime-summary', () => {
+  return {
+    generatedAt: Date.now(),
+    runtimeWarm: {
+      lastWarmedAt: 0,
+      entries: [],
+    },
+    phase0: {
+      personaGeneration: { count: 0, byAdvisor: [], recent: [] },
+      knowledgeIngest: { count: 0, byAdvisor: [], recent: [] },
+      runtimeQueries: { count: 0, byAdvisor: [], byMode: [], recent: [] },
+      skillInvocations: { count: 0, bySkill: [], recent: [] },
+      toolCalls: { count: 0, successCount: 0, successRate: 0, byAdvisor: [], byTool: [], recent: [] },
+    },
   };
 });
 
@@ -2192,6 +2238,59 @@ ipcMain.handle('app:open-release-page', async (_, payload?: { url?: string }) =>
     return {
       success: false,
       error: error instanceof Error ? error.message : String(error),
+    };
+  }
+});
+
+ipcMain.handle('app:open-path', async (_, payload?: { path?: string }) => {
+  const targetPath = String(payload?.path || '').trim();
+  if (!targetPath) {
+    return { success: false, error: 'path is required' };
+  }
+  try {
+    const openError = await shell.openPath(targetPath);
+    if (openError) {
+      return { success: false, error: openError };
+    }
+    return { success: true };
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+});
+
+ipcMain.handle('app:open-knowledge-api-guide', async () => {
+  const guidePath = path.join(__dirname, '../Docs/openai-compatible-video-api.md');
+  try {
+    const openError = await shell.openPath(guidePath);
+    if (openError) {
+      return { success: false, error: openError, path: guidePath };
+    }
+    return { success: true, path: guidePath };
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : String(error),
+      path: guidePath,
+    };
+  }
+});
+
+ipcMain.handle('app:open-richpost-theme-guide', async () => {
+  const docsPath = path.join(__dirname, '../Docs');
+  try {
+    const openError = await shell.openPath(docsPath);
+    if (openError) {
+      return { success: false, error: openError, path: docsPath };
+    }
+    return { success: true, path: docsPath };
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : String(error),
+      path: docsPath,
     };
   }
 });
@@ -2656,6 +2755,34 @@ ipcMain.handle('mcp:oauth-status', async (_, payload: { serverId?: string }) => 
   }
 });
 
+ipcMain.handle('mcp:sessions', async () => {
+  return { success: true, sessions: [] };
+});
+
+ipcMain.handle('mcp:list-tools', async () => {
+  return { success: false, error: 'Not supported in Electron compatibility mode', tools: [] };
+});
+
+ipcMain.handle('mcp:list-resources', async () => {
+  return { success: false, error: 'Not supported in Electron compatibility mode', resources: [] };
+});
+
+ipcMain.handle('mcp:list-resource-templates', async () => {
+  return { success: false, error: 'Not supported in Electron compatibility mode', resourceTemplates: [] };
+});
+
+ipcMain.handle('mcp:call', async () => {
+  return { success: false, error: 'Not supported in Electron compatibility mode' };
+});
+
+ipcMain.handle('mcp:disconnect', async () => {
+  return { success: true };
+});
+
+ipcMain.handle('mcp:disconnect-all', async () => {
+  return { success: true };
+});
+
 // AI Source: protocol detect / test / model list
 ipcMain.handle('ai:detect-protocol', async (_, payload: {
   baseURL?: string;
@@ -2906,6 +3033,86 @@ ipcMain.handle('chat:getOrCreateContextSession', async (_, { contextId, contextT
 
   createChatSession(sessionId, title, metadata);
   return { id: sessionId, title, timestamp: Date.now(), metadata: JSON.stringify(metadata) };
+});
+
+ipcMain.handle('chat:list-context-sessions', async (_, payload?: { contextId?: string; contextType?: string }) => {
+  const contextId = String(payload?.contextId || '').trim();
+  const contextType = String(payload?.contextType || '').trim();
+  if (!contextId || !contextType) {
+    return [];
+  }
+
+  return getChatSessions()
+    .filter((session) => {
+      if (!session.metadata) return false;
+      try {
+        const meta = JSON.parse(session.metadata) as Record<string, unknown>;
+        return meta.contextId === contextId && meta.contextType === contextType;
+      } catch {
+        return false;
+      }
+    })
+    .map((session) => ({
+      id: session.id,
+      messageCount: 0,
+      summary: '',
+      transcriptCount: 0,
+      checkpointCount: 0,
+      context: null,
+      chatSession: {
+        id: session.id,
+        title: session.title,
+        updatedAt: new Date(session.updated_at).toISOString(),
+      },
+    }));
+});
+
+ipcMain.handle('chat:create-context-session', async (_, payload?: {
+  contextId?: string;
+  contextType?: string;
+  title?: string;
+  initialContext?: string;
+}) => {
+  const contextId = String(payload?.contextId || '').trim();
+  const contextType = String(payload?.contextType || '').trim();
+  if (!contextId || !contextType) {
+    return null;
+  }
+
+  const sessionId = `session_${Date.now()}`;
+  const title = String(payload?.title || 'Context Chat').trim() || 'Context Chat';
+  const metadata = {
+    contextId,
+    contextType,
+    contextContent: String(payload?.initialContext || '').trim(),
+    isContextBound: true,
+  };
+  const created = createChatSession(sessionId, title, metadata);
+  return {
+    id: created.id,
+    title: created.title,
+    updatedAt: new Date(created.updated_at).toISOString(),
+  };
+});
+
+ipcMain.handle('chat:create-diagnostics-session', async (_, payload?: {
+  title?: string;
+  contextId?: string;
+  contextType?: string;
+}) => {
+  const sessionId = `session_${Date.now()}`;
+  const title = String(payload?.title || 'Diagnostics').trim() || 'Diagnostics';
+  const metadata = {
+    contextId: String(payload?.contextId || '').trim() || undefined,
+    contextType: String(payload?.contextType || '').trim() || undefined,
+    diagnostics: true,
+  };
+  const created = createChatSession(sessionId, title, metadata);
+  return {
+    id: created.id,
+    title: created.title,
+    updatedAt: new Date(created.updated_at).toISOString(),
+  };
 });
 
 ipcMain.handle('redclaw:list-projects', async (_, { limit }: { limit?: number } = {}) => {
@@ -3394,6 +3601,52 @@ ipcMain.handle('cover:list', async (_, { limit }: { limit?: number } = {}) => {
   } catch (error) {
     console.error('Failed to list cover assets:', error);
     return { success: false, error: String(error), assets: [] };
+  }
+});
+
+ipcMain.handle('cover:templates:list', async () => {
+  try {
+    return {
+      success: true,
+      templates: await listCoverTemplates(),
+    };
+  } catch (error) {
+    return { success: false, error: String(error), templates: [] };
+  }
+});
+
+ipcMain.handle('cover:templates:save', async (_, payload?: { template?: Record<string, unknown> }) => {
+  try {
+    const template = await saveCoverTemplate(payload?.template || {});
+    return {
+      success: true,
+      template,
+      templates: await listCoverTemplates(),
+    };
+  } catch (error) {
+    return { success: false, error: String(error), templates: [] };
+  }
+});
+
+ipcMain.handle('cover:templates:delete', async (_, payload?: { templateId?: string }) => {
+  try {
+    const templates = await deleteCoverTemplate(String(payload?.templateId || '').trim());
+    return { success: true, templates };
+  } catch (error) {
+    return { success: false, error: String(error), templates: [] };
+  }
+});
+
+ipcMain.handle('cover:templates:import-legacy', async (_, payload?: { templates?: Record<string, unknown>[] }) => {
+  try {
+    const templates = await importLegacyCoverTemplates(Array.isArray(payload?.templates) ? payload!.templates! : []);
+    return {
+      success: true,
+      imported: templates.length,
+      templates,
+    };
+  } catch (error) {
+    return { success: false, error: String(error), templates: [] };
   }
 });
 
@@ -4667,6 +4920,10 @@ ipcMain.handle('advisors:list', async () => {
   }
 });
 
+ipcMain.handle('advisors:list-templates', async () => {
+  return [];
+});
+
 ipcMain.handle('advisors:get', async (_, advisorId: string) => {
   try {
     const cached = advisorDetailCache.get(advisorId);
@@ -4833,6 +5090,29 @@ ipcMain.handle('advisors:select-avatar', async () => {
   }
 });
 
+ipcMain.handle('advisors:pick-knowledge-files', async () => {
+  const result = await dialog.showOpenDialog(win!, {
+    properties: ['openFile', 'multiSelections'],
+    filters: [{ name: 'Text Files', extensions: ['txt', 'md', 'markdown'] }],
+  });
+
+  if (result.canceled || result.filePaths.length === 0) {
+    return { success: true, canceled: true, filePaths: [], files: [] };
+  }
+
+  const files = result.filePaths.map((filePath) => ({
+    path: filePath,
+    name: path.basename(filePath),
+  }));
+
+  return {
+    success: true,
+    canceled: false,
+    filePaths: result.filePaths,
+    files,
+  };
+});
+
 ipcMain.handle('advisors:delete', async (_, advisorId: string) => {
   const fs = require('fs/promises');
   const advisorDir = path.join(getAdvisorsDir(), advisorId);
@@ -4849,23 +5129,35 @@ ipcMain.handle('advisors:delete', async (_, advisorId: string) => {
   }
 });
 
-ipcMain.handle('advisors:upload-knowledge', async (_, advisorId: string) => {
-  const { dialog } = require('electron');
+ipcMain.handle('advisors:upload-knowledge', async (_, payload: string | { advisorId?: string; filePaths?: string[] }) => {
   const fs = require('fs/promises');
+  const advisorId = typeof payload === 'string'
+    ? payload
+    : String(payload?.advisorId || '').trim();
+  if (!advisorId) {
+    return { success: false, error: 'advisorId is required' };
+  }
 
-  const result = await dialog.showOpenDialog(win!, {
-    properties: ['openFile', 'multiSelections'],
-    filters: [{ name: 'Text Files', extensions: ['txt', 'md'] }]
-  });
+  let filePaths = Array.isArray((payload as { filePaths?: string[] } | undefined)?.filePaths)
+    ? ((payload as { filePaths?: string[] }).filePaths || []).filter(Boolean)
+    : [];
 
-  if (result.canceled || result.filePaths.length === 0) {
-    return { success: false };
+  if (filePaths.length === 0) {
+    const result = await dialog.showOpenDialog(win!, {
+      properties: ['openFile', 'multiSelections'],
+      filters: [{ name: 'Text Files', extensions: ['txt', 'md', 'markdown'] }]
+    });
+
+    if (result.canceled || result.filePaths.length === 0) {
+      return { success: false };
+    }
+    filePaths = result.filePaths;
   }
 
   const knowledgeDir = path.join(getAdvisorsDir(), advisorId, 'knowledge');
   await fs.mkdir(knowledgeDir, { recursive: true });
 
-  for (const filePath of result.filePaths) {
+  for (const filePath of filePaths) {
     const fileName = path.basename(filePath);
     const destPath = path.join(knowledgeDir, fileName);
     await fs.copyFile(filePath, destPath);
@@ -4887,7 +5179,7 @@ ipcMain.handle('advisors:upload-knowledge', async (_, advisorId: string) => {
 
   invalidateAdvisorCache(advisorId);
   emitRendererDataChanged('advisors', { action: 'update', entityId: advisorId });
-  return { success: true, count: result.filePaths.length };
+  return { success: true, count: filePaths.length };
 });
 
 ipcMain.handle('advisors:delete-knowledge', async (_, { advisorId, fileName }: { advisorId: string; fileName: string }) => {
@@ -7726,6 +8018,172 @@ const scheduleStaleDocumentIndexRefresh = async (sources: DocumentSourceRecord[]
   }
 };
 
+const listKnowledgeCatalogNotes = async () => {
+  await ensureKnowledgeRedbookDir();
+  const dirs = await fs.readdir(getKnowledgeRedbookDir(), { withFileTypes: true }).catch(() => []);
+  const notes: Array<Record<string, any>> = [];
+
+  for (const dir of dirs) {
+    if (!dir.isDirectory()) continue;
+    const noteDir = path.join(getKnowledgeRedbookDir(), dir.name);
+    const metaPath = path.join(noteDir, 'meta.json');
+    try {
+      const metaContent = await fs.readFile(metaPath, 'utf-8');
+      const meta = JSON.parse(metaContent) as Record<string, any>;
+      let cover = String(meta.cover || '').trim();
+      if (cover && !cover.startsWith('http')) {
+        cover = toLocalFileUrl(path.join(noteDir, cover));
+      }
+      const tags = Array.isArray(meta.tags) ? meta.tags.map((value: unknown) => String(value || '').trim()).filter(Boolean) : [];
+      notes.push({
+        id: dir.name,
+        title: String(meta.title || dir.name),
+        author: String(meta.author || meta.siteName || '原文链接'),
+        content: String(meta.content || ''),
+        excerpt: String(meta.excerpt || meta.summary || meta.content || ''),
+        siteName: String(meta.siteName || ''),
+        sourceUrl: String(meta.sourceUrl || meta.url || ''),
+        folderPath: noteDir,
+        coverUrl: cover || undefined,
+        createdAt: String(meta.createdAt || meta.updatedAt || new Date().toISOString()),
+        updatedAt: String(meta.updatedAt || meta.createdAt || new Date().toISOString()),
+        noteType: String(meta.type || ''),
+        captureKind: String(meta.captureKind || ''),
+        hasVideo: Boolean(meta.video),
+        hasTranscript: Boolean(String(meta.transcript || '').trim()),
+        status: String(meta.transcriptionStatus || ''),
+        tags,
+      });
+    } catch {
+      continue;
+    }
+  }
+
+  return notes;
+};
+
+const listKnowledgeCatalogYoutubeVideos = async () => {
+  await ensureKnowledgeYoutubeDir();
+  const dirs = await fs.readdir(getKnowledgeYoutubeDir(), { withFileTypes: true }).catch(() => []);
+  const videos: Array<Record<string, any>> = [];
+
+  for (const dir of dirs) {
+    if (!dir.isDirectory()) continue;
+    const videoDir = path.join(getKnowledgeYoutubeDir(), dir.name);
+    const metaPath = path.join(videoDir, 'meta.json');
+    try {
+      const metaContent = await fs.readFile(metaPath, 'utf-8');
+      const meta = JSON.parse(metaContent) as Record<string, any>;
+      let thumbnailUrl = String(meta.thumbnailUrl || '').trim();
+      if (meta.thumbnail) {
+        thumbnailUrl = toLocalFileUrl(path.join(videoDir, String(meta.thumbnail)));
+      }
+      let subtitleContent = '';
+      if (meta.subtitleFile) {
+        subtitleContent = await fs.readFile(path.join(videoDir, String(meta.subtitleFile)), 'utf-8').catch(() => '');
+      }
+      videos.push({
+        id: dir.name,
+        title: String(meta.title || dir.name),
+        description: String(meta.description || ''),
+        summary: String(meta.summary || subtitleContent || meta.description || ''),
+        thumbnailUrl: thumbnailUrl || undefined,
+        sourceUrl: String(meta.videoUrl || ''),
+        folderPath: videoDir,
+        createdAt: String(meta.createdAt || meta.updatedAt || new Date().toISOString()),
+        updatedAt: String(meta.updatedAt || meta.createdAt || new Date().toISOString()),
+        hasSubtitle: Boolean(meta.hasSubtitle),
+        subtitleContent,
+        status: String(meta.status || ''),
+        tags: [],
+      });
+    } catch {
+      continue;
+    }
+  }
+
+  return videos;
+};
+
+const buildKnowledgeCatalogItems = async () => {
+  const [notes, videos, { views, sources }] = await Promise.all([
+    listKnowledgeCatalogNotes(),
+    listKnowledgeCatalogYoutubeVideos(),
+    buildDocumentKnowledgeSourceViews(),
+  ]);
+
+  const items = [
+    ...notes.map((note) => ({
+      itemId: note.id,
+      kind: 'redbook-note' as const,
+      noteType: note.noteType,
+      captureKind: note.captureKind,
+      title: note.title,
+      author: note.author,
+      siteName: note.siteName || undefined,
+      sourceUrl: note.sourceUrl || undefined,
+      folderPath: note.folderPath,
+      coverUrl: note.coverUrl,
+      thumbnailUrl: undefined,
+      previewText: note.excerpt || note.content || '',
+      createdAt: note.createdAt,
+      updatedAt: note.updatedAt,
+      hasVideo: note.hasVideo,
+      hasTranscript: note.hasTranscript,
+      tags: note.tags,
+      status: note.status || undefined,
+      sampleFiles: [],
+      fileCount: 0,
+    })),
+    ...videos.map((video) => ({
+      itemId: video.id,
+      kind: 'youtube-video' as const,
+      title: video.title,
+      author: 'YouTube',
+      siteName: 'YouTube',
+      sourceUrl: video.sourceUrl || undefined,
+      folderPath: video.folderPath,
+      coverUrl: undefined,
+      thumbnailUrl: video.thumbnailUrl,
+      previewText: video.summary || video.description || '',
+      createdAt: video.createdAt,
+      updatedAt: video.updatedAt,
+      hasVideo: true,
+      hasTranscript: Boolean(video.subtitleContent),
+      tags: video.tags,
+      status: video.status || undefined,
+      sampleFiles: [],
+      fileCount: 0,
+    })),
+    ...views.map((source) => ({
+      itemId: source.id,
+      kind: 'document-source' as const,
+      title: source.name,
+      author: source.kind === 'obsidian-vault' ? 'Obsidian' : 'Docs',
+      siteName: 'Documents',
+      sourceUrl: undefined,
+      folderPath: undefined,
+      rootPath: source.rootPath,
+      coverUrl: undefined,
+      thumbnailUrl: undefined,
+      previewText: source.sampleFiles.join('\n'),
+      createdAt: source.createdAt,
+      updatedAt: source.updatedAt,
+      hasVideo: false,
+      hasTranscript: false,
+      tags: [],
+      status: source.indexing ? 'processing' : source.indexError ? 'failed' : 'completed',
+      sampleFiles: source.sampleFiles,
+      fileCount: source.fileCount,
+    })),
+  ];
+
+  return {
+    items: items.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)),
+    sources,
+  };
+};
+
 ipcMain.handle('knowledge:docs:list', async () => {
   try {
     const { views, sources } = await buildDocumentKnowledgeSourceViews();
@@ -7930,6 +8388,160 @@ ipcMain.handle('knowledge:docs:delete-source', async (_, sourceId: string) => {
   } catch (error) {
     console.error('Failed to delete document source:', error);
     return { success: false, error: String(error) };
+  }
+});
+
+ipcMain.handle('knowledge:get-index-status', async () => {
+  try {
+    const { items } = await buildKnowledgeCatalogItems();
+    const failedCount = items.filter((item) => item.status === 'failed').length;
+    const pendingCount = items.filter((item) => item.status === 'processing').length;
+    return {
+      indexedCount: Math.max(0, items.length - failedCount - pendingCount),
+      pendingCount,
+      failedCount,
+      lastIndexedAt: items[0]?.updatedAt || null,
+      isBuilding: pendingCount > 0,
+      lastError: null,
+    };
+  } catch (error) {
+    return {
+      indexedCount: 0,
+      pendingCount: 0,
+      failedCount: 0,
+      lastIndexedAt: null,
+      isBuilding: false,
+      lastError: error instanceof Error ? error.message : String(error),
+    };
+  }
+});
+
+ipcMain.handle('knowledge:list-page', async (_, payload?: {
+  payload?: {
+    cursor?: string | null;
+    limit?: number;
+    kind?: 'redbook-note' | 'youtube-video' | 'document-source';
+    query?: string;
+    sort?: string;
+  };
+}) => {
+  const query = String(payload?.payload?.query || '').trim().toLowerCase();
+  const kind = String(payload?.payload?.kind || '').trim();
+  const limit = Math.max(1, Math.min(Number(payload?.payload?.limit || 200) || 200, 500));
+  const cursor = Math.max(0, Number(payload?.payload?.cursor || 0) || 0);
+
+  const { items } = await buildKnowledgeCatalogItems();
+  const filtered = items.filter((item) => {
+    if (kind && item.kind !== kind) return false;
+    if (!query) return true;
+    const haystack = [
+      item.title,
+      item.author,
+      item.siteName,
+      item.previewText,
+      item.sourceUrl,
+      ...(Array.isArray(item.tags) ? item.tags : []),
+      ...(Array.isArray(item.sampleFiles) ? item.sampleFiles : []),
+    ].join('\n').toLowerCase();
+    return haystack.includes(query);
+  });
+
+  const pageItems = filtered.slice(cursor, cursor + limit);
+  const nextCursor = cursor + limit < filtered.length ? String(cursor + limit) : null;
+  const kindCounts = filtered.reduce<Record<string, number>>((acc, item) => {
+    acc[item.kind] = (acc[item.kind] || 0) + 1;
+    return acc;
+  }, {});
+
+  return {
+    items: pageItems,
+    nextCursor,
+    total: filtered.length,
+    kindCounts,
+  };
+});
+
+ipcMain.handle('knowledge:get-item-detail', async (_, payload?: {
+  payload?: {
+    itemId?: string;
+    kind?: 'redbook-note' | 'youtube-video' | 'document-source';
+  };
+}) => {
+  const itemId = String(payload?.payload?.itemId || '').trim();
+  const kind = String(payload?.payload?.kind || '').trim();
+  if (!itemId || !kind) {
+    return null;
+  }
+
+  if (kind === 'redbook-note') {
+    const notes = await (async () => {
+      const list = await listKnowledgeCatalogNotes();
+      return list.map((item) => ({
+        id: item.id,
+        title: item.title,
+        author: item.author,
+        content: item.content,
+        excerpt: item.excerpt,
+        siteName: item.siteName,
+        sourceUrl: item.sourceUrl,
+        images: [],
+        tags: item.tags,
+        cover: item.coverUrl,
+        video: undefined,
+        videoUrl: undefined,
+        transcript: item.hasTranscript ? '' : undefined,
+        transcriptionStatus: item.status || undefined,
+        stats: { likes: 0, collects: 0 },
+        createdAt: item.createdAt,
+        folderPath: item.folderPath,
+      }));
+    })();
+    return notes.find((item) => item.id === itemId) || null;
+  }
+
+  if (kind === 'youtube-video') {
+    const videos = await listKnowledgeCatalogYoutubeVideos();
+    const video = videos.find((item) => item.id === itemId);
+    if (!video) return null;
+    return {
+      id: video.id,
+      videoId: video.id,
+      videoUrl: video.sourceUrl || '',
+      title: video.title,
+      description: video.description,
+      summary: video.summary,
+      thumbnailUrl: video.thumbnailUrl,
+      hasSubtitle: video.hasSubtitle,
+      subtitleContent: video.subtitleContent,
+      status: video.status || undefined,
+      createdAt: video.createdAt,
+      folderPath: video.folderPath,
+    };
+  }
+
+  if (kind === 'document-source') {
+    const { views } = await buildDocumentKnowledgeSourceViews();
+    return views.find((item) => item.id === itemId) || null;
+  }
+
+  return null;
+});
+
+ipcMain.handle('knowledge:rebuild-catalog', async () => {
+  return { success: true };
+});
+
+ipcMain.handle('knowledge:open-index-root', async () => {
+  try {
+    const docsRoot = ensureKnowledgeDocsDir(getWorkspacePaths()).then(() => getKnowledgeDocsImportedDir(getWorkspacePaths()));
+    const targetPath = await docsRoot;
+    const openError = await shell.openPath(targetPath);
+    if (openError) {
+      return { success: false, error: openError };
+    }
+    return { success: true, path: targetPath };
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : String(error) };
   }
 });
 

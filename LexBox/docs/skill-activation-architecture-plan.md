@@ -1,25 +1,21 @@
 ---
 doc_type: plan
-execution_status: in_progress
+execution_status: completed
 last_updated: 2026-04-21
-execution_stage: catalog_activation_prompt_executor_in_progress
+execution_stage: runtime_continuation_and_ui_guard_completed
 owner: codex
 target_files:
-  - src-tauri/src/skills/catalog.rs
-  - src-tauri/src/skills/discovery.rs
-  - src-tauri/src/skills/conditional.rs
-  - src-tauri/src/skills/activation.rs
   - src-tauri/src/skills/prompt.rs
   - src-tauri/src/skills/executor.rs
-  - src-tauri/src/skills/state.rs
-  - src-tauri/src/commands/chat.rs
+  - src-tauri/src/skills/runtime.rs
   - src-tauri/src/commands/skills_ai.rs
-  - src-tauri/src/interactive_runtime_shared.rs
+  - src-tauri/src/main.rs
+  - src/components/MessageItem.tsx
 success_metrics:
-  - 新会话首条消息可以稳定激活 session 级技能
-  - Windows 和 macOS 的技能发现、激活、注入行为一致
-  - system prompt 只消费 ResolvedSkillSet，不再自行推断 activeSkills
-  - 业务层不再直接读写 metadata.activeSkills
+  - skills invoke 不再把 XML 风格激活包回流到模型上下文
+  - interactive runtime 在技能激活后自动按新上下文续跑
+  - prompt 明确区分“已激活技能”和“可见但未激活技能”
+  - UI 不再直接暴露内部协议标签
 ---
 
 # LexBox Skill Activation Architecture Plan
@@ -52,11 +48,66 @@ success_metrics:
 - `Skill Activation Engine` 与 `Prompt Assembly` 已分离，system prompt 入口改为消费 `ResolvedSkillSet` 和 `SkillPromptBundle`。
 - 显式 `skills invoke` 已下沉到独立 `executor`，命令层仅做路由、日志和响应包装。
 
-尚未完成的部分：
+截至 2026-04-21，这一轮围绕“技能激活后标签泄漏与自动停止”的运行时优化已经完成：
 
-- `conditional.rs` 的条件命中层
-- `discovery.rs` 的进一步目录发现收口
-- 删除兼容期 legacy shadow 后的最终清理
+- `skills:invoke` 只返回结构化激活过渡信息，不再把 `<activated_skill>` bundle 当 tool result 回流。
+- Anthropic / Gemini / OpenAI 三条 interactive runtime 都改成“每轮请求前重建 provider payload”，技能激活后下一轮会自动拿到新的 system prompt。
+- runtime 在检测到技能激活后，会自动追加内部 continuation 指令，要求模型不要复述激活过程、不要输出协议标签、直接继续当前任务。
+- prompt catalog 文案已改成显式区分“已激活技能”和“未激活技能”，避免同轮上下文自相矛盾。
+- 聊天 UI 在 thought / assistant 内容渲染前增加了协议文本兜底过滤。
+
+本轮不涉及的范围：
+
+- `conditional.rs` 的条件命中体系
+- `discovery.rs` 的进一步目录发现清理
+- legacy `activeSkills` shadow 的最终移除
+
+## Executed Architecture
+
+### AI / Runtime
+
+- `src-tauri/src/commands/skills_ai.rs`
+  只输出结构化 `activationTransition`，这是运行时状态切换信号，必须自研，不能交给 Markdown/提示词约定兜底。
+- `src-tauri/src/main.rs`
+  interactive runtime 现在维护两份消息视图：
+  - `prompt_messages`：给模型的短窗口 prompt history
+  - `canonical_messages`：用于持久化与恢复的完整运行时消息
+- 每轮请求前都重新计算：
+  - 最新 system prompt
+  - 最新 provider message/contents
+  - 最新 tool schema
+- 技能激活成功后，runtime 会自动插入 continuation 指令。这个状态机必须自研，因为它同时依赖 session metadata、provider payload 组装和工具轮次控制。
+
+### UI
+
+- `src/components/MessageItem.tsx`
+  在 Markdown 渲染前过滤 `<tool_call>...</tool_call>` 和 `<activated_skill>...</activated_skill>`。
+- 这部分继续复用现有 `ReactMarkdown`，不需要新增库；过滤逻辑保持在渲染层本地实现即可。
+
+### Video / Media
+
+- 本次不改视频处理或媒体生成引擎。
+- 视频相关 skill 仍通过现有 `app_cli(command=\"video ...\")` 与既有媒体链路执行。
+- 也就是说：本次优化只修“技能激活如何影响 AI 运行时”，不触碰 ffmpeg、媒体探测、素材生成或编辑器协议。
+
+## Build Vs Buy
+
+- 必须自研：
+  - skill activation transition 协议
+  - interactive runtime continuation 机制
+  - provider payload 按轮重建逻辑
+  - UI 内部协议过滤策略
+- 继续使用现成库：
+  - Markdown 渲染：`react-markdown` + `remark-gfm`
+  - HTTP / SSE 请求：现有 host runtime 与 `curl` 执行链
+  - session persistence / tool registry：现有仓内模块
+
+## Performance Strategy
+
+- 每轮重建 provider payload 只基于内存中的 `prompt_messages`，不重新扫描工作区，不引入额外 I/O。
+- skill activation 检测只解析小型 JSON tool result，不做正则式全文扫描。
+- UI 过滤只在单条消息渲染时做固定模式替换，复杂度线性且输入规模很小。
+- `canonical_messages` 继续承担完整恢复，`prompt_messages` 继续承担短窗口推理，避免“每轮把整段历史重新喂给模型”的 token 膨胀。
 
 ## Why Current Architecture Fails
 

@@ -9,3 +9,8 @@ script = ""
 name = "运行"
 icon = "run"
 command = "pnpm tauri:dev"
+
+[[actions]]
+name = "打包"
+icon = "tool"
+command = "pnpm release:all"

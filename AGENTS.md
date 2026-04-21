@@ -19,28 +19,9 @@
 
 ### Core product surfaces
 
-- `desktop/`：主桌面应用，Electron + React + TypeScript。绝大多数产品能力都在这里。
 - `Plugin/`：Chrome / Edge 扩展，负责从小红书、YouTube、网页把内容送入桌面端。
 - `RedBoxweb/`：官网/发布站点，Next.js 站点，包含少量测试。
 - `private/scripts/hybrid-release/`：混合发布链路，本地构建 macOS、远程 Linux 构建 Windows、上传 GitHub Release。
-
-### Desktop app ownership
-
-- `desktop/src/`：React renderer。
-- `desktop/src/App.tsx`：页面切换与懒加载入口，当前是全局视图编排中心。
-- `desktop/src/pages/`：页面级产品表面，如 `Chat`、`Knowledge`、`RedClaw`、`Manuscripts`、`Wander`、`Advisors`、`Settings`。
-- `desktop/src/components/`：复用 UI 组件；页面私有编排不要过早下沉到这里。
-- `desktop/src/hooks/`：前端行为型复用逻辑，例如刷新策略、功能开关。
-- `desktop/src/utils/`：轻量工具与前端辅助逻辑。
-- `desktop/electron/preload.ts`：renderer 和 main 之间的桥。新增宿主能力时，优先扩展这里再给前端使用。
-- `desktop/electron/main.ts`：Electron 主进程入口，也是当前巨型 IPC 路由层。可以接线，但不要继续把业务逻辑堆进去。
-- `desktop/electron/core/`：主进程核心业务层。AI 运行时、工具系统、知识库、任务、MCP、索引、后台任务等都在这里。
-- `desktop/electron/prompts/`：提示词加载与运行时组装。
-- `desktop/electron/prompts/library/`：实际提示词资产，包含 `intent`、`planner`、`executor`、`validator`、`wander`、`personas`、`templates`。
-- `desktop/electron/builtin-skills/`：内置技能资产，按 `SKILL.md` 约定组织。
-- `desktop/shared/`：前后端共享类型与静态配置。
-- `desktop/scripts/`：构建准备脚本，例如 prompt library 同步、私有运行时准备、插件运行时准备、ffmpeg 准备。
-- `desktop/release-notes/`：版本说明素材。
 
 ### Generated or packaged outputs
 
@@ -96,35 +77,6 @@
 - 根目录只有最小 Node 元数据，不是完整 monorepo orchestrator。
 - 大多数命令都要进入对应子项目执行。
 
-### Desktop
-
-在 `desktop/` 下：
-
-- `pnpm install`
-- `pnpm dev`
-- `pnpm build`
-- `pnpm preview`
-- `pnpm prepare:private-runtime`
-- `pnpm prepare:plugin-runtime`
-- `pnpm prepare:ffmpeg`
-- `pnpm sync:prompt-library`
-
-说明：
-
-- `pnpm dev` 在启动 Vite 前会准备私有运行时、插件运行时，并同步 prompt library。
-- `pnpm build` 会做完整准备、TypeScript 编译、Vite 构建、prompt 同步和 `electron-builder` 打包。
-- 改动 `desktop/electron/prompts/library/**` 后，至少执行一次 `pnpm sync:prompt-library` 或完整构建流程。
-
-### Website
-
-在 `RedBoxweb/` 下：
-
-- `pnpm install`
-- `pnpm dev`
-- `pnpm build`
-- `pnpm start`
-- `pnpm test`
-- `pnpm sync:release`
 
 ### Browser extension
 
@@ -193,72 +145,6 @@
 - 先确认现有页面缓存/挂载策略，不要破坏当前按最近访问保留视图的行为。
 - 页面切换期间保留已有状态，避免把切页实现成“每次重新冷启动”。
 
-### Add or change an IPC capability
-
-- 先在 `desktop/electron/preload.ts` 扩展桥接 API。
-- 再在 `desktop/electron/main.ts` 接上 `ipcMain.handle` / `ipcMain.on`。
-- 业务逻辑放进 `desktop/electron/core/*` 或独立 store/service，不要把 `main.ts` 继续做大。
-- 如果能力跨多个页面复用，优先暴露结构化 helper，而不是让每个页面自己拼 channel 名。
-
-### Add or change an AI tool
-
-- 工具定义在 `desktop/electron/core/tools/*`。
-- 需要在 `desktop/electron/core/tools/index.ts` / `catalog.ts` 注册，确认：
-  - 所属 tool pack
-  - 可见性 `public/developer/internal`
-  - 是否需要上下文依赖
-  - 是否需要确认执行
-  - 成功/失败信号与产出类型
-- 修改工具后，至少验证一次真实运行时调用，而不是只看 schema 编译通过。
-
-### Add or change a prompt or skill
-
-- Prompts 在 `desktop/electron/prompts/library/**`。
-- 内置技能在 `desktop/electron/builtin-skills/**/SKILL.md`。
-- 改 prompt 后同步 `dist-electron/library`，否则打包运行时可能仍用旧版本。
-- 修改 skill/prompt 时，优先调系统边界，不要在宿主代码里复制一份“等效规则”。
-
-### Add or change workspace/file behavior
-
-- 文件系统与工作区装载逻辑应落在专门的 store/service，不要在 renderer 页面直接扫描磁盘。
-- 变更稿件、媒体、知识库、归档、主题库时，要验证：
-  - 当前空间下立即可见
-  - 重启/重载后可恢复
-  - 刷新失败时不清空旧数据
-
-### Add or change scheduling/background behavior
-
-- RedClaw 定时、长周期、后台任务和 daemon 都要注意“本地时区”和“进程存活策略”。
-- `desktop/electron/core/backgroundCron.ts` 目前只支持有限 cron 子集；不要悄悄扩展 UI/配置而不更新计算逻辑。
-- 涉及后台持续运行时，检查无窗口状态、取消逻辑、下次执行时间、失败后的可恢复性。
-
-### Add or change browser extension behavior
-
-- `Plugin/background.js`、`pageObserver.js`、`popup.js` 分别承担后台、页面观察和交互入口。
-- 插件只负责采集，不承载桌面端复杂 AI 工作流。
-- 不要把知识整理、长链路 AI 决策塞回插件侧。
-
-### Add or change website behavior
-
-- `RedBoxweb/` 是独立 Next.js 子项目，有自己的依赖树和测试。
-- 不要把桌面端约束直接拷贝到官网实现里，除非确实共享产品语义。
-
-## Release And Packaging Notes
-
-- 桌面端打包由 `desktop/package.json` 的 `electron-builder` 配置驱动。
-- 发布链路在 `private/scripts/hybrid-release/`：
-  - 远程 Linux 构建 Windows 包
-  - 本地 macOS 构建/签名/可选 notarize
-  - 上传到 `Jamailar/RedBox` release
-- release notes 默认从 `README.md` 的更新日志提取，缺失时才回退最近提交摘要。
-- 改动版本、产物命名、签名、notarize、发布仓库或脚本参数前，必须通读 `private/scripts/hybrid-release/README.md`。
-
-## Security And Configuration
-
-- API key、endpoint、模型配置由用户在设置中填写；禁止硬编码密钥。
-- 新文件系统能力必须验证路径边界，尤其是 workspace、media、cover、knowledge 导入、插件导入等链路。
-- MCP 相关能力通过 `mcpStore.ts` / `mcpRuntime.ts` 管理；不要在其他模块私自起一个不受控的 stdio 客户端。
-- Shell/编辑类工具必须维持工作区边界、确认机制和错误类型，不要绕过现有 tool registry 约束。
 
 ## Known Pitfalls
 
@@ -275,3 +161,77 @@
 - 新增或重构重要 IPC/bridge 能力时，更新相应 README / Docs，避免知识只留在 `main.ts` 里。
 - 新增重要提示词、技能、运行时模式、工具包时，应在附近补足最小文档，让后续维护者知道入口和职责。
 - 如果某次 bug 修复沉淀出新的工程约束，优先把规则加到这里，写得窄、明确、可执行。
+- 计划类文档默认放在与功能最接近的 `Docs/` 目录；桌面端计划优先放在 `desktop/Docs/`。
+- 所有“计划 / 方案 / 路线图 / 改造计划”类 Markdown 文档必须使用 frontmatter，且必须包含执行状态字段，至少包括：
+  - `doc_type: plan`
+  - `execution_status`: `not_started` | `in_progress` | `blocked` | `completed` | `cancelled`
+  - `last_updated`: `YYYY-MM-DD`
+- 如需更细粒度跟踪，可额外增加 `execution_stage`、`owner`、`target_files`、`success_metrics` 等字段，但 `execution_status` 是强制项。
+- 后续新增计划文档时，先更新 frontmatter 中的执行状态，再更新正文，避免出现“文档存在但无法判断执行进度”的情况。
+
+
+# CLAUDE.md
+
+Behavioral guidelines to reduce common LLM coding mistakes. Merge with project-specific instructions as needed.
+
+**Tradeoff:** These guidelines bias toward caution over speed. For trivial tasks, use judgment.
+
+## 1. Think Before Coding
+
+**Don't assume. Don't hide confusion. Surface tradeoffs.**
+
+Before implementing:
+- State your assumptions explicitly. If uncertain, ask.
+- If multiple interpretations exist, present them - don't pick silently.
+- If a simpler approach exists, say so. Push back when warranted.
+- If something is unclear, stop. Name what's confusing. Ask.
+
+## 2. Simplicity First
+
+**Minimum code that solves the problem. Nothing speculative.**
+
+- No features beyond what was asked.
+- No abstractions for single-use code.
+- No "flexibility" or "configurability" that wasn't requested.
+- No error handling for impossible scenarios.
+- If you write 200 lines and it could be 50, rewrite it.
+
+Ask yourself: "Would a senior engineer say this is overcomplicated?" If yes, simplify.
+
+## 3. Surgical Changes
+
+**Touch only what you must. Clean up only your own mess.**
+
+When editing existing code:
+- Don't "improve" adjacent code, comments, or formatting.
+- Don't refactor things that aren't broken.
+- Match existing style, even if you'd do it differently.
+- If you notice unrelated dead code, mention it - don't delete it.
+
+When your changes create orphans:
+- Remove imports/variables/functions that YOUR changes made unused.
+- Don't remove pre-existing dead code unless asked.
+
+The test: Every changed line should trace directly to the user's request.
+
+## 4. Goal-Driven Execution
+
+**Define success criteria. Loop until verified.**
+
+Transform tasks into verifiable goals:
+- "Add validation" → "Write tests for invalid inputs, then make them pass"
+- "Fix the bug" → "Write a test that reproduces it, then make it pass"
+- "Refactor X" → "Ensure tests pass before and after"
+
+For multi-step tasks, state a brief plan:
+```
+1. [Step] → verify: [check]
+2. [Step] → verify: [check]
+3. [Step] → verify: [check]
+```
+
+Strong success criteria let you loop independently. Weak criteria ("make it work") require constant clarification.
+
+---
+
+**These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.

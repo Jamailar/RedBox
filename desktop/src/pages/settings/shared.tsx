@@ -186,14 +186,26 @@ export interface BackgroundTaskItem {
   kind: 'redclaw-project' | 'scheduled-task' | 'long-cycle' | 'heartbeat' | 'memory-maintenance' | 'headless-runtime';
   title: string;
   status: 'running' | 'completed' | 'failed' | 'cancelled';
-  phase: 'starting' | 'thinking' | 'tooling' | 'responding' | 'updating' | 'completed' | 'failed' | 'cancelled';
+  phase: 'queued' | 'starting' | 'thinking' | 'tooling' | 'responding' | 'updating' | 'completed' | 'failed' | 'cancelled';
   sessionId?: string;
   contextId?: string;
   error?: string;
   summary?: string;
   latestText?: string;
   attemptCount: number;
-  workerState: 'idle' | 'starting' | 'running' | 'retry_wait' | 'timed_out' | 'stopping';
+  workerState:
+    | 'idle'
+    | 'queued'
+    | 'leased'
+    | 'running'
+    | 'retrying'
+    | 'succeeded'
+    | 'failed'
+    | 'cancelled'
+    | 'dead_lettered'
+    | 'retry_wait'
+    | 'timed_out'
+    | 'stopping';
   workerMode?: 'main-process' | 'child-json-worker' | 'child-runtime-worker';
   workerPid?: number;
   workerLabel?: string;
@@ -261,12 +273,12 @@ export const normalizeAiModelDescriptors = (
     | string
     | null
     | undefined
-    | { id?: string; capabilities?: Array<ModelCapability | string | null | undefined> }
+    | { id?: string; capability?: ModelCapability | string | null | undefined; capabilities?: Array<ModelCapability | string | null | undefined> }
   >,
 ): AiModelDescriptor[] => {
   const merged = new Map<string, AiModelDescriptor>();
   for (const raw of models) {
-    const descriptor = toAiModelDescriptor(raw as string | { id?: string; capabilities?: Array<ModelCapability | string | null | undefined> });
+    const descriptor = toAiModelDescriptor(raw as string | { id?: string; capability?: ModelCapability | string | null | undefined; capabilities?: Array<ModelCapability | string | null | undefined> });
     if (!descriptor) continue;
     const previous = merged.get(descriptor.id);
     merged.set(descriptor.id, {
@@ -1005,6 +1017,33 @@ export interface McpServerConfig {
   };
 }
 
+export interface McpCapabilitySnapshot {
+  connectionStrategy: string;
+  initializeResponse?: unknown;
+  toolsResponse?: unknown;
+  resourcesResponse?: unknown;
+  resourceTemplatesResponse?: unknown;
+}
+
+export interface McpSessionState {
+  key: string;
+  serverId: string;
+  serverName: string;
+  transport: 'stdio' | 'sse' | 'streamable-http' | string;
+  connectionStrategy: string;
+  initializedAt: number;
+  lastUsedAt: number;
+  callCount: number;
+  toolCount: number;
+  resourceCount: number;
+  resourceTemplateCount: number;
+}
+
+export interface McpServerRuntimeItem {
+  server: McpServerConfig;
+  session?: McpSessionState | null;
+}
+
 export interface LocalAiGuide {
   title: string;
   command: string;
@@ -1097,7 +1136,7 @@ export const parseAiSources = (raw: string | undefined): AiSourceConfig[] => {
         const model = String(item.model || item.modelName || '');
         const modelsMeta = normalizeAiModelDescriptors(
           Array.isArray(item.modelsMeta)
-            ? item.modelsMeta.map((value) => (value && typeof value === 'object' ? value as { id?: string; capabilities?: Array<ModelCapability | string | null | undefined> } : null))
+            ? item.modelsMeta.map((value) => (value && typeof value === 'object' ? value as { id?: string; capability?: ModelCapability | string | null | undefined; capabilities?: Array<ModelCapability | string | null | undefined> } : null))
             : [],
         );
         const models = Array.isArray(item.models)
@@ -1346,7 +1385,7 @@ export const filterOfficialModelsByCapability = (
 };
 
 export const toAiModelDescriptor = (
-  model: string | { id?: string; capabilities?: Array<ModelCapability | string | null | undefined> },
+  model: string | { id?: string; capability?: ModelCapability | string | null | undefined; capabilities?: Array<ModelCapability | string | null | undefined> },
 ): AiModelDescriptor | null => {
   if (typeof model === 'string') {
     const id = model.trim();
@@ -1362,8 +1401,12 @@ export const toAiModelDescriptor = (
   const id = String(model?.id || '').trim();
   if (!id) return null;
   const forcedCapabilities = getForcedModelCapabilities(id);
-  const capabilities = Array.isArray(model?.capabilities) && model.capabilities.length > 0
-    ? normalizeModelCapabilities(model.capabilities)
+  const explicitCapabilities = [
+    ...(Array.isArray(model?.capabilities) ? model.capabilities : []),
+    model?.capability,
+  ];
+  const capabilities = explicitCapabilities.some((value) => String(value || '').trim())
+    ? normalizeModelCapabilities(explicitCapabilities)
     : inferModelCapabilities(id);
   return {
     id,

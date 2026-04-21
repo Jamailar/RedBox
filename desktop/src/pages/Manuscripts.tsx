@@ -2,18 +2,20 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type
 import {
     ArrowLeft,
     AudioLines,
-    ChevronRight,
     Clapperboard,
     ExternalLink,
     FileAudio,
     FileImage,
     FileText,
+    Folder,
     FolderOpen,
     FolderPlus,
     Grid2X2,
     Image as ImageIcon,
     ImagePlus,
+    Loader2,
     Plus,
+    Play,
     RefreshCw,
     Search,
     Sparkles,
@@ -23,9 +25,28 @@ import {
 } from 'lucide-react';
 import clsx from 'clsx';
 import { resolveAssetUrl } from '../utils/pathManager';
-import type { PendingChatMessage } from '../App';
+import { formatTimestampDate, parseTimestampMs } from '../utils/time';
+import { ConfirmDialog } from '../components/ConfirmDialog';
+import { EditorLayoutToggleButton } from '../components/manuscripts/EditorLayoutToggleButton';
+import {
+    loadRichpostPreviewHtml,
+    RICHPOST_RENDER_VIEWPORT_HEIGHT,
+    RICHPOST_RENDER_VIEWPORT_WIDTH,
+    renderRichpostHtmlToPng,
+    renderRichpostPageUrlToPng,
+} from '../components/manuscripts/richpostPreviewImage';
+import { stabilizeRichpostPagination } from '../components/manuscripts/richpostPaginationGuard';
+import { appAlert, appConfirm } from '../utils/appDialogs';
+import type { ImmersiveMode, PendingChatMessage } from '../App';
 import { usePageRefresh } from '../hooks/usePageRefresh';
+import { composeMarkdownWithFrontmatter, parseMarkdownFrontmatter } from '../utils/markdownFrontmatter';
+import { uiDebug, uiMeasure } from '../utils/uiDebug';
 import { REDBOX_OFFICIAL_VIDEO_BASE_URL, getRedBoxOfficialVideoModel } from '../../shared/redboxVideo';
+import type { RemotionCompositionConfig } from '../components/manuscripts/remotion/types';
+import type { EditorProjectFile } from '../components/manuscripts/editorProject';
+import { WritingDraftWorkbench } from '../components/manuscripts/WritingDraftWorkbench';
+import { getLiquidGlassMenuItemClassName, LiquidGlassMenuPanel, LiquidGlassMenuSeparator } from '@/components/ui/liquid-glass-menu';
+import { buildEditorSessionBinding, type EditorAiWorkspaceMode } from '../features/chat/editorSessionBinding';
 import {
     ARTICLE_DRAFT_EXTENSION,
     AUDIO_DRAFT_EXTENSION,
@@ -35,11 +56,8 @@ import {
     VIDEO_DRAFT_EXTENSION,
 } from '../../shared/manuscriptFiles';
 
-const LegacyManuscriptsWorkspace = lazy(async () => ({
-    default: (await import('./LegacyManuscriptsWorkspace')).Manuscripts,
-}));
 const VideoDraftWorkbench = lazy(async () => ({
-    default: (await import('../components/manuscripts/VideoDraftWorkbench')).VideoDraftWorkbench,
+    default: (await import('../components/manuscripts/ExperimentalVideoWorkbench')).ExperimentalVideoWorkbench,
 }));
 const AudioDraftWorkbench = lazy(async () => ({
     default: (await import('../components/manuscripts/AudioDraftWorkbench')).AudioDraftWorkbench,
@@ -48,7 +66,6 @@ const AudioDraftWorkbench = lazy(async () => ({
 type DraftFilter = 'all' | 'drafts' | 'media' | 'image' | 'video' | 'audio' | 'folders';
 type DraftLayout = 'gallery' | 'list';
 type CreateKind = 'folder' | 'longform' | 'richpost' | 'video' | 'audio';
-
 type FileNode = {
     name: string;
     path: string;
@@ -59,6 +76,12 @@ type FileNode = {
     draftType?: CreateKind | 'unknown';
     updatedAt?: number;
     summary?: string;
+    richpostPreviewFile?: string;
+    richpostPreviewFileUrl?: string;
+    richpostPreviewUpdatedAt?: number;
+    richpostPreviewPageFile?: string;
+    richpostPreviewPageFileUrl?: string;
+    richpostPreviewPageUpdatedAt?: number;
 };
 
 type MediaAssetSource = 'generated' | 'planned' | 'imported' | 'external';
@@ -129,11 +152,52 @@ type ManuscriptReadResult = {
     metadata?: Record<string, unknown>;
 };
 
+type ManuscriptWriteProposal = {
+    id: string;
+    filePath: string;
+    sessionId?: string | null;
+    toolCallId?: string | null;
+    draftType?: string | null;
+    title?: string | null;
+    metadata?: Record<string, unknown> | null;
+    baseContent: string;
+    proposedContent: string;
+    createdAt: string;
+    updatedAt: string;
+};
+
 type FileCardMeta = {
     title: string;
     draftType: CreateKind | 'unknown';
     updatedAt?: number;
     summary: string;
+    richpostPreviewFileUrl?: string;
+    richpostPreviewUpdatedAt?: number;
+    richpostPreviewPageFile?: string;
+    richpostPreviewPageFileUrl?: string;
+    richpostPreviewPageUpdatedAt?: number;
+};
+
+type RichpostPreviewOverride = {
+    fileUrl: string;
+    updatedAt: number;
+};
+
+type DraftCard = {
+    id: string;
+    kind: 'draft';
+    updatedAt: number;
+    createdAt: number;
+    file: FileNode;
+    meta?: FileCardMeta;
+    title: string;
+    summary: string;
+    draftType: CreateKind | 'unknown';
+    richpostPreviewFileUrl: string;
+    richpostPreviewUpdatedAt: number;
+    richpostPreviewPageFile: string;
+    richpostPreviewPageFileUrl: string;
+    richpostPreviewPageUpdatedAt: number;
 };
 
 type EditorDescriptor = {
@@ -141,26 +205,210 @@ type EditorDescriptor = {
     draftType: CreateKind | 'unknown';
 };
 
+type FolderContextMenuState = {
+    visible: boolean;
+    x: number;
+    y: number;
+    folderPath: string;
+    folderName: string;
+};
+
+type AssetContextMenuState = {
+    visible: boolean;
+    x: number;
+    y: number;
+    assetId: string;
+    assetTitle: string;
+};
+
+type DraftContextMenuState = {
+    visible: boolean;
+    x: number;
+    y: number;
+    filePath: string;
+    title: string;
+};
+
+type VideoScriptApprovalState = {
+    status?: 'pending' | 'confirmed';
+    lastScriptUpdateAt?: number | null;
+    lastScriptUpdateSource?: string | null;
+    confirmedAt?: number | null;
+};
+
+type VideoProjectState = {
+    scriptBody?: string;
+    scriptApproval?: VideoScriptApprovalState;
+    assets?: Array<Record<string, unknown>>;
+    baseMedia?: {
+        sourceAssetIds?: string[];
+        outputPath?: string | null;
+        durationMs?: number;
+        width?: number | null;
+        height?: number | null;
+        status?: string;
+        updatedAt?: number | null;
+    };
+    ffmpegRecipeSummary?: string | null;
+    remotion?: RemotionCompositionConfig | null;
+    renderOutput?: string | null;
+    legacy?: Record<string, unknown>;
+};
+
 type PackageState = {
     manifest?: Record<string, unknown>;
     assets?: { items?: Array<Record<string, unknown>> };
     cover?: Record<string, unknown>;
     images?: { items?: Array<Record<string, unknown>> };
+    remotion?: RemotionCompositionConfig & {
+        render?: {
+            outputPath?: string;
+            renderedAt?: number;
+            durationInFrames?: number;
+        };
+    };
     timelineSummary?: {
         trackCount?: number;
         clipCount?: number;
         sourceRefs?: Array<Record<string, unknown>>;
         clips?: Array<Record<string, unknown>>;
+        trackNames?: string[];
+        trackUi?: Record<string, unknown>;
     };
+    editorProject?: EditorProjectFile | null;
+    videoProject?: VideoProjectState | null;
+    contentMapExists?: boolean;
+    contentMapFile?: string | null;
+    contentMapUpdatedAt?: number | null;
+    layoutTokensExists?: boolean;
+    layoutTokensFile?: string | null;
+    layoutTokensUpdatedAt?: number | null;
+    richpostPagePlanExists?: boolean;
+    richpostPagePlanFile?: string | null;
+    richpostPagePlanUpdatedAt?: number | null;
+    richpostMastersDir?: string | null;
+    richpostMasterCount?: number;
+    richpostMasters?: Array<{
+        id?: string;
+        file?: string | null;
+        fileUrl?: string | null;
+        updatedAt?: number | null;
+    }>;
+    richpostTheme?: {
+        id?: string | null;
+        label?: string | null;
+        description?: string | null;
+    } | null;
+    richpostTypography?: {
+        fontScale?: number | null;
+        lineHeightScale?: number | null;
+    } | null;
+    richpostFontScale?: number | null;
+    richpostLineHeightScale?: number | null;
+    richpostThemeId?: string | null;
+    richpostThemeLabel?: string | null;
+    richpostThemeDescription?: string | null;
+    richpostThemeCatalog?: Array<{
+        id?: string;
+        label?: string;
+        description?: string | null;
+        source?: string | null;
+        shellBg?: string | null;
+        pageBg?: string | null;
+        surfaceColor?: string | null;
+        surfaceBg?: string | null;
+        surfaceBorder?: string | null;
+        surfaceShadow?: string | null;
+        surfaceRadius?: string | null;
+        imageRadius?: string | null;
+        previewCardBg?: string | null;
+        previewCardBorder?: string | null;
+        previewCardShadow?: string | null;
+        headingColor?: string | null;
+        bodyColor?: string | null;
+        textColor?: string | null;
+        mutedColor?: string | null;
+        accentColor?: string | null;
+        headingFont?: string | null;
+        bodyFont?: string | null;
+    }>;
+    longformLayoutPreset?: {
+        id?: string | null;
+        label?: string | null;
+        description?: string | null;
+    } | null;
+    longformLayoutPresetId?: string | null;
+    longformLayoutPresetLabel?: string | null;
+    longformLayoutPresetDescription?: string | null;
+    longformLayoutPresetCatalog?: Array<{
+        id?: string;
+        label?: string;
+        description?: string | null;
+        surfaceColor?: string | null;
+        textColor?: string | null;
+        accentColor?: string | null;
+    }>;
+    richpostPagesDir?: string | null;
+    richpostThemesDir?: string | null;
+    richpostThemesFile?: string | null;
+    richpostThemeTemplateFile?: string | null;
+    richpostThemeRoot?: string | null;
+    richpostThemeConfigFile?: string | null;
+    richpostThemeTokensFile?: string | null;
+    richpostThemePagePlanFile?: string | null;
+    richpostThemeAssetsDir?: string | null;
+    richpostThemeMastersDir?: string | null;
+    richpostThemeMasters?: Array<{
+        id?: string;
+        file?: string | null;
+        fileUrl?: string | null;
+        updatedAt?: number | null;
+    }> | null;
+    richpostPageCount?: number;
+    richpostPages?: Array<{
+        id?: string;
+        label?: string;
+        template?: string;
+        title?: string | null;
+        summary?: string | null;
+        blockIds?: string[];
+        file?: string | null;
+        fileUrl?: string | null;
+        exists?: boolean;
+        updatedAt?: number | null;
+    }>;
+    layoutTemplateExists?: boolean;
+    wechatTemplateExists?: boolean;
+    layoutTemplateFile?: string | null;
+    wechatTemplateFile?: string | null;
+    layoutTemplateUpdatedAt?: number | null;
+    wechatTemplateUpdatedAt?: number | null;
     hasLayoutHtml?: boolean;
     hasWechatHtml?: boolean;
+    layoutHtmlExists?: boolean;
+    wechatHtmlExists?: boolean;
+    layoutHtmlFile?: string | null;
+    wechatHtmlFile?: string | null;
+    layoutHtmlFileUrl?: string | null;
+    wechatHtmlFileUrl?: string | null;
+    layoutHtmlUpdatedAt?: number | null;
+    wechatHtmlUpdatedAt?: number | null;
     layoutHtml?: string;
     wechatHtml?: string;
 };
 
+type ExportVideoResolution = 'source' | '1080p' | '720p';
+
 const DEFAULT_UNTITLED_DRAFT_TITLE = '未命名';
+const RICHPOST_CARD_PREVIEW_WIDTH = 1080;
+const RICHPOST_CARD_PREVIEW_HEIGHT = 1440;
+const RICHPOST_CARD_PREVIEW_VIEWPORT_WIDTH = RICHPOST_RENDER_VIEWPORT_WIDTH;
+const RICHPOST_CARD_PREVIEW_VIEWPORT_HEIGHT = RICHPOST_RENDER_VIEWPORT_HEIGHT;
+const RICHPOST_CARD_PREVIEW_DEBOUNCE_MS = 700;
 
 function resolveDraftExtension(kind: CreateKind | 'unknown'): string {
+    if (kind === 'longform') return ARTICLE_DRAFT_EXTENSION;
+    if (kind === 'richpost') return POST_DRAFT_EXTENSION;
     if (kind === 'video') return VIDEO_DRAFT_EXTENSION;
     if (kind === 'audio') return AUDIO_DRAFT_EXTENSION;
     return '.md';
@@ -170,9 +418,42 @@ function stripDraftExtension(fileName: string): string {
     return stripManuscriptExtension(fileName);
 }
 
+function exportResolutionDimensions(
+    width: number,
+    height: number,
+    preset: ExportVideoResolution,
+): { width: number; height: number } {
+    const safeWidth = Math.max(1, width || 1);
+    const safeHeight = Math.max(1, height || 1);
+    if (preset === 'source') {
+        return { width: safeWidth, height: safeHeight };
+    }
+    const landscape = safeWidth > safeHeight;
+    const portrait = safeHeight > safeWidth;
+    const target = preset === '720p'
+        ? landscape
+            ? { width: 1280, height: 720 }
+            : portrait
+                ? { width: 720, height: 1280 }
+                : { width: 720, height: 720 }
+        : landscape
+            ? { width: 1920, height: 1080 }
+            : portrait
+                ? { width: 1080, height: 1920 }
+                : { width: 1080, height: 1080 };
+    const scale = Math.min(target.width / safeWidth, target.height / safeHeight, 1);
+    return {
+        width: Math.max(1, Math.round(safeWidth * scale)),
+        height: Math.max(1, Math.round(safeHeight * scale)),
+    };
+}
+
 function ensureDraftFileName(baseName: string, kind: CreateKind | 'unknown'): string {
     const extension = resolveDraftExtension(kind);
-    return ensureManuscriptFileName(baseName, extension as typeof VIDEO_DRAFT_EXTENSION | typeof AUDIO_DRAFT_EXTENSION | '.md');
+    return ensureManuscriptFileName(
+        baseName,
+        extension as typeof ARTICLE_DRAFT_EXTENSION | typeof POST_DRAFT_EXTENSION | typeof VIDEO_DRAFT_EXTENSION | typeof AUDIO_DRAFT_EXTENSION | '.md',
+    );
 }
 
 interface ManuscriptsProps {
@@ -180,16 +461,20 @@ interface ManuscriptsProps {
     onFileConsumed?: () => void;
     onNavigateToRedClaw?: (message: PendingChatMessage) => void;
     isActive?: boolean;
-    onImmersiveModeChange?: (active: boolean) => void;
+    onImmersiveModeChange?: (mode: ImmersiveMode) => void;
 }
 
-const CREATE_KIND_OPTIONS: Array<{ id: CreateKind; label: string; description: string; icon: typeof FileText }> = [
-    { id: 'longform', label: '长文', description: '适合长篇文章、公众号正文、深度稿。', icon: FileText },
-    { id: 'richpost', label: '图文', description: '适合小红书、图文笔记、卡片式内容。', icon: FileImage },
-    { id: 'video', label: '视频', description: '用于脚本、分镜、镜头资产和成片整理。', icon: Clapperboard },
-    { id: 'audio', label: '音频', description: '用于播客、口播、配音和音频剪辑。', icon: AudioLines },
-    { id: 'folder', label: '文件夹', description: '整理稿件和资产，像在线 Office 一样管理内容。', icon: FolderPlus },
+const CREATE_KIND_OPTIONS: Array<{ id: CreateKind; label: string; icon: typeof FileText; accentClass: string; available: boolean; unavailableHint?: string }> = [
+    { id: 'longform', label: '长文', icon: FileText, accentClass: 'from-[#E8D9FF] via-[#F6EEFF] to-white text-[#7C57C8]', available: false, unavailableHint: '暂未开放' },
+    { id: 'richpost', label: '图文', icon: FileImage, accentClass: 'from-[#FFD9C7] via-[#FFF1E9] to-white text-[#C56B3D]', available: true },
+    { id: 'video', label: '视频', icon: Clapperboard, accentClass: 'from-[#D6E7FF] via-[#EEF5FF] to-white text-[#4C76D8]', available: false, unavailableHint: '正在开发中' },
+    { id: 'audio', label: '音频', icon: AudioLines, accentClass: 'from-[#D8F6E8] via-[#EFFCF5] to-white text-[#2E8B65]', available: false, unavailableHint: '正在开发中' },
 ];
+
+const CREATE_KIND_OPTION_MAP: Record<CreateKind, (typeof CREATE_KIND_OPTIONS)[number]> = CREATE_KIND_OPTIONS.reduce((acc, option) => {
+    acc[option.id] = option;
+    return acc;
+}, {} as Record<CreateKind, (typeof CREATE_KIND_OPTIONS)[number]>);
 
 const FILTER_OPTIONS: Array<{ id: DraftFilter; label: string }> = [
     { id: 'all', label: '全部' },
@@ -200,6 +485,10 @@ const FILTER_OPTIONS: Array<{ id: DraftFilter; label: string }> = [
     { id: 'audio', label: '音频' },
     { id: 'folders', label: '文件夹' },
 ];
+
+const MANUSCRIPTS_INITIAL_ASSET_LIMIT = 0;
+const MANUSCRIPTS_ACTIVE_ASSET_LIMIT = 60;
+const MANUSCRIPTS_CARD_RENDER_LIMIT = 80;
 
 const IMAGE_ASPECT_RATIO_OPTIONS = [
     { value: '3:4', label: '3:4' },
@@ -244,6 +533,32 @@ function getCurrentFolderChildren(tree: FileNode[], folderPath: string): FileNod
     return walk(tree) || [];
 }
 
+function collectNestedFiles(items: FileNode[]): FileNode[] {
+    const result: FileNode[] = [];
+    const walk = (nodes: FileNode[]) => {
+        for (const node of nodes) {
+            if (node.isDirectory) {
+                walk(node.children || []);
+            } else {
+                result.push(node);
+            }
+        }
+    };
+    walk(items);
+    return result;
+}
+
+function isInternalPackageFile(filePath: string): boolean {
+    const parts = String(filePath || '').replace(/\\/g, '/').split('/').filter(Boolean);
+    if (parts.length <= 1) return false;
+    return parts.slice(0, -1).some((part) => (
+        part.endsWith(ARTICLE_DRAFT_EXTENSION)
+        || part.endsWith(POST_DRAFT_EXTENSION)
+        || part.endsWith(VIDEO_DRAFT_EXTENSION)
+        || part.endsWith(AUDIO_DRAFT_EXTENSION)
+    ));
+}
+
 function getFolderTrail(folderPath: string): Array<{ label: string; path: string }> {
     if (!folderPath) return [{ label: '全部草稿', path: '' }];
     const parts = folderPath.split('/').filter(Boolean);
@@ -254,6 +569,64 @@ function getFolderTrail(folderPath: string): Array<{ label: string; path: string
         trail.push({ label: part, path: cursor });
     }
     return trail;
+}
+
+function getParentFolderPath(folderPath: string): string {
+    const parts = folderPath.split('/').filter(Boolean);
+    if (parts.length <= 1) return '';
+    return parts.slice(0, -1).join('/');
+}
+
+function getRelativeFolderPath(filePath: string): string {
+    const normalized = String(filePath || '').replace(/\\/g, '/').trim();
+    if (!normalized) return '';
+    const parts = normalized.split('/').filter(Boolean);
+    if (parts.length <= 1) return '';
+    return parts.slice(0, -1).join('/');
+}
+
+function buildMediaFolderTree(assets: MediaAsset[]): FileNode[] {
+    const root: FileNode[] = [];
+
+    const ensureChildFolder = (items: FileNode[], name: string, fullPath: string): FileNode => {
+        let existing = items.find((item) => item.isDirectory && item.path === fullPath);
+        if (!existing) {
+            existing = {
+                name,
+                path: fullPath,
+                isDirectory: true,
+                children: [],
+            };
+            items.push(existing);
+        }
+        return existing;
+    };
+
+    for (const asset of assets) {
+        const folderPath = getRelativeFolderPath(asset.relativePath || '');
+        if (!folderPath) continue;
+        const parts = folderPath.split('/').filter(Boolean);
+        let currentItems = root;
+        let currentPath = '';
+        for (const part of parts) {
+            currentPath = currentPath ? `${currentPath}/${part}` : part;
+            const folder = ensureChildFolder(currentItems, part, currentPath);
+            currentItems = folder.children || [];
+            folder.children = currentItems;
+        }
+    }
+
+    const sortNodes = (items: FileNode[]) => {
+        items.sort((left, right) => left.name.localeCompare(right.name, 'zh-Hans-CN'));
+        for (const item of items) {
+            if (item.children?.length) {
+                sortNodes(item.children);
+            }
+        }
+    };
+
+    sortNodes(root);
+    return root;
 }
 
 function buildDraftTemplate(title: string, kind: Exclude<CreateKind, 'folder'>): string {
@@ -271,9 +644,38 @@ function buildDraftTemplate(title: string, kind: Exclude<CreateKind, 'folder'>):
         return `# ${safeTitle}\n\n## ${sectionTitle}\n\n## 剪辑目标\n\n\n## 时间线规划\n\n\n## 素材备注\n\n`;
     }
 
+    if (kind === 'richpost') {
+        return '';
+    }
+
     const quotedTitle = JSON.stringify(safeTitle);
 
     return `---\nid: draft_${ts}\ntitle: ${quotedTitle}\ndraftType: ${kind}\nstatus: writing\ncreatedAt: ${ts}\nupdatedAt: ${ts}\n---\n\n# ${safeTitle}\n\n## ${sectionTitle}\n\n`;
+}
+
+function shouldHideFrontmatterInEditor(draftType: CreateKind | 'unknown' | null | undefined): boolean {
+    return draftType !== 'video' && draftType !== 'audio';
+}
+
+function splitWritingDraftContent(content: string, draftType: CreateKind | 'unknown' | null | undefined) {
+    const source = String(content || '');
+    if (!shouldHideFrontmatterInEditor(draftType)) {
+        return {
+            body: source,
+            frontmatterBlock: null as string | null,
+        };
+    }
+    const parsed = parseMarkdownFrontmatter(source);
+    if (!parsed.hasFrontmatter) {
+        return {
+            body: source,
+            frontmatterBlock: null as string | null,
+        };
+    }
+    return {
+        body: parsed.body,
+        frontmatterBlock: parsed.block,
+    };
 }
 
 function normalizeDraftFileName(input: string): string {
@@ -290,6 +692,10 @@ function pathBasenameSafe(rawPath: string): string {
     const normalized = String(rawPath || '').replace(/\\/g, '/');
     const parts = normalized.split('/').filter(Boolean);
     return parts[parts.length - 1] || '';
+}
+
+function isSameDraftRelativePath(left: string | null | undefined, right: string | null | undefined): boolean {
+    return String(left || '').replace(/\\/g, '/').trim() === String(right || '').replace(/\\/g, '/').trim();
 }
 
 function inferAssetKind(asset: MediaAsset): 'image' | 'video' | 'audio' | 'unknown' {
@@ -345,10 +751,7 @@ function inferImageAspectFromSize(size: string): string {
 }
 
 function formatDateLabel(input?: string | number): string {
-    if (!input) return '';
-    const value = typeof input === 'number' ? input : Date.parse(String(input));
-    if (!Number.isFinite(value)) return '';
-    return new Date(value).toLocaleDateString();
+    return formatTimestampDate(input);
 }
 
 function resolveDraftTypeLabel(type: CreateKind | 'unknown'): string {
@@ -412,6 +815,11 @@ function collectFileMetaMap(nodes: FileNode[]): Record<string, FileCardMeta> {
                 draftType: item.draftType || 'unknown',
                 updatedAt: Number(item.updatedAt || 0) || undefined,
                 summary: item.summary || '',
+                richpostPreviewFileUrl: item.richpostPreviewFileUrl || undefined,
+                richpostPreviewUpdatedAt: Number(item.richpostPreviewUpdatedAt || 0) || undefined,
+                richpostPreviewPageFile: item.richpostPreviewPageFile || undefined,
+                richpostPreviewPageFileUrl: item.richpostPreviewPageFileUrl || undefined,
+                richpostPreviewPageUpdatedAt: Number(item.richpostPreviewPageUpdatedAt || 0) || undefined,
             };
         }
     };
@@ -429,15 +837,50 @@ export function Manuscripts({ pendingFile, onFileConsumed, onNavigateToRedClaw, 
     const [isRefreshing, setIsRefreshing] = useState(false);
     const [error, setError] = useState('');
     const [activeFolder, setActiveFolder] = useState('');
+    const [mediaFolder, setMediaFolder] = useState('');
     const [query, setQuery] = useState('');
+    const [isSearchOpen, setIsSearchOpen] = useState(false);
     const [filter, setFilter] = useState<DraftFilter>('all');
     const [layout, setLayout] = useState<DraftLayout>('gallery');
     const [createOpen, setCreateOpen] = useState(false);
+    const [folderCreateOpen, setFolderCreateOpen] = useState(false);
     const [createKind, setCreateKind] = useState<CreateKind>('longform');
-    const [createTitle, setCreateTitle] = useState('');
+    const [folderCreateTitle, setFolderCreateTitle] = useState('');
+    const [folderRenameOpen, setFolderRenameOpen] = useState(false);
+    const [folderRenamePath, setFolderRenamePath] = useState('');
+    const [folderRenameTitle, setFolderRenameTitle] = useState('');
+    const [assetRenameOpen, setAssetRenameOpen] = useState(false);
+    const [assetRenameId, setAssetRenameId] = useState('');
+    const [assetRenameTitle, setAssetRenameTitle] = useState('');
+    const [draftRenameOpen, setDraftRenameOpen] = useState(false);
+    const [draftRenamePath, setDraftRenamePath] = useState('');
+    const [draftRenameTitle, setDraftRenameTitle] = useState('');
     const [isCreating, setIsCreating] = useState(false);
+    const [folderContextMenu, setFolderContextMenu] = useState<FolderContextMenuState>({
+        visible: false,
+        x: 0,
+        y: 0,
+        folderPath: '',
+        folderName: '',
+    });
+    const [assetContextMenu, setAssetContextMenu] = useState<AssetContextMenuState>({
+        visible: false,
+        x: 0,
+        y: 0,
+        assetId: '',
+        assetTitle: '',
+    });
+    const [draftContextMenu, setDraftContextMenu] = useState<DraftContextMenuState>({
+        visible: false,
+        x: 0,
+        y: 0,
+        filePath: '',
+        title: '',
+    });
+    const [richpostPreviewOverrides, setRichpostPreviewOverrides] = useState<Record<string, RichpostPreviewOverride>>({});
     const [previewAsset, setPreviewAsset] = useState<MediaAsset | null>(null);
     const [workingId, setWorkingId] = useState<string | null>(null);
+    const [pendingDeleteDraftPath, setPendingDeleteDraftPath] = useState<string | null>(null);
     const [settings, setSettings] = useState<SettingsShape>({});
     const [isImageModalOpen, setIsImageModalOpen] = useState(false);
     const [isVideoModalOpen, setIsVideoModalOpen] = useState(false);
@@ -471,22 +914,94 @@ export function Manuscripts({ pendingFile, onFileConsumed, onNavigateToRedClaw, 
     const [generatedVideoAssets, setGeneratedVideoAssets] = useState<GeneratedAsset[]>([]);
     const [isUpgradingDraft, setIsUpgradingDraft] = useState(false);
     const [packageState, setPackageState] = useState<PackageState | null>(null);
+    const [isGeneratingRemotion, setIsGeneratingRemotion] = useState(false);
+    const [isRenderingRemotion, setIsRenderingRemotion] = useState(false);
+    const [isExportVideoModalOpen, setIsExportVideoModalOpen] = useState(false);
+    const [exportVideoResolution, setExportVideoResolution] = useState<ExportVideoResolution>('1080p');
+    const [exportVideoPath, setExportVideoPath] = useState('');
+    const [exportVideoProgress, setExportVideoProgress] = useState(0);
+    const [exportVideoStage, setExportVideoStage] = useState('');
+    const [exportVideoError, setExportVideoError] = useState('');
     const [bindAssetRole, setBindAssetRole] = useState<'cover' | 'image' | 'asset'>('image');
     const [isBindAssetModalOpen, setIsBindAssetModalOpen] = useState(false);
     const [editorChatSessionId, setEditorChatSessionId] = useState<string | null>(null);
+    const [editorChatSessionReady, setEditorChatSessionReady] = useState(false);
     const [editorBody, setEditorBody] = useState('');
+    const [editorFrontmatterBlock, setEditorFrontmatterBlock] = useState<string | null>(null);
     const [editorMetadata, setEditorMetadata] = useState<Record<string, unknown>>({});
+    const [editorWriteProposal, setEditorWriteProposal] = useState<ManuscriptWriteProposal | null>(null);
     const [editorBodyDirty, setEditorBodyDirty] = useState(false);
     const [isSavingEditorBody, setIsSavingEditorBody] = useState(false);
+    const [isApplyingWriteProposal, setIsApplyingWriteProposal] = useState(false);
+    const [isRejectingWriteProposal, setIsRejectingWriteProposal] = useState(false);
+    const [editorAiWorkspaceMode, setEditorAiWorkspaceMode] = useState<EditorAiWorkspaceMode>({
+        id: 'manuscript-editing',
+        label: '稿件编辑',
+        activeSkills: [],
+    });
+    const [immersiveMaterialsCollapsed, setImmersiveMaterialsCollapsed] = useState(false);
+    const [immersiveTimelineCollapsed, setImmersiveTimelineCollapsed] = useState(false);
     const treeRequestIdRef = useRef(0);
     const assetsRequestIdRef = useRef(0);
     const hasLoadedSnapshotRef = useRef(false);
+    const deferredAssetsTimerRef = useRef<number | null>(null);
+    const searchPopoverRef = useRef<HTMLDivElement | null>(null);
+    const searchInputRef = useRef<HTMLInputElement | null>(null);
+    const folderContextMenuRef = useRef<HTMLDivElement | null>(null);
+    const assetContextMenuRef = useRef<HTMLDivElement | null>(null);
+    const draftContextMenuRef = useRef<HTMLDivElement | null>(null);
+    const editorFileRef = useRef<string | null>(null);
+    const editorBodyRef = useRef('');
+    const editorFrontmatterBlockRef = useRef<string | null>(null);
+    const editorMetadataRef = useRef<Record<string, unknown>>({});
+    const editorBodyDirtyRef = useRef(false);
+    const editorSavePromiseRef = useRef<Promise<boolean> | null>(null);
+    const richpostTypographyRequestIdRef = useRef(0);
+    const richpostAutoRenderRequestKeyRef = useRef<string | null>(null);
+    const richpostPreviewGenerationRef = useRef<Set<string>>(new Set());
+    const richpostCardPreviewTimerRef = useRef<number | null>(null);
+    const richpostCardPreviewRenderedAtRef = useRef<Record<string, number>>({});
     const fileMetaMap = useMemo(() => collectFileMetaMap(tree), [tree]);
+    const isMediaScope = filter === 'media' || filter === 'image' || filter === 'video' || filter === 'audio';
+    const mediaFolderTree = useMemo(() => buildMediaFolderTree(assets), [assets]);
+    const currentEditorContent = useMemo(
+        () => composeMarkdownWithFrontmatter(editorBody, editorFrontmatterBlock),
+        [editorBody, editorFrontmatterBlock]
+    );
+
+    useEffect(() => {
+        editorFileRef.current = editorFile;
+    }, [editorFile]);
+
+    useEffect(() => {
+        editorBodyRef.current = editorBody;
+    }, [editorBody]);
+
+    useEffect(() => {
+        editorFrontmatterBlockRef.current = editorFrontmatterBlock;
+    }, [editorFrontmatterBlock]);
+
+    useEffect(() => {
+        editorMetadataRef.current = editorMetadata;
+    }, [editorMetadata]);
+
+    useEffect(() => {
+        editorBodyDirtyRef.current = editorBodyDirty;
+    }, [editorBodyDirty]);
+
+    useEffect(() => () => {
+        if (richpostCardPreviewTimerRef.current != null) {
+            window.clearTimeout(richpostCardPreviewTimerRef.current);
+            richpostCardPreviewTimerRef.current = null;
+        }
+    }, []);
 
     const loadTree = useCallback(async () => {
         const requestId = ++treeRequestIdRef.current;
         try {
-            const treeResult = await window.ipcRenderer.invoke('manuscripts:list') as Promise<FileNode[]>;
+            const treeResult = await uiMeasure('manuscripts', 'load_tree', async () => (
+                window.ipcRenderer.invoke('manuscripts:list') as Promise<FileNode[]>
+            ), { requestId, mode, isActive });
             if (requestId !== treeRequestIdRef.current) return;
             setTree(Array.isArray(treeResult) ? treeResult : []);
         } catch (loadError) {
@@ -500,10 +1015,12 @@ export function Manuscripts({ pendingFile, onFileConsumed, onNavigateToRedClaw, 
         }
     }, []);
 
-    const loadAssets = useCallback(async () => {
+    const loadAssets = useCallback(async (limit = MANUSCRIPTS_ACTIVE_ASSET_LIMIT) => {
         const requestId = ++assetsRequestIdRef.current;
         try {
-            const mediaResult = await window.ipcRenderer.invoke('media:list', { limit: 500 }) as { success?: boolean; assets?: MediaAsset[]; error?: string };
+            const mediaResult = await uiMeasure('manuscripts', 'load_assets', async () => (
+                window.ipcRenderer.invoke('media:list', { limit }) as Promise<{ success?: boolean; assets?: MediaAsset[]; error?: string }>
+            ), { requestId, mode, isActive, limit });
             if (requestId !== assetsRequestIdRef.current) return;
             if (!mediaResult?.success) {
                 throw new Error(mediaResult?.error || '加载媒体资产失败');
@@ -517,9 +1034,10 @@ export function Manuscripts({ pendingFile, onFileConsumed, onNavigateToRedClaw, 
             }
             throw loadError;
         }
-    }, []);
+    }, [isActive, mode]);
 
     const loadData = useCallback(async () => {
+        uiDebug('manuscripts', 'load_data:start', { mode, isActive, hasSnapshot: hasLoadedSnapshotRef.current });
         if (hasLoadedSnapshotRef.current) {
             setIsRefreshing(true);
         } else {
@@ -527,15 +1045,21 @@ export function Manuscripts({ pendingFile, onFileConsumed, onNavigateToRedClaw, 
         }
         setError('');
         try {
-            await Promise.all([loadTree(), loadAssets()]);
+            await Promise.all([loadTree(), loadAssets(MANUSCRIPTS_INITIAL_ASSET_LIMIT)]);
             hasLoadedSnapshotRef.current = true;
+            uiDebug('manuscripts', 'load_data:done', {
+                mode,
+                isActive,
+                treeCount: tree.length,
+                assetCount: assets.length,
+            });
         } catch (loadError) {
             setError(loadError instanceof Error ? loadError.message : '加载草稿失败');
         } finally {
             setLoading(false);
             setIsRefreshing(false);
         }
-    }, [loadAssets, loadTree]);
+    }, [assets.length, isActive, loadAssets, loadTree, mode, tree.length]);
 
     const handleImportMediaFiles = useCallback(async () => {
         setWorkingId('media-import');
@@ -554,7 +1078,7 @@ export function Manuscripts({ pendingFile, onFileConsumed, onNavigateToRedClaw, 
             }
             await loadData();
         } catch (importError) {
-            alert(importError instanceof Error ? importError.message : '导入素材失败');
+            void appAlert(importError instanceof Error ? importError.message : '导入素材失败');
         } finally {
             setWorkingId(null);
         }
@@ -571,14 +1095,49 @@ export function Manuscripts({ pendingFile, onFileConsumed, onNavigateToRedClaw, 
             setQuality(next.image_quality || 'standard');
         } catch (settingsError) {
             console.error('Failed to load image settings:', settingsError);
-            setSettings({});
         }
     }, []);
 
+    const refreshWorkspace = useCallback(async () => {
+        // Keep editor interactions smooth: skip heavy media refresh while actively editing.
+        if (mode === 'editor') {
+            uiDebug('manuscripts', 'refresh_workspace:editor_fast_path');
+            await loadTree();
+            return;
+        }
+        uiDebug('manuscripts', 'refresh_workspace:gallery_split_load');
+        if (hasLoadedSnapshotRef.current) {
+            setIsRefreshing(true);
+        } else {
+            setLoading(true);
+        }
+        setError('');
+        try {
+            await loadTree();
+            hasLoadedSnapshotRef.current = true;
+        } catch (loadError) {
+            setError(loadError instanceof Error ? loadError.message : '加载草稿失败');
+        } finally {
+            setLoading(false);
+        }
+        if (deferredAssetsTimerRef.current != null) {
+            window.clearTimeout(deferredAssetsTimerRef.current);
+        }
+        deferredAssetsTimerRef.current = window.setTimeout(() => {
+            deferredAssetsTimerRef.current = null;
+            void loadAssets(MANUSCRIPTS_ACTIVE_ASSET_LIMIT).finally(() => setIsRefreshing(false));
+        }, 0);
+    }, [loadAssets, loadTree, mode]);
+
     usePageRefresh({
         isActive,
-        refresh: loadData,
+        refresh: refreshWorkspace,
     });
+
+    useEffect(() => {
+        if (!import.meta.env.DEV) return;
+        uiDebug('manuscripts', isActive ? 'view_activate' : 'view_deactivate', { mode, editorFile });
+    }, [editorFile, isActive, mode]);
 
     useEffect(() => {
         if (!isActive) return;
@@ -588,7 +1147,7 @@ export function Manuscripts({ pendingFile, onFileConsumed, onNavigateToRedClaw, 
                 return;
             }
             if (payload?.scope === 'media') {
-                void loadAssets();
+                void loadAssets(MANUSCRIPTS_ACTIVE_ASSET_LIMIT);
             }
         };
         window.ipcRenderer.on('data:changed', handleDataChanged);
@@ -601,6 +1160,123 @@ export function Manuscripts({ pendingFile, onFileConsumed, onNavigateToRedClaw, 
         if (!isActive) return;
         void loadSettings();
     }, [isActive, loadSettings]);
+
+    useEffect(() => {
+        if (!isActive) return;
+        if (mode === 'editor') return;
+        if (!['media', 'image', 'video', 'audio'].includes(filter)) return;
+        if (assets.length > 0) return;
+        uiDebug('manuscripts', 'load_assets:on_demand');
+        void loadAssets(MANUSCRIPTS_ACTIVE_ASSET_LIMIT);
+    }, [assets.length, filter, isActive, loadAssets, mode]);
+
+    useEffect(() => {
+        if (!import.meta.env.DEV) return;
+        uiDebug('manuscripts', isActive ? 'view_activate' : 'view_deactivate', { mode, editorFile });
+    }, [editorFile, isActive, mode]);
+
+    useEffect(() => {
+        return () => {
+            if (deferredAssetsTimerRef.current != null) {
+                window.clearTimeout(deferredAssetsTimerRef.current);
+                deferredAssetsTimerRef.current = null;
+            }
+        };
+    }, []);
+
+    useEffect(() => {
+        if (!isSearchOpen) return;
+        const timer = window.setTimeout(() => {
+            searchInputRef.current?.focus();
+            searchInputRef.current?.select();
+        }, 140);
+        const handlePointerDown = (event: MouseEvent) => {
+            if (!searchPopoverRef.current?.contains(event.target as Node)) {
+                setIsSearchOpen(false);
+            }
+        };
+        const handleKeyDown = (event: KeyboardEvent) => {
+            if (event.key === 'Escape') {
+                setIsSearchOpen(false);
+            }
+        };
+        document.addEventListener('mousedown', handlePointerDown);
+        window.addEventListener('keydown', handleKeyDown);
+        return () => {
+            window.clearTimeout(timer);
+            document.removeEventListener('mousedown', handlePointerDown);
+            window.removeEventListener('keydown', handleKeyDown);
+        };
+    }, [isSearchOpen]);
+
+    useEffect(() => {
+        if (!folderContextMenu.visible) return;
+        const handlePointerDown = (event: MouseEvent) => {
+            if (!folderContextMenuRef.current?.contains(event.target as Node)) {
+                setFolderContextMenu((prev) => ({ ...prev, visible: false }));
+            }
+        };
+        const handleKeyDown = (event: KeyboardEvent) => {
+            if (event.key === 'Escape') {
+                setFolderContextMenu((prev) => ({ ...prev, visible: false }));
+            }
+        };
+        document.addEventListener('mousedown', handlePointerDown);
+        window.addEventListener('keydown', handleKeyDown);
+        return () => {
+            document.removeEventListener('mousedown', handlePointerDown);
+            window.removeEventListener('keydown', handleKeyDown);
+        };
+    }, [folderContextMenu.visible]);
+
+    useEffect(() => {
+        if (!assetContextMenu.visible) return;
+        const handlePointerDown = (event: MouseEvent) => {
+            if (!assetContextMenuRef.current?.contains(event.target as Node)) {
+                setAssetContextMenu((prev) => ({ ...prev, visible: false }));
+            }
+        };
+        const handleKeyDown = (event: KeyboardEvent) => {
+            if (event.key === 'Escape') {
+                setAssetContextMenu((prev) => ({ ...prev, visible: false }));
+            }
+        };
+        document.addEventListener('mousedown', handlePointerDown);
+        window.addEventListener('keydown', handleKeyDown);
+        return () => {
+            document.removeEventListener('mousedown', handlePointerDown);
+            window.removeEventListener('keydown', handleKeyDown);
+        };
+    }, [assetContextMenu.visible]);
+
+    useEffect(() => {
+        if (!draftContextMenu.visible) return;
+        const handlePointerDown = (event: MouseEvent) => {
+            if (!draftContextMenuRef.current?.contains(event.target as Node)) {
+                setDraftContextMenu((prev) => ({ ...prev, visible: false }));
+            }
+        };
+        const handleKeyDown = (event: KeyboardEvent) => {
+            if (event.key === 'Escape') {
+                setDraftContextMenu((prev) => ({ ...prev, visible: false }));
+            }
+        };
+        document.addEventListener('mousedown', handlePointerDown);
+        window.addEventListener('keydown', handleKeyDown);
+        return () => {
+            document.removeEventListener('mousedown', handlePointerDown);
+            window.removeEventListener('keydown', handleKeyDown);
+        };
+    }, [draftContextMenu.visible]);
+
+    useEffect(() => {
+        return () => {
+            if (deferredAssetsTimerRef.current != null) {
+                window.clearTimeout(deferredAssetsTimerRef.current);
+                deferredAssetsTimerRef.current = null;
+            }
+        };
+    }, []);
 
     useEffect(() => {
         if (!size) return;
@@ -633,28 +1309,45 @@ export function Manuscripts({ pendingFile, onFileConsumed, onNavigateToRedClaw, 
         })();
     }, [onFileConsumed, pendingFile]);
 
-    const currentFolderChildren = useMemo(() => getCurrentFolderChildren(tree, activeFolder), [tree, activeFolder]);
+    const currentFolderChildren = useMemo(
+        () => getCurrentFolderChildren(isMediaScope ? mediaFolderTree : tree, isMediaScope ? mediaFolder : activeFolder),
+        [activeFolder, isMediaScope, mediaFolder, mediaFolderTree, tree],
+    );
     const currentFolders = useMemo(() => currentFolderChildren.filter((item) => item.isDirectory), [currentFolderChildren]);
-    const currentFiles = useMemo(() => currentFolderChildren.filter((item) => !item.isDirectory), [currentFolderChildren]);
+    const currentFiles = useMemo(
+        () => (isMediaScope ? [] : currentFolderChildren.filter((item) => !item.isDirectory)),
+        [currentFolderChildren, isMediaScope],
+    );
+    const currentNestedDraftFiles = useMemo(
+        () => (isMediaScope ? [] : collectNestedFiles(currentFolderChildren)),
+        [currentFolderChildren, isMediaScope],
+    );
 
     const normalizedQuery = query.trim().toLowerCase();
 
     const visibleFolders = useMemo(() => {
-        if (filter !== 'all' && filter !== 'folders') return [] as FileNode[];
         return currentFolders.filter((item) => !normalizedQuery || item.name.toLowerCase().includes(normalizedQuery));
-    }, [currentFolders, filter, normalizedQuery]);
+    }, [currentFolders, normalizedQuery]);
 
     const visibleDrafts = useMemo(() => {
         if (filter !== 'all' && filter !== 'drafts') return [] as FileNode[];
-        return currentFiles.filter((item) => {
+        return currentNestedDraftFiles.filter((item) => {
+            if (isInternalPackageFile(item.path)) return false;
             const meta = fileMetaMap[item.path];
             const haystack = `${item.name} ${meta?.title || ''} ${meta?.summary || ''}`.toLowerCase();
             return !normalizedQuery || haystack.includes(normalizedQuery);
+        }).sort((left, right) => {
+            const leftMeta = fileMetaMap[left.path];
+            const rightMeta = fileMetaMap[right.path];
+            const leftUpdatedAt = Number(leftMeta?.updatedAt || left.updatedAt || 0) || 0;
+            const rightUpdatedAt = Number(rightMeta?.updatedAt || right.updatedAt || 0) || 0;
+            if (rightUpdatedAt !== leftUpdatedAt) return rightUpdatedAt - leftUpdatedAt;
+            return right.path.localeCompare(left.path, 'zh-Hans-CN');
         });
-    }, [currentFiles, fileMetaMap, filter, normalizedQuery]);
+    }, [currentNestedDraftFiles, fileMetaMap, filter, normalizedQuery]);
 
     const visibleAssets = useMemo(() => {
-        if (activeFolder) return [] as MediaAsset[];
+        if (filter === 'all' && activeFolder) return [] as MediaAsset[];
         return assets.filter((asset) => {
             const assetKind = inferAssetKind(asset);
             if (filter === 'media' && !['image', 'video', 'audio'].includes(assetKind)) return false;
@@ -662,80 +1355,253 @@ export function Manuscripts({ pendingFile, onFileConsumed, onNavigateToRedClaw, 
             if (filter === 'video' && assetKind !== 'video') return false;
             if (filter === 'audio' && assetKind !== 'audio') return false;
             if (filter === 'drafts' || filter === 'folders') return false;
+            if (isMediaScope && getRelativeFolderPath(asset.relativePath || '') !== mediaFolder) return false;
             const haystack = `${asset.title || ''} ${asset.prompt || ''} ${asset.relativePath || ''}`.toLowerCase();
             return !normalizedQuery || haystack.includes(normalizedQuery);
         });
-    }, [activeFolder, assets, filter, normalizedQuery]);
+    }, [activeFolder, assets, filter, isMediaScope, mediaFolder, normalizedQuery]);
 
-    const activeTrail = useMemo(() => getFolderTrail(activeFolder), [activeFolder]);
+    const activeTrail = useMemo(() => getFolderTrail(isMediaScope ? mediaFolder : activeFolder), [activeFolder, isMediaScope, mediaFolder]);
+    const currentFolderPath = isMediaScope ? mediaFolder : activeFolder;
 
-    const handleCreate = useCallback(async () => {
-        const normalizedName = normalizeDraftFileName(createTitle);
-        if (createKind === 'folder' && !normalizedName) return;
+    const isSameOrNestedPath = useCallback((targetPath: string, currentPath: string | null | undefined) => {
+        const target = String(targetPath || '').trim().replace(/\/+$/, '');
+        const current = String(currentPath || '').trim().replace(/\/+$/, '');
+        if (!target || !current) return false;
+        return current === target || current.startsWith(`${target}/`);
+    }, []);
+
+    const handleCreateDraft = useCallback(async (kind: CreateKind = createKind) => {
+        if (kind === 'folder') return;
+        const createOption = CREATE_KIND_OPTION_MAP[kind];
+        if (!createOption?.available) {
+            void appAlert(createOption?.unavailableHint || `${createOption?.label || '该类型'}暂不可创建`);
+            return;
+        }
+        setCreateKind(kind);
         setIsCreating(true);
         try {
-            if (createKind === 'folder') {
-                const result = await window.ipcRenderer.invoke('manuscripts:create-folder', {
-                    parentPath: activeFolder,
-                    name: normalizedName,
-                }) as { success?: boolean; error?: string };
-                if (!result?.success) throw new Error(result?.error || '创建文件夹失败');
-                await loadData();
-                setActiveFolder(activeFolder ? `${activeFolder}/${normalizedName}` : normalizedName);
-            } else {
-                const storageName = buildDraftStorageName();
-                const draftTitle = DEFAULT_UNTITLED_DRAFT_TITLE;
-                const result = await window.ipcRenderer.invoke('manuscripts:create-file', {
-                    parentPath: activeFolder,
-                    name: ensureDraftFileName(storageName, createKind),
-                    title: draftTitle,
-                    content: buildDraftTemplate(draftTitle, createKind),
-                }) as { success?: boolean; error?: string; path?: string };
-                if (!result?.success || !result.path) throw new Error(result?.error || '创建草稿失败');
-                await loadData();
-                setEditorFile(result.path);
-                setEditorDescriptor({
-                    title: draftTitle,
-                    draftType: createKind,
-                });
-                setMode('editor');
-            }
+            const storageName = buildDraftStorageName();
+            const draftTitle = DEFAULT_UNTITLED_DRAFT_TITLE;
+            const result = await window.ipcRenderer.invoke('manuscripts:create-file', {
+                parentPath: activeFolder,
+                name: ensureDraftFileName(storageName, kind),
+                title: draftTitle,
+                content: buildDraftTemplate(draftTitle, kind),
+            }) as { success?: boolean; error?: string; path?: string };
+            if (!result?.success || !result.path) throw new Error(result?.error || '创建草稿失败');
+            await loadData();
+            setEditorFile(result.path);
+            setEditorDescriptor({
+                title: draftTitle,
+                draftType: kind,
+            });
+            setMode('editor');
             setCreateOpen(false);
-            setCreateTitle('');
         } catch (createError) {
             const message = createError instanceof Error ? createError.message : '创建失败';
-            alert(message);
+            void appAlert(message);
         } finally {
             setIsCreating(false);
         }
-    }, [activeFolder, createKind, createTitle, loadData]);
+    }, [activeFolder, createKind, loadData]);
+
+    const handleCreateFolder = useCallback(async () => {
+        const normalizedName = normalizeDraftFileName(folderCreateTitle);
+        if (!normalizedName) return;
+        setIsCreating(true);
+        try {
+            const result = await window.ipcRenderer.invoke('manuscripts:create-folder', {
+                parentPath: activeFolder,
+                name: normalizedName,
+            }) as { success?: boolean; error?: string };
+            if (!result?.success) throw new Error(result?.error || '创建文件夹失败');
+            await loadData();
+            setActiveFolder(activeFolder ? `${activeFolder}/${normalizedName}` : normalizedName);
+            setFolderCreateOpen(false);
+            setFolderCreateTitle('');
+        } catch (createError) {
+            const message = createError instanceof Error ? createError.message : '创建失败';
+            void appAlert(message);
+        } finally {
+            setIsCreating(false);
+        }
+    }, [activeFolder, folderCreateTitle, loadData]);
+
+    const openFolderContextMenu = useCallback((event: React.MouseEvent, folder: FileNode) => {
+        event.preventDefault();
+        event.stopPropagation();
+        setFolderContextMenu({
+            visible: true,
+            x: event.clientX,
+            y: event.clientY,
+            folderPath: folder.path,
+            folderName: folder.name,
+        });
+    }, []);
+
+    const handleDeleteFolder = useCallback(async (folderPath: string) => {
+        if (!(await appConfirm('确认删除这个文件夹吗？文件夹内内容也会一起删除。', {
+            title: '删除文件夹',
+            confirmLabel: '删除',
+            tone: 'danger',
+        }))) return;
+        setFolderContextMenu((prev) => ({ ...prev, visible: false }));
+        setWorkingId(folderPath);
+        try {
+            const result = await window.ipcRenderer.invoke('manuscripts:delete', folderPath) as { success?: boolean; error?: string };
+            if (!result?.success) throw new Error(result?.error || '删除文件夹失败');
+            if (isSameOrNestedPath(folderPath, activeFolder)) {
+                setActiveFolder(getParentFolderPath(folderPath));
+            }
+            await loadData();
+        } catch (deleteError) {
+            void appAlert(deleteError instanceof Error ? deleteError.message : '删除文件夹失败');
+        } finally {
+            setWorkingId(null);
+        }
+    }, [activeFolder, isSameOrNestedPath, loadData]);
+
+    const handleShowInFolder = useCallback(async (source: string, fallbackMessage = '打开文件夹失败') => {
+        const normalized = String(source || '').trim();
+        if (!normalized) return;
+        const result = await window.ipcRenderer.files.showInFolder({ source: normalized }) as { success?: boolean; error?: string };
+        if (!result?.success) {
+            void appAlert(result?.error || fallbackMessage);
+        }
+    }, []);
+
+    const handleRenameFolder = useCallback(async () => {
+        const newName = normalizeDraftFileName(folderRenameTitle);
+        if (!newName || !folderRenamePath) return;
+        setIsCreating(true);
+        try {
+            const result = await window.ipcRenderer.invoke('manuscripts:rename', {
+                oldPath: folderRenamePath,
+                newName,
+            }) as { success?: boolean; error?: string; newPath?: string };
+            if (!result?.success) throw new Error(result?.error || '重命名文件夹失败');
+            if (isSameOrNestedPath(folderRenamePath, activeFolder)) {
+                setActiveFolder(String(result?.newPath || getParentFolderPath(folderRenamePath)));
+            }
+            setFolderRenameOpen(false);
+            setFolderRenamePath('');
+            setFolderRenameTitle('');
+            await loadData();
+        } catch (renameError) {
+            void appAlert(renameError instanceof Error ? renameError.message : '重命名文件夹失败');
+        } finally {
+            setIsCreating(false);
+        }
+    }, [activeFolder, folderRenamePath, folderRenameTitle, isSameOrNestedPath, loadData]);
+
+    const openAssetContextMenu = useCallback((event: React.MouseEvent, asset: MediaAsset) => {
+        event.preventDefault();
+        event.stopPropagation();
+        setAssetContextMenu({
+            visible: true,
+            x: event.clientX,
+            y: event.clientY,
+            assetId: asset.id,
+            assetTitle: asset.title || asset.relativePath || asset.id,
+        });
+    }, []);
+
+    const handleRenameAsset = useCallback(async () => {
+        const nextTitle = assetRenameTitle.trim();
+        if (!assetRenameId || !nextTitle) return;
+        setIsCreating(true);
+        try {
+            const result = await window.ipcRenderer.invoke('media:update', {
+                assetId: assetRenameId,
+                title: nextTitle,
+            }) as { success?: boolean; error?: string };
+            if (!result?.success) throw new Error(result?.error || '重命名素材失败');
+            setAssetRenameOpen(false);
+            setAssetRenameId('');
+            setAssetRenameTitle('');
+            await loadData();
+        } catch (renameError) {
+            void appAlert(renameError instanceof Error ? renameError.message : '重命名素材失败');
+        } finally {
+            setIsCreating(false);
+        }
+    }, [assetRenameId, assetRenameTitle, loadData]);
+
+    const openDraftContextMenu = useCallback((event: React.MouseEvent, file: FileNode, title: string) => {
+        event.preventDefault();
+        event.stopPropagation();
+        setDraftContextMenu({
+            visible: true,
+            x: event.clientX,
+            y: event.clientY,
+            filePath: file.path,
+            title,
+        });
+    }, []);
+
+    const handleRenameDraft = useCallback(async () => {
+        const nextName = normalizeDraftFileName(draftRenameTitle);
+        if (!draftRenamePath || !nextName) return;
+        setIsCreating(true);
+        try {
+            const result = await window.ipcRenderer.invoke('manuscripts:rename', {
+                oldPath: draftRenamePath,
+                newName: nextName,
+            }) as { success?: boolean; error?: string; newPath?: string };
+            if (!result?.success) throw new Error(result?.error || '重命名稿件失败');
+            if (editorFile === draftRenamePath) {
+                setEditorFile(String(result?.newPath || ''));
+            }
+            setDraftRenameOpen(false);
+            setDraftRenamePath('');
+            setDraftRenameTitle('');
+            await loadData();
+        } catch (renameError) {
+            void appAlert(renameError instanceof Error ? renameError.message : '重命名稿件失败');
+        } finally {
+            setIsCreating(false);
+        }
+    }, [draftRenamePath, draftRenameTitle, editorFile, loadData]);
 
     const handleDeleteDraft = useCallback(async (targetPath: string) => {
-        if (!window.confirm('确认删除这个草稿或文件夹吗？')) return;
         setWorkingId(targetPath);
         try {
             const result = await window.ipcRenderer.invoke('manuscripts:delete', targetPath) as { success?: boolean; error?: string };
             if (!result?.success) throw new Error(result?.error || '删除失败');
-            if (activeFolder === targetPath) {
+            if (isSameOrNestedPath(targetPath, activeFolder)) {
                 setActiveFolder('');
             }
+            if (isSameOrNestedPath(targetPath, editorFile)) {
+                setEditorFile(null);
+                setEditorDescriptor(null);
+                setEditorBody('');
+                setEditorFrontmatterBlock(null);
+                setEditorMetadata({});
+                setEditorWriteProposal(null);
+                setEditorBodyDirty(false);
+                setPackageState(null);
+                setEditorChatSessionId(null);
+                setMode('gallery');
+            }
+            setPendingDeleteDraftPath(null);
             await loadData();
         } catch (deleteError) {
-            alert(deleteError instanceof Error ? deleteError.message : '删除失败');
+            void appAlert(deleteError instanceof Error ? deleteError.message : '删除失败');
         } finally {
             setWorkingId(null);
         }
-    }, [activeFolder, loadData]);
+    }, [activeFolder, editorFile, isSameOrNestedPath, loadData]);
 
     const handleDeleteAsset = useCallback(async (assetId: string) => {
-        if (!window.confirm('确认删除这个媒体资产吗？')) return;
+        if (!(await appConfirm('确认删除这个媒体资产吗？', { title: '删除媒体资产', confirmLabel: '删除', tone: 'danger' }))) return;
         setWorkingId(assetId);
         try {
             const result = await window.ipcRenderer.invoke('media:delete', { assetId }) as { success?: boolean; error?: string };
             if (!result?.success) throw new Error(result?.error || '删除媒体失败');
             await loadData();
         } catch (deleteError) {
-            alert(deleteError instanceof Error ? deleteError.message : '删除媒体失败');
+            void appAlert(deleteError instanceof Error ? deleteError.message : '删除媒体失败');
         } finally {
             setWorkingId(null);
         }
@@ -767,6 +1633,99 @@ export function Manuscripts({ pendingFile, onFileConsumed, onNavigateToRedClaw, 
         }
     }, [fileMetaMap]);
 
+    const generateRichpostCardPreview = useCallback(async (
+        targetFilePath: string,
+        pageFileUrl: string,
+        pageFilePath: string,
+        pageUpdatedAt: number,
+    ) => {
+        if (!targetFilePath || !pageUpdatedAt) return;
+        const normalizedPageFileUrl = String(pageFileUrl || '').trim();
+        const normalizedPageFilePath = String(pageFilePath || '').trim();
+        if (!normalizedPageFileUrl && !normalizedPageFilePath) return;
+        if (richpostPreviewGenerationRef.current.has(targetFilePath)) return;
+        richpostPreviewGenerationRef.current.add(targetFilePath);
+        try {
+            const renderOptions = {
+                width: RICHPOST_CARD_PREVIEW_WIDTH,
+                height: RICHPOST_CARD_PREVIEW_HEIGHT,
+                viewportWidth: RICHPOST_CARD_PREVIEW_VIEWPORT_WIDTH,
+                viewportHeight: RICHPOST_CARD_PREVIEW_VIEWPORT_HEIGHT,
+            };
+            let dataUrl = '';
+            if (normalizedPageFileUrl) {
+                try {
+                    dataUrl = await renderRichpostPageUrlToPng(normalizedPageFileUrl, targetFilePath, renderOptions);
+                } catch (renderByUrlError) {
+                    console.warn('Failed to render richpost preview by URL, falling back to HTML snapshot:', renderByUrlError);
+                }
+            }
+            if (!dataUrl) {
+                const html = await loadRichpostPreviewHtml(normalizedPageFilePath);
+                try {
+                    dataUrl = await renderRichpostHtmlToPng(html, targetFilePath, renderOptions);
+                } catch (renderByHtmlError) {
+                    console.warn('Failed to render richpost preview with scaled options, retrying legacy size:', renderByHtmlError);
+                    dataUrl = await renderRichpostHtmlToPng(html, targetFilePath);
+                }
+            }
+            const dataBase64 = dataUrl.replace(/^data:image\/png;base64,/, '');
+            const saved = await window.ipcRenderer.invoke('manuscripts:save-richpost-card-preview', {
+                filePath: targetFilePath,
+                dataBase64,
+            }) as { success?: boolean; fileUrl?: string; updatedAt?: number; error?: string };
+            if (!saved?.success || !saved.fileUrl) {
+                throw new Error(saved?.error || '保存图文封面失败');
+            }
+            richpostCardPreviewRenderedAtRef.current[targetFilePath] = pageUpdatedAt;
+            setRichpostPreviewOverrides((prev) => ({
+                ...prev,
+                [targetFilePath]: {
+                    fileUrl: saved.fileUrl || '',
+                    updatedAt: Number(saved.updatedAt || Date.now()) || Date.now(),
+                },
+            }));
+            void loadTree();
+        } catch (previewError) {
+            console.error('Failed to build richpost card preview:', previewError);
+        } finally {
+            richpostPreviewGenerationRef.current.delete(targetFilePath);
+        }
+    }, [loadTree]);
+
+    const scheduleRichpostCardPreviewFromState = useCallback((
+        targetFilePath: string,
+        state?: PackageState | null,
+        delayMs: number = RICHPOST_CARD_PREVIEW_DEBOUNCE_MS,
+    ) => {
+        if (!targetFilePath) return;
+        const firstPage = state?.richpostPages?.find((page) => page?.exists && (page.fileUrl || page.file));
+        const pageFileUrl = String(firstPage?.fileUrl || '').trim();
+        const pageFilePath = String(firstPage?.file || '').trim();
+        const pageUpdatedAt = Number(firstPage?.updatedAt || 0) || 0;
+        if ((!pageFileUrl && !pageFilePath) || !pageUpdatedAt) return;
+        if ((richpostCardPreviewRenderedAtRef.current[targetFilePath] || 0) >= pageUpdatedAt) return;
+        if (richpostCardPreviewTimerRef.current != null) {
+            window.clearTimeout(richpostCardPreviewTimerRef.current);
+        }
+        richpostCardPreviewTimerRef.current = window.setTimeout(() => {
+            richpostCardPreviewTimerRef.current = null;
+            void generateRichpostCardPreview(targetFilePath, pageFileUrl, pageFilePath, pageUpdatedAt);
+        }, delayMs);
+    }, [generateRichpostCardPreview]);
+
+    const applyPackageState = useCallback((
+        targetPath: string,
+        nextState?: PackageState | null,
+        delayMs: number = 120,
+    ) => {
+        setPackageState(nextState || null);
+        if (!targetPath || !nextState || (nextState.richpostPages?.length || 0) === 0) {
+            return;
+        }
+        scheduleRichpostCardPreviewFromState(targetPath, nextState, delayMs);
+    }, [scheduleRichpostCardPreviewFromState]);
+
     const refreshPackageState = useCallback(async (targetPath: string) => {
         const isPackage = targetPath.endsWith(ARTICLE_DRAFT_EXTENSION)
             || targetPath.endsWith(POST_DRAFT_EXTENSION)
@@ -781,11 +1740,290 @@ export function Manuscripts({ pendingFile, onFileConsumed, onNavigateToRedClaw, 
             state?: PackageState;
         };
         if (result?.success && result.state) {
-            setPackageState(result.state);
+            applyPackageState(targetPath, result.state, 120);
         } else {
             setPackageState(null);
         }
+    }, [applyPackageState]);
+
+    const runEditorSave = useCallback(async (options?: { alertOnError?: boolean }) => {
+        const snapshotFile = editorFileRef.current;
+        if (!snapshotFile) return true;
+        const snapshotContent = composeMarkdownWithFrontmatter(
+            editorBodyRef.current,
+            editorFrontmatterBlockRef.current
+        );
+        const snapshotMetadata = { ...editorMetadataRef.current };
+        const snapshotMetadataKey = JSON.stringify(snapshotMetadata);
+
+        setIsSavingEditorBody(true);
+        try {
+            const result = await window.ipcRenderer.invoke('manuscripts:save', {
+                path: snapshotFile,
+                content: snapshotContent,
+                metadata: snapshotMetadata,
+            }) as { success?: boolean; error?: string; state?: PackageState; newPath?: string; title?: string | null };
+            if (!result?.success) {
+                throw new Error(result?.error || '保存失败');
+            }
+            if (result.state) {
+                applyPackageState(snapshotFile, result.state, 120);
+            }
+            if (typeof result.title === 'string' && result.title.trim()) {
+                const nextTitle = result.title.trim();
+                setEditorDescriptor((current) => current ? { ...current, title: nextTitle } : current);
+                setEditorMetadata((current) => {
+                    const nextMetadata = { ...current, title: nextTitle };
+                    editorMetadataRef.current = nextMetadata;
+                    return nextMetadata;
+                });
+            }
+            if (typeof result.newPath === 'string' && result.newPath.trim() && result.newPath !== snapshotFile) {
+                editorFileRef.current = result.newPath;
+                setEditorFile(result.newPath);
+                await loadData();
+            }
+            const latestContent = composeMarkdownWithFrontmatter(
+                editorBodyRef.current,
+                editorFrontmatterBlockRef.current
+            );
+            const latestMetadataKey = JSON.stringify(editorMetadataRef.current || {});
+            const latestFile = editorFileRef.current;
+            const isStillCurrent = latestFile === snapshotFile
+                && latestContent === snapshotContent
+                && latestMetadataKey === snapshotMetadataKey;
+            if (isStillCurrent) {
+                editorBodyDirtyRef.current = false;
+                setEditorBodyDirty(false);
+            }
+            return true;
+        } catch (error) {
+            if (options?.alertOnError !== false) {
+                void appAlert(error instanceof Error ? error.message : '保存失败');
+            }
+            return false;
+        } finally {
+            setIsSavingEditorBody(false);
+        }
+    }, [applyPackageState, loadData]);
+
+    const ensureLatestEditorContentSaved = useCallback(async () => {
+        if (!editorFileRef.current) return true;
+        let attempt = 0;
+        while (attempt < 4) {
+            if (editorSavePromiseRef.current) {
+                const completed = await editorSavePromiseRef.current;
+                if (!completed) {
+                    return false;
+                }
+            }
+            if (!editorBodyDirtyRef.current && !editorSavePromiseRef.current) {
+                return true;
+            }
+            const savePromise = runEditorSave({ alertOnError: true }).finally(() => {
+                if (editorSavePromiseRef.current === savePromise) {
+                    editorSavePromiseRef.current = null;
+                }
+            });
+            editorSavePromiseRef.current = savePromise;
+            const succeeded = await savePromise;
+            if (!succeeded) {
+                return false;
+            }
+            if (!editorBodyDirtyRef.current) {
+                return true;
+            }
+            attempt += 1;
+        }
+        return !editorBodyDirtyRef.current;
+    }, [runEditorSave]);
+
+    const handleGeneratePackageHtml = useCallback(async (target: 'layout' | 'wechat') => {
+        if (!editorFile) return;
+        const workingKey = `package-html:${target}`;
+        setWorkingId(workingKey);
+        try {
+            const saved = await ensureLatestEditorContentSaved();
+            if (!saved) return;
+            const result = await window.ipcRenderer.invoke('manuscripts:generate-package-html', {
+                filePath: editorFile,
+                target,
+            }) as { success?: boolean; error?: string; state?: PackageState };
+            if (!result?.success || !result.state) {
+                throw new Error(result?.error || '生成 HTML 失败');
+            }
+            setPackageState(result.state);
+        } catch (error) {
+            void appAlert(error instanceof Error ? error.message : '生成 HTML 失败');
+        } finally {
+            setWorkingId((current) => current === workingKey ? null : current);
+        }
+    }, [editorFile, ensureLatestEditorContentSaved]);
+
+    const resolveRichpostState = useCallback(async (
+        filePath: string,
+        nextState: PackageState,
+        plan?: unknown,
+    ) => {
+        let resolvedState = nextState;
+        if ((nextState.richpostPages?.length || 0) > 0) {
+            const corrected = await stabilizeRichpostPagination({
+                filePath,
+                state: nextState,
+                plan,
+            });
+            resolvedState = corrected.state;
+        }
+        return resolvedState;
     }, []);
+
+    const handleSelectRichpostTheme = useCallback(async (themeId: string) => {
+        if (!editorFile || !themeId.trim()) return;
+        if (packageState?.richpostThemeId === themeId) return;
+        const workingKey = `richpost-theme:${themeId}`;
+        setWorkingId(workingKey);
+        try {
+            const saved = await ensureLatestEditorContentSaved();
+            if (!saved) return;
+            const result = await window.ipcRenderer.invoke('manuscripts:set-richpost-theme', {
+                filePath: editorFile,
+                themeId,
+            }) as { success?: boolean; error?: string; state?: PackageState };
+            if (!result?.success || !result.state) {
+                throw new Error(result?.error || '切换图文主题失败');
+            }
+            const resolvedState = await resolveRichpostState(editorFile, result.state);
+            setPackageState(resolvedState);
+            if ((resolvedState.richpostPages?.length || 0) > 0) {
+                scheduleRichpostCardPreviewFromState(editorFile, resolvedState, 120);
+            }
+        } catch (error) {
+            void appAlert(error instanceof Error ? error.message : '切换图文主题失败');
+        } finally {
+            setWorkingId((current) => current === workingKey ? null : current);
+        }
+    }, [editorFile, ensureLatestEditorContentSaved, packageState?.richpostThemeId, resolveRichpostState, scheduleRichpostCardPreviewFromState]);
+
+    const handleUpdateRichpostTypography = useCallback(async (settings: {
+        fontScale: number;
+        lineHeightScale: number;
+    }) => {
+        if (!editorFile) return;
+        const requestFile = editorFile;
+        const requestId = ++richpostTypographyRequestIdRef.current;
+        try {
+            const saved = await ensureLatestEditorContentSaved();
+            if (!saved) return;
+            const result = await window.ipcRenderer.invoke('manuscripts:render-richpost-pages', {
+                filePath: requestFile,
+                fontScale: settings.fontScale,
+                lineHeightScale: settings.lineHeightScale,
+            }) as { success?: boolean; error?: string; state?: PackageState };
+            if (!result?.success || !result.state) {
+                throw new Error(result?.error || '更新图文排版失败');
+            }
+            if (richpostTypographyRequestIdRef.current !== requestId || editorFileRef.current !== requestFile) {
+                return;
+            }
+            const resolvedState = await resolveRichpostState(requestFile, result.state);
+            if (richpostTypographyRequestIdRef.current !== requestId || editorFileRef.current !== requestFile) {
+                return;
+            }
+            setPackageState(resolvedState);
+            if ((resolvedState.richpostPages?.length || 0) > 0) {
+                scheduleRichpostCardPreviewFromState(requestFile, resolvedState, 120);
+            }
+        } catch (error) {
+            if (richpostTypographyRequestIdRef.current !== requestId || editorFileRef.current !== requestFile) {
+                return;
+            }
+            console.error('Failed to update richpost typography:', error);
+            void appAlert(error instanceof Error ? error.message : '更新图文排版失败');
+        }
+    }, [editorFile, ensureLatestEditorContentSaved, resolveRichpostState, scheduleRichpostCardPreviewFromState]);
+
+    useEffect(() => {
+        if (!editorFile || !editorFile.endsWith(POST_DRAFT_EXTENSION)) {
+            return;
+        }
+        if (editorBodyDirty || isSavingEditorBody) {
+            return;
+        }
+        if ((packageState?.richpostPages?.length || 0) > 0) {
+            return;
+        }
+        const requestKey = [
+            editorFile,
+            String(packageState?.contentMapUpdatedAt || 0),
+            String(packageState?.layoutTokensUpdatedAt || 0),
+            String(packageState?.richpostPagePlanUpdatedAt || 0),
+        ].join('::');
+        if (richpostAutoRenderRequestKeyRef.current === requestKey) {
+            return;
+        }
+        richpostAutoRenderRequestKeyRef.current = requestKey;
+        let cancelled = false;
+        void (async () => {
+            try {
+                const result = await window.ipcRenderer.invoke('manuscripts:render-richpost-pages', {
+                    filePath: editorFile,
+                }) as { success?: boolean; error?: string; state?: PackageState };
+                if (!result?.success || !result.state) {
+                    throw new Error(result?.error || '自动刷新图文分页失败');
+                }
+                const resolvedState = await resolveRichpostState(editorFile, result.state);
+                if (cancelled || editorFileRef.current !== editorFile) {
+                    return;
+                }
+                setPackageState(resolvedState);
+                if ((resolvedState.richpostPages?.length || 0) > 0) {
+                    scheduleRichpostCardPreviewFromState(editorFile, resolvedState, 120);
+                }
+            } catch (error) {
+                if (cancelled || editorFileRef.current !== editorFile) {
+                    return;
+                }
+                console.error('Failed to auto render richpost pages:', error);
+                richpostAutoRenderRequestKeyRef.current = null;
+            }
+        })();
+        return () => {
+            cancelled = true;
+        };
+    }, [
+        editorBodyDirty,
+        editorFile,
+        isSavingEditorBody,
+        packageState?.contentMapUpdatedAt,
+        packageState?.layoutTokensUpdatedAt,
+        packageState?.richpostPagePlanUpdatedAt,
+        packageState?.richpostPages?.length,
+        resolveRichpostState,
+        scheduleRichpostCardPreviewFromState,
+    ]);
+
+    const handleSelectLongformLayoutPreset = useCallback(async (presetId: string, target: 'layout' | 'wechat') => {
+        if (!editorFile || !presetId.trim()) return;
+        const workingKey = `longform-layout-preset:${presetId}:${target}`;
+        setWorkingId(workingKey);
+        try {
+            const saved = await ensureLatestEditorContentSaved();
+            if (!saved) return;
+            const result = await window.ipcRenderer.invoke('manuscripts:set-longform-layout-preset', {
+                filePath: editorFile,
+                presetId,
+                target,
+            }) as { success?: boolean; error?: string; state?: PackageState };
+            if (!result?.success || !result.state) {
+                throw new Error(result?.error || '切换长文母版失败');
+            }
+            setPackageState(result.state);
+        } catch (error) {
+            void appAlert(error instanceof Error ? error.message : '切换长文母版失败');
+        } finally {
+            setWorkingId((current) => current === workingKey ? null : current);
+        }
+    }, [editorFile, ensureLatestEditorContentSaved]);
 
     const handleImportAndBindAssetsToPackage = useCallback(async () => {
         if (!editorFile) return;
@@ -807,16 +2045,159 @@ export function Manuscripts({ pendingFile, onFileConsumed, onNavigateToRedClaw, 
                 throw new Error(result?.error || '导入素材失败');
             }
             if (result.state) {
-                setPackageState(result.state);
+                applyPackageState(editorFile, result.state);
             } else {
                 await refreshPackageState(editorFile);
             }
         } catch (importError) {
-            alert(importError instanceof Error ? importError.message : '导入素材失败');
+            void appAlert(importError instanceof Error ? importError.message : '导入素材失败');
         } finally {
             setWorkingId(null);
         }
-    }, [editorFile, refreshPackageState]);
+    }, [applyPackageState, editorFile, refreshPackageState]);
+
+    const handleGenerateRemotionScene = useCallback(async (instructionsOverride?: string) => {
+        if (!editorFile || editorDescriptor?.draftType !== 'video') return;
+        setIsGeneratingRemotion(true);
+        try {
+            const result = await window.ipcRenderer.invoke('manuscripts:generate-remotion-scene', {
+                filePath: editorFile,
+                instructions: instructionsOverride || editorBody,
+            }) as { success?: boolean; state?: PackageState; error?: string };
+            if (!result?.success || !result.state) {
+                throw new Error(result?.error || '生成 Remotion 动画方案失败');
+            }
+            setPackageState(result.state);
+        } catch (error) {
+            void appAlert(error instanceof Error ? error.message : '生成 Remotion 动画方案失败');
+        } finally {
+            setIsGeneratingRemotion(false);
+        }
+    }, [editorBody, editorDescriptor?.draftType, editorFile]);
+
+    const handleSaveRemotionScene = useCallback(async (scene: RemotionCompositionConfig) => {
+        if (!editorFile || editorDescriptor?.draftType !== 'video') return;
+        try {
+            const result = await window.ipcRenderer.invoke('manuscripts:save-remotion-scene', {
+                filePath: editorFile,
+                scene,
+            }) as { success?: boolean; state?: PackageState; error?: string };
+            if (!result?.success || !result.state) {
+                throw new Error(result?.error || '保存 Remotion 动画方案失败');
+            }
+            setPackageState(result.state);
+        } catch (error) {
+            void appAlert(error instanceof Error ? error.message : '保存 Remotion 动画方案失败');
+        }
+    }, [editorDescriptor?.draftType, editorFile]);
+
+    const handleRenderRemotionVideo = useCallback(() => {
+        if (!editorFile || editorDescriptor?.draftType !== 'video' || isRenderingRemotion) return;
+        setExportVideoError('');
+        setExportVideoStage('');
+        setExportVideoProgress(0);
+        setIsExportVideoModalOpen(true);
+    }, [editorDescriptor?.draftType, editorFile, isRenderingRemotion]);
+
+    const handlePickExportVideoPath = useCallback(async () => {
+        if (!editorFile || editorDescriptor?.draftType !== 'video' || isRenderingRemotion) return;
+        try {
+            const result = await window.ipcRenderer.invoke('manuscripts:pick-export-path', {
+                filePath: editorFile,
+                resolutionPreset: exportVideoResolution,
+                renderMode: 'full',
+            }) as { success?: boolean; canceled?: boolean; path?: string; error?: string };
+            if (!result?.success) {
+                throw new Error(result?.error || '选择导出位置失败');
+            }
+            if (!result.canceled && result.path) {
+                setExportVideoPath(result.path);
+            }
+        } catch (error) {
+            void appAlert(error instanceof Error ? error.message : '选择导出位置失败');
+        }
+    }, [editorDescriptor?.draftType, editorFile, exportVideoResolution, isRenderingRemotion]);
+
+    const handleConfirmExportVideo = useCallback(async () => {
+        if (!editorFile || editorDescriptor?.draftType !== 'video' || isRenderingRemotion) return;
+        let outputPath = exportVideoPath.trim();
+        if (!outputPath) {
+            const picked = await window.ipcRenderer.invoke('manuscripts:pick-export-path', {
+                filePath: editorFile,
+                resolutionPreset: exportVideoResolution,
+                renderMode: 'full',
+            }) as { success?: boolean; canceled?: boolean; path?: string; error?: string };
+            if (!picked?.success) {
+                void appAlert(picked?.error || '选择导出位置失败');
+                return;
+            }
+            if (picked.canceled || !picked.path) {
+                return;
+            }
+            outputPath = picked.path;
+            setExportVideoPath(outputPath);
+        }
+        setIsRenderingRemotion(true);
+        setExportVideoError('');
+        setExportVideoStage('准备导出');
+        setExportVideoProgress(0);
+        try {
+            const result = await window.ipcRenderer.invoke('manuscripts:render-remotion-video', {
+                filePath: editorFile,
+                renderMode: 'full',
+                outputPath,
+                resolutionPreset: exportVideoResolution,
+            }) as { success?: boolean; state?: PackageState; outputPath?: string; error?: string };
+            if (!result?.success || !result.state) {
+                throw new Error(result?.error || '导出视频失败');
+            }
+            setPackageState(result.state);
+            setExportVideoProgress(100);
+            setExportVideoStage('导出完成');
+            if (result.outputPath) {
+                setExportVideoPath(result.outputPath);
+            }
+        } catch (error) {
+            const message = error instanceof Error ? error.message : '导出视频失败';
+            setExportVideoError(message);
+            setExportVideoStage('导出失败');
+            void appAlert(message);
+        } finally {
+            setIsRenderingRemotion(false);
+        }
+    }, [editorDescriptor?.draftType, editorFile, exportVideoPath, exportVideoResolution, isRenderingRemotion]);
+
+    const handleOpenRenderedRemotionVideo = useCallback(async () => {
+        const outputPath = packageState?.videoProject?.renderOutput || packageState?.remotion?.render?.outputPath;
+        if (!outputPath) return;
+        try {
+            await window.ipcRenderer.invoke('app:open-path', { path: outputPath });
+        } catch (error) {
+            void appAlert(error instanceof Error ? error.message : '打开导出文件失败');
+        }
+    }, [packageState?.remotion?.render?.outputPath, packageState?.videoProject?.renderOutput]);
+
+    useEffect(() => {
+        const handleProgress = (_event: unknown, payload?: Record<string, unknown>) => {
+            if (!editorFile || payload?.filePath !== editorFile) return;
+            if (typeof payload.percent === 'number') {
+                setExportVideoProgress(Math.max(0, Math.min(100, payload.percent)));
+            }
+            if (typeof payload.stage === 'string') {
+                setExportVideoStage(payload.stage);
+            }
+            if (typeof payload.error === 'string' && payload.error.trim()) {
+                setExportVideoError(payload.error);
+            }
+            if (payload?.status === 'running') {
+                setIsExportVideoModalOpen(true);
+            }
+        };
+        window.ipcRenderer.on('manuscripts:render-progress', handleProgress);
+        return () => {
+            window.ipcRenderer.off('manuscripts:render-progress', handleProgress);
+        };
+    }, [editorFile]);
 
     const handleUpgradeDraftPackage = useCallback(async (targetKind: 'article' | 'post') => {
         if (!editorFile) return;
@@ -833,7 +2214,7 @@ export function Manuscripts({ pendingFile, onFileConsumed, onNavigateToRedClaw, 
             setEditorFile(result.newPath);
             await refreshPackageState(result.newPath);
         } catch (upgradeError) {
-            alert(upgradeError instanceof Error ? upgradeError.message : '升级工程稿件失败');
+            void appAlert(upgradeError instanceof Error ? upgradeError.message : '升级工程稿件失败');
         } finally {
             setIsUpgradingDraft(false);
         }
@@ -842,15 +2223,38 @@ export function Manuscripts({ pendingFile, onFileConsumed, onNavigateToRedClaw, 
     useEffect(() => {
         if (!editorFile) {
             setPackageState(null);
+            setExportVideoPath('');
+            setExportVideoProgress(0);
+            setExportVideoStage('');
+            setExportVideoError('');
+            setIsExportVideoModalOpen(false);
             return;
         }
         void refreshPackageState(editorFile);
     }, [editorFile, refreshPackageState]);
 
+    const loadEditorWriteProposal = useCallback(async (filePath: string | null) => {
+        if (!filePath) {
+            setEditorWriteProposal(null);
+            return;
+        }
+        try {
+            const result = await window.ipcRenderer.invoke('manuscripts:get-write-proposal', {
+                filePath,
+            }) as { success?: boolean; proposal?: ManuscriptWriteProposal | null };
+            setEditorWriteProposal(result?.proposal || null);
+        } catch (error) {
+            console.error('Failed to load manuscript write proposal:', error);
+            setEditorWriteProposal(null);
+        }
+    }, []);
+
     useEffect(() => {
         if (!editorFile || mode !== 'editor') {
             setEditorBody('');
+            setEditorFrontmatterBlock(null);
             setEditorMetadata({});
+            setEditorWriteProposal(null);
             setEditorBodyDirty(false);
             return;
         }
@@ -859,13 +2263,17 @@ export function Manuscripts({ pendingFile, onFileConsumed, onNavigateToRedClaw, 
             try {
                 const result = await window.ipcRenderer.invoke('manuscripts:read', editorFile) as ManuscriptReadResult;
                 if (cancelled) return;
-                setEditorBody(String(result?.content || ''));
+                const nextContent = String(result?.content || '');
+                const { body, frontmatterBlock } = splitWritingDraftContent(nextContent, editorDescriptor?.draftType);
+                setEditorBody(body);
+                setEditorFrontmatterBlock(frontmatterBlock);
                 setEditorMetadata((result?.metadata || {}) as Record<string, unknown>);
                 setEditorBodyDirty(false);
             } catch (error) {
                 console.error('Failed to load editor body:', error);
                 if (!cancelled) {
                     setEditorBody('');
+                    setEditorFrontmatterBlock(null);
                     setEditorMetadata({});
                     setEditorBodyDirty(false);
                 }
@@ -874,99 +2282,205 @@ export function Manuscripts({ pendingFile, onFileConsumed, onNavigateToRedClaw, 
         return () => {
             cancelled = true;
         };
-    }, [editorFile, mode]);
+    }, [editorDescriptor?.draftType, editorFile, mode]);
 
     useEffect(() => {
-        if (!editorFile || !editorBodyDirty) return;
-        const timer = window.setTimeout(async () => {
-            try {
-                setIsSavingEditorBody(true);
-                const result = await window.ipcRenderer.invoke('manuscripts:save', {
-                    path: editorFile,
-                    content: editorBody,
-                    metadata: editorMetadata,
-                }) as { success?: boolean; error?: string };
-                if (!result?.success) {
-                    throw new Error(result?.error || '保存失败');
-                }
-                setEditorBodyDirty(false);
-            } catch (error) {
-                console.error('Failed to save editor body:', error);
-            } finally {
-                setIsSavingEditorBody(false);
-            }
-        }, 700);
-        return () => window.clearTimeout(timer);
-    }, [editorBody, editorBodyDirty, editorFile, editorMetadata]);
-
-    useEffect(() => {
-        if (!editorFile || (editorDescriptor?.draftType !== 'video' && editorDescriptor?.draftType !== 'audio')) {
-            setEditorChatSessionId(null);
+        if (!editorFile || mode !== 'editor') {
+            setEditorWriteProposal(null);
             return;
         }
+        void loadEditorWriteProposal(editorFile);
+    }, [editorFile, loadEditorWriteProposal, mode]);
+
+    useEffect(() => {
+        const handleProposalChanged = (_event: unknown, payload?: { filePath?: string; proposal?: ManuscriptWriteProposal | null }) => {
+            if (!editorFile) return;
+            if (!isSameDraftRelativePath(payload?.filePath, editorFile)) return;
+            setEditorWriteProposal(payload?.proposal || null);
+        };
+        window.ipcRenderer.on('manuscripts:write-proposal', handleProposalChanged);
+        return () => {
+            window.ipcRenderer.off('manuscripts:write-proposal', handleProposalChanged);
+        };
+    }, [editorFile]);
+
+    useEffect(() => {
+        if (!editorFile || mode !== 'editor' || editorBodyDirty) return;
+        const nextScriptBody = packageState?.videoProject?.scriptBody
+            ?? packageState?.editorProject?.script?.body;
+        if (typeof nextScriptBody !== 'string') return;
+        const nextDraft = splitWritingDraftContent(nextScriptBody, editorDescriptor?.draftType);
+        if (nextDraft.body === editorBody && nextDraft.frontmatterBlock === editorFrontmatterBlock) return;
+        setEditorBody(nextDraft.body);
+        setEditorFrontmatterBlock(nextDraft.frontmatterBlock);
+        setEditorBodyDirty(false);
+    }, [
+        editorBody,
+        editorBodyDirty,
+        editorDescriptor?.draftType,
+        editorFile,
+        editorFrontmatterBlock,
+        mode,
+        packageState?.editorProject?.script?.body,
+        packageState?.videoProject?.scriptBody,
+    ]);
+
+    useEffect(() => {
+        if (!editorFile || !editorBodyDirty || isSavingEditorBody) return;
+        const timer = window.setTimeout(() => {
+            const savePromise = runEditorSave({ alertOnError: false }).finally(() => {
+                if (editorSavePromiseRef.current === savePromise) {
+                    editorSavePromiseRef.current = null;
+                }
+            });
+            editorSavePromiseRef.current = savePromise;
+            void savePromise;
+        }, 250);
+        return () => window.clearTimeout(timer);
+    }, [
+        editorBody,
+        editorBodyDirty,
+        editorFile,
+        editorFrontmatterBlock,
+        editorMetadata,
+        isSavingEditorBody,
+        runEditorSave,
+    ]);
+
+    const editorChatBinding = useMemo(() => buildEditorSessionBinding({
+        editorFile,
+        draftType: editorDescriptor?.draftType,
+        editorTitle: editorDescriptor?.title,
+        fileFallbackTitle: editorFile ? fileMetaMap[editorFile]?.title || null : null,
+        editorAiWorkspaceMode,
+        packageState,
+        editorBodyDirty,
+    }), [
+        editorAiWorkspaceMode,
+        editorBodyDirty,
+        editorDescriptor?.draftType,
+        editorDescriptor?.title,
+        editorFile,
+        fileMetaMap,
+        packageState,
+    ]);
+    const editorChatBindingFingerprint = useMemo(
+        () => (editorChatBinding ? JSON.stringify(editorChatBinding) : ''),
+        [editorChatBinding],
+    );
+
+    useEffect(() => {
+        if (!editorChatBinding || !editorFile) {
+            setEditorChatSessionId(null);
+            setEditorChatSessionReady(false);
+            return;
+        }
+        setEditorChatSessionReady(false);
         let cancelled = false;
-        void (async () => {
-            try {
-                const session = await window.ipcRenderer.invoke('chat:getOrCreateFileSession', { filePath: editorFile }) as { id?: string } | null;
-                if (cancelled || !session?.id) return;
-                setEditorChatSessionId(session.id);
-            } catch (error) {
-                console.error('Failed to prepare editor chat session:', error);
+        void window.ipcRenderer.invoke('chat:bind-editor-session', editorChatBinding)
+            .then((session) => {
+                const sessionRecord = session as { id?: string } | null;
+                if (cancelled || !sessionRecord?.id) return;
+                setEditorChatSessionId(sessionRecord.id);
+                setEditorChatSessionReady(true);
+            })
+            .catch((error) => {
+                console.error('Failed to bind editor chat session:', error);
                 if (!cancelled) {
                     setEditorChatSessionId(null);
+                    setEditorChatSessionReady(false);
                 }
-            }
-        })();
+            });
         return () => {
             cancelled = true;
         };
-    }, [editorDescriptor?.draftType, editorFile]);
+    }, [editorChatBinding, editorChatBindingFingerprint, editorFile]);
+
+    const handleAcceptEditorWriteProposal = useCallback(async () => {
+        if (!editorFile || !editorWriteProposal) return;
+        const shouldWarnAboutOverwrite =
+            isSavingEditorBody
+            || editorBodyDirty
+            || currentEditorContent !== editorWriteProposal.baseContent;
+        if (shouldWarnAboutOverwrite) {
+            const confirmed = await appConfirm(
+                '当前稿件在 AI 提案生成后又有变化。接受提案会用 AI 的版本覆盖现在的正文，是否继续？',
+                {
+                    title: '接受 AI 修改',
+                    confirmLabel: '继续接受',
+                }
+            );
+            if (!confirmed) return;
+        }
+        setIsApplyingWriteProposal(true);
+        try {
+            const result = await window.ipcRenderer.invoke('manuscripts:accept-write-proposal', {
+                filePath: editorFile,
+            }) as { success?: boolean; error?: string; content?: string; state?: PackageState };
+            if (!result?.success || typeof result.content !== 'string') {
+                throw new Error(result?.error || '接受 AI 修改失败');
+            }
+            const nextDraft = splitWritingDraftContent(result.content, editorDescriptor?.draftType);
+            setEditorBody(nextDraft.body);
+            setEditorFrontmatterBlock(nextDraft.frontmatterBlock);
+            setEditorBodyDirty(false);
+            setEditorWriteProposal(null);
+            if (result.state) {
+                applyPackageState(editorFile, result.state);
+            }
+        } catch (error) {
+            void appAlert(error instanceof Error ? error.message : '接受 AI 修改失败');
+        } finally {
+            setIsApplyingWriteProposal(false);
+        }
+    }, [applyPackageState, currentEditorContent, editorBodyDirty, editorDescriptor?.draftType, editorFile, editorWriteProposal, isSavingEditorBody]);
+
+    const handleRejectEditorWriteProposal = useCallback(async () => {
+        if (!editorFile || !editorWriteProposal) return;
+        setIsRejectingWriteProposal(true);
+        try {
+            const result = await window.ipcRenderer.invoke('manuscripts:reject-write-proposal', {
+                filePath: editorFile,
+            }) as { success?: boolean; error?: string };
+            if (!result?.success) {
+                throw new Error(result?.error || '拒绝 AI 修改失败');
+            }
+            setEditorWriteProposal(null);
+        } catch (error) {
+            void appAlert(error instanceof Error ? error.message : '拒绝 AI 修改失败');
+        } finally {
+            setIsRejectingWriteProposal(false);
+        }
+    }, [editorFile, editorWriteProposal]);
 
     useEffect(() => {
-        if (!editorChatSessionId || !editorFile) return;
-        const draftType = editorDescriptor?.draftType;
-        if (draftType !== 'video' && draftType !== 'audio') return;
-
-        const packageAssets = Array.isArray(packageState?.assets?.items) ? packageState?.assets?.items : [];
-        const timelineClips = Array.isArray(packageState?.timelineSummary?.clips) ? packageState?.timelineSummary?.clips : [];
-        const timelineSummary = packageState?.timelineSummary as ({ trackNames?: string[] } & Record<string, unknown>) | undefined;
-        const timelineTrackNames = Array.isArray(timelineSummary?.trackNames)
-            ? timelineSummary.trackNames
-            : Array.from(new Set(timelineClips.map((item) => String(item?.track || '').trim()).filter(Boolean)));
-
-        void window.ipcRenderer.invoke('chat:update-session-metadata', {
-            sessionId: editorChatSessionId,
-            metadata: {
-                associatedFilePath: editorFile,
-                associatedPackageKind: draftType,
-                agentProfile: draftType === 'video' ? 'video-editor' : draftType === 'audio' ? 'audio-editor' : 'default',
-                associatedPackageTitle: editorDescriptor?.title || fileMetaMap[editorFile]?.title || '未命名',
-                associatedPackageAssetCount: packageAssets.length,
-                associatedPackageClipCount: Number(packageState?.timelineSummary?.clipCount || timelineClips.length || 0),
-                associatedPackageTrackNames: timelineTrackNames,
-                associatedPackageClips: timelineClips.slice(0, 12).map((item) => ({
-                    assetId: item?.assetId,
-                    name: item?.name,
-                    track: item?.track,
-                    order: item?.order,
-                    durationMs: item?.durationMs,
-                    trimInMs: item?.trimInMs,
-                    trimOutMs: item?.trimOutMs,
-                    enabled: item?.enabled,
-                })),
-            },
-        }).catch((error) => {
-            console.error('Failed to sync editor chat metadata:', error);
-        });
-    }, [editorChatSessionId, editorDescriptor?.draftType, editorDescriptor?.title, editorFile, fileMetaMap, packageState]);
-
-    useEffect(() => {
-        const immersive = mode === 'editor' && (editorDescriptor?.draftType === 'video' || editorDescriptor?.draftType === 'audio');
-        onImmersiveModeChange?.(immersive);
+        const nextImmersiveMode: ImmersiveMode = mode === 'editor'
+            ? (editorDescriptor?.draftType === 'video' || editorDescriptor?.draftType === 'audio' ? 'dark' : 'theme')
+            : false;
+        onImmersiveModeChange?.(nextImmersiveMode);
         return () => {
             onImmersiveModeChange?.(false);
         };
     }, [editorDescriptor?.draftType, mode, onImmersiveModeChange]);
+
+    const handleConfirmEditorScript = useCallback(async () => {
+        if (!editorFile || (editorDescriptor?.draftType !== 'video' && editorDescriptor?.draftType !== 'audio')) return;
+        if (editorBodyDirty || isSavingEditorBody) {
+            void appAlert('脚本正在保存或仍有未保存改动，请稍后再确认。');
+            return;
+        }
+        try {
+            const result = await window.ipcRenderer.invoke('manuscripts:confirm-package-script', {
+                filePath: editorFile,
+            }) as { success?: boolean; state?: PackageState; error?: string };
+            if (!result?.success || !result.state) {
+                throw new Error(result?.error || '确认脚本失败');
+            }
+            setPackageState(result.state);
+        } catch (error) {
+            void appAlert(error instanceof Error ? error.message : '确认脚本失败');
+        }
+    }, [editorBodyDirty, editorDescriptor?.draftType, editorFile, isSavingEditorBody]);
 
     const handleBindAssetToPackage = useCallback(async (assetId: string) => {
         if (!editorFile) return;
@@ -975,24 +2489,21 @@ export function Manuscripts({ pendingFile, onFileConsumed, onNavigateToRedClaw, 
                 assetId,
                 manuscriptPath: editorFile,
                 role: bindAssetRole,
-            }) as { success?: boolean; error?: string };
+            }) as { success?: boolean; error?: string; state?: PackageState };
             if (!result?.success) {
                 throw new Error(result?.error || '绑定素材失败');
             }
             await loadData();
-            await refreshPackageState(editorFile);
+            if (result.state) {
+                applyPackageState(editorFile, result.state);
+            } else {
+                await refreshPackageState(editorFile);
+            }
             setIsBindAssetModalOpen(false);
         } catch (bindError) {
-            alert(bindError instanceof Error ? bindError.message : '绑定素材失败');
+            void appAlert(bindError instanceof Error ? bindError.message : '绑定素材失败');
         }
-    }, [bindAssetRole, editorFile, loadData, refreshPackageState]);
-
-    const openAssetExternally = useCallback(async (assetId: string) => {
-        const result = await window.ipcRenderer.invoke('media:open', { assetId }) as { success?: boolean; error?: string };
-        if (!result?.success) {
-            alert(result?.error || '打开资产失败');
-        }
-    }, []);
+    }, [applyPackageState, bindAssetRole, editorFile, loadData, refreshPackageState]);
 
     const pushToRedClaw = useCallback((filePath: string) => {
         const meta = fileMetaMap[filePath];
@@ -1175,37 +2686,111 @@ export function Manuscripts({ pendingFile, onFileConsumed, onNavigateToRedClaw, 
 
 
     const contentCards = useMemo(() => {
-        const draftCards = visibleDrafts.map((file) => {
+        const draftCards: DraftCard[] = visibleDrafts.map((file) => {
             const meta = fileMetaMap[file.path];
             const draftType = meta?.draftType || 'unknown';
             return {
                 id: `draft:${file.path}`,
                 kind: 'draft' as const,
                 updatedAt: Number(meta?.updatedAt || 0) || 0,
+                createdAt: 0,
                 file,
                 meta,
                 title: meta?.title || stripDraftExtension(file.name),
                 summary: meta?.summary || '',
                 draftType,
+                richpostPreviewFileUrl: meta?.richpostPreviewFileUrl || '',
+                richpostPreviewUpdatedAt: Number(meta?.richpostPreviewUpdatedAt || 0) || 0,
+                richpostPreviewPageFile: meta?.richpostPreviewPageFile || '',
+                richpostPreviewPageFileUrl: meta?.richpostPreviewPageFileUrl || '',
+                richpostPreviewPageUpdatedAt: Number(meta?.richpostPreviewPageUpdatedAt || 0) || 0,
             };
         });
 
         const assetCards = visibleAssets.map((asset) => ({
             id: `asset:${asset.id}`,
             kind: 'asset' as const,
-            updatedAt: Date.parse(asset.updatedAt || asset.createdAt || '') || 0,
+            updatedAt: parseTimestampMs(asset.updatedAt) || 0,
+            createdAt: parseTimestampMs(asset.createdAt) || 0,
             asset,
             title: asset.title || asset.relativePath || asset.id,
             summary: asset.prompt || asset.relativePath || '',
             assetKind: inferAssetKind(asset),
         }));
 
-        return [...draftCards, ...assetCards].sort((a, b) => {
-            const timeDelta = b.updatedAt - a.updatedAt;
-            if (timeDelta !== 0) return timeDelta;
+        const compareCards = (
+            a: typeof draftCards[number] | typeof assetCards[number],
+            b: typeof draftCards[number] | typeof assetCards[number],
+        ) => {
+            const updatedDelta = b.updatedAt - a.updatedAt;
+            if (updatedDelta !== 0) return updatedDelta;
+            const createdDelta = b.createdAt - a.createdAt;
+            if (createdDelta !== 0) return createdDelta;
             return a.title.localeCompare(b.title, 'zh-Hans-CN');
-        });
+        };
+
+        return [...draftCards, ...assetCards]
+            .sort(compareCards)
+            .slice(0, MANUSCRIPTS_CARD_RENDER_LIMIT);
     }, [fileMetaMap, visibleAssets, visibleDrafts]);
+
+    useEffect(() => {
+        if (mode !== 'gallery' || filter !== 'drafts') return;
+        const pendingCards = contentCards.filter((card): card is DraftCard => {
+            if (card.kind !== 'draft' || card.draftType !== 'richpost') {
+                return false;
+            }
+            const hasPreviewSource = Boolean(card.richpostPreviewPageFileUrl || card.richpostPreviewPageFile);
+            if (!hasPreviewSource) return false;
+            const override = richpostPreviewOverrides[card.file.path];
+            const overrideIsFresh = Boolean(
+                override?.fileUrl
+                && Number(override.updatedAt || 0) >= Number(card.richpostPreviewPageUpdatedAt || 0)
+            );
+            const persistedPreviewIsFresh = Boolean(
+                card.richpostPreviewFileUrl
+                && Number(card.richpostPreviewUpdatedAt || 0) >= Number(card.richpostPreviewPageUpdatedAt || 0)
+            );
+            return !persistedPreviewIsFresh
+                && !overrideIsFresh
+                && !richpostPreviewGenerationRef.current.has(card.file.path);
+        });
+        if (pendingCards.length === 0) return;
+
+        let cancelled = false;
+        void (async () => {
+            for (const card of pendingCards) {
+                if (cancelled) return;
+                try {
+                    await generateRichpostCardPreview(
+                        card.file.path,
+                        card.richpostPreviewPageFileUrl || '',
+                        card.richpostPreviewPageFile || '',
+                        Number(card.richpostPreviewPageUpdatedAt || 0) || Date.now(),
+                    );
+                    if (cancelled) return;
+                } catch (error) {
+                    console.error('Failed to build richpost card preview:', error);
+                }
+            }
+        })();
+
+        return () => {
+            cancelled = true;
+        };
+    }, [contentCards, filter, generateRichpostCardPreview, mode, richpostPreviewOverrides]);
+
+    useEffect(() => {
+        if (!editorFile) return;
+        if ((packageState?.richpostPages?.length || 0) === 0) return;
+        scheduleRichpostCardPreviewFromState(editorFile, packageState);
+        return () => {
+            if (richpostCardPreviewTimerRef.current != null) {
+                window.clearTimeout(richpostCardPreviewTimerRef.current);
+                richpostCardPreviewTimerRef.current = null;
+            }
+        };
+    }, [editorFile, packageState, scheduleRichpostCardPreviewFromState]);
 
     const bindableImageAssets = useMemo(
         () => assets.filter((asset) => inferAssetKind(asset) === 'image'),
@@ -1215,6 +2800,9 @@ export function Manuscripts({ pendingFile, onFileConsumed, onNavigateToRedClaw, 
         () => bindAssetRole === 'asset' ? assets : bindableImageAssets,
         [assets, bindAssetRole, bindableImageAssets]
     );
+    const exportSourceWidth = Number(packageState?.videoProject?.remotion?.width || packageState?.remotion?.width || 1920);
+    const exportSourceHeight = Number(packageState?.videoProject?.remotion?.height || packageState?.remotion?.height || 1080);
+    const exportTargetSize = exportResolutionDimensions(exportSourceWidth, exportSourceHeight, exportVideoResolution);
 
     if (mode === 'editor' && editorFile) {
         const currentDescriptor = editorDescriptor || {
@@ -1225,7 +2813,7 @@ export function Manuscripts({ pendingFile, onFileConsumed, onNavigateToRedClaw, 
         const draftTheme = resolveDraftTypeTheme(draftType);
         const isVideoDraft = draftType === 'video';
         const isAudioDraft = draftType === 'audio';
-        const isImmersiveWorkbench = isVideoDraft || isAudioDraft;
+        const isImmersiveWorkbench = mode === 'editor';
         const isRichPostDraft = draftType === 'richpost';
         const isMarkdownDraft = editorFile.endsWith('.md');
         const canUpgradeToArticle = draftType === 'longform' && isMarkdownDraft;
@@ -1234,6 +2822,17 @@ export function Manuscripts({ pendingFile, onFileConsumed, onNavigateToRedClaw, 
         const isPostPackage = editorFile.endsWith(POST_DRAFT_EXTENSION);
         const isVideoPackage = editorFile.endsWith(VIDEO_DRAFT_EXTENSION);
         const isAudioPackage = editorFile.endsWith(AUDIO_DRAFT_EXTENSION);
+        const isScriptConfirmed = (
+            packageState?.videoProject?.scriptApproval?.status
+            || packageState?.editorProject?.ai?.scriptApproval?.status
+        ) === 'confirmed';
+        const editorWriteProposalView = editorWriteProposal ? {
+            id: editorWriteProposal.id,
+            createdAt: editorWriteProposal.createdAt,
+            baseBody: splitWritingDraftContent(editorWriteProposal.baseContent, draftType).body,
+            proposedBody: splitWritingDraftContent(editorWriteProposal.proposedContent, draftType).body,
+            isStale: currentEditorContent !== editorWriteProposal.baseContent,
+        } : null;
         const packageCoverId = String(packageState?.cover?.assetId || '').trim();
         const packageImages = Array.isArray(packageState?.images?.items) ? packageState?.images?.items : [];
         const packageAssets = Array.isArray(packageState?.assets?.items) ? packageState?.assets?.items : [];
@@ -1243,28 +2842,91 @@ export function Manuscripts({ pendingFile, onFileConsumed, onNavigateToRedClaw, 
             packageCoverId,
             ...packageImages.map((item) => String(item.assetId || '').trim()),
             ...packageAssets.map((item) => String(item.assetId || '').trim()),
+            ...timelineClips.map((item) => String(item?.assetId || '').trim()),
         ].filter(Boolean));
-        const packagePreviewAssets = [
-            ...assets.filter((asset) => packageAssetIds.has(asset.id)),
-            ...packageAssets
-                .filter((item) => {
-                    const assetId = String(item.assetId || '').trim();
-                    return assetId && !assets.some((asset) => asset.id === assetId);
-                })
-                .map((item) => ({
-                    id: String(item.assetId || ''),
-                    source: 'external' as const,
-                    title: String(item.title || pathBasenameSafe(String(item.mediaPath || '')) || item.assetId || ''),
-                    mimeType: String(item.mimeType || ''),
-                    relativePath: '',
-                    absolutePath: String(item.absolutePath || item.mediaPath || ''),
-                    previewUrl: String(item.previewUrl || ''),
-                    createdAt: '',
-                    updatedAt: '',
-                    exists: Boolean(item.exists),
-                })),
-        ];
-        const articlePreviewHtml = String(packageState?.wechatHtml || packageState?.layoutHtml || '').trim();
+        const manuscriptBoundAssets = assets
+            .filter((asset) => String(asset.boundManuscriptPath || '').trim() === editorFile)
+            .sort((left, right) => String(right.updatedAt || '').localeCompare(String(left.updatedAt || '')));
+        const timelineFallbackAssets = timelineClips
+            .filter((item) => {
+                const assetId = String(item?.assetId || '').trim();
+                return assetId && !assets.some((asset) => asset.id === assetId);
+            })
+            .map((item) => ({
+                id: String(item?.assetId || ''),
+                source: 'external' as const,
+                title: String(item?.name || pathBasenameSafe(String(item?.mediaPath || '')) || item?.assetId || ''),
+                mimeType: String(item?.mimeType || ''),
+                relativePath: '',
+                absolutePath: String(item?.mediaPath || ''),
+                previewUrl: '',
+                createdAt: '',
+                updatedAt: '',
+                exists: true,
+            }));
+        const packageAssetFallbacks = packageAssets
+            .filter((item) => {
+                const assetId = String(item.assetId || '').trim();
+                return assetId && !assets.some((asset) => asset.id === assetId);
+            })
+            .map((item) => ({
+                id: String(item.assetId || ''),
+                source: 'external' as const,
+                title: String(item.title || pathBasenameSafe(String(item.mediaPath || '')) || item.assetId || ''),
+                mimeType: String(item.mimeType || ''),
+                relativePath: '',
+                absolutePath: String(item.absolutePath || item.mediaPath || ''),
+                previewUrl: String(item.previewUrl || ''),
+                createdAt: '',
+                updatedAt: '',
+                exists: Boolean(item.exists),
+            }));
+        const packagePreviewAssets = Array.from(new Map(
+            [
+                ...timelineClips
+                    .map((item) => String(item?.assetId || '').trim())
+                    .filter(Boolean)
+                    .map((assetId) => assets.find((asset) => asset.id === assetId))
+                    .filter(Boolean),
+                ...manuscriptBoundAssets,
+                ...assets.filter((asset) => packageAssetIds.has(asset.id)),
+                ...timelineFallbackAssets,
+                ...packageAssetFallbacks,
+            ].map((asset) => [asset.id, asset])
+        ).values());
+        const articleLayoutPreview = {
+            filePath: packageState?.layoutHtmlFile || null,
+            fileUrl: packageState?.layoutHtmlFileUrl || null,
+            exists: Boolean(packageState?.layoutHtmlExists || packageState?.layoutHtmlFile || packageState?.layoutHtmlFileUrl),
+            hasContent: Boolean(packageState?.hasLayoutHtml),
+            updatedAt: Number(packageState?.layoutHtmlUpdatedAt || 0) || null,
+        };
+        const articleWechatPreview = {
+            filePath: packageState?.wechatHtmlFile || null,
+            fileUrl: packageState?.wechatHtmlFileUrl || null,
+            exists: Boolean(packageState?.wechatHtmlExists || packageState?.wechatHtmlFile || packageState?.wechatHtmlFileUrl),
+            hasContent: Boolean(packageState?.hasWechatHtml),
+            updatedAt: Number(packageState?.wechatHtmlUpdatedAt || 0) || null,
+        };
+        const richpostPagePreviews = Array.isArray(packageState?.richpostPages)
+            ? packageState.richpostPages.map((page, index) => ({
+                id: String(page?.id || `page-${index + 1}`),
+                label: String(page?.label || `第 ${index + 1} 页`),
+                template: String(page?.template || 'text-stack'),
+                title: page?.title ? String(page.title) : null,
+                summary: page?.summary ? String(page.summary) : null,
+                filePath: page?.file ? String(page.file) : null,
+                fileUrl: page?.fileUrl ? String(page.fileUrl) : null,
+                exists: Boolean(page?.exists || page?.file || page?.fileUrl),
+                updatedAt: Number(page?.updatedAt || 0) || null,
+            }))
+            : [];
+        const isGeneratingLayoutHtml = workingId === 'package-html:layout';
+        const isGeneratingWechatHtml = workingId === 'package-html:wechat';
+        const packageCoverAsset = packagePreviewAssets.find((asset) => asset.id === packageCoverId) || null;
+        const packageImageAssets = packagePreviewAssets.filter((asset) => (
+            inferAssetKind(asset) === 'image' && asset.id !== packageCoverId
+        ));
         const primaryVideoAsset = packagePreviewAssets.find((asset) => {
             const kind = inferAssetKind(asset);
             return kind === 'video' || kind === 'image';
@@ -1272,58 +2934,85 @@ export function Manuscripts({ pendingFile, onFileConsumed, onNavigateToRedClaw, 
         const primaryAudioAsset = packagePreviewAssets.find((asset) => inferAssetKind(asset) === 'audio')
             || packagePreviewAssets.find((asset) => inferAssetKind(asset) === 'video')
             || null;
-        const timelineTrackNames = Array.from(new Set((timelineClips.length > 0 ? timelineClips : [
-            { track: isAudioDraft ? 'A1' : 'V1' },
-            { track: isVideoDraft ? 'A1' : 'T1' },
-        ]).map((item) => String(item.track || '').trim()).filter(Boolean)));
+        const timelineSummary = packageState?.timelineSummary as ({ trackNames?: unknown } & Record<string, unknown>) | undefined;
+        const packageTrackNames = Array.isArray(timelineSummary?.trackNames)
+            ? timelineSummary.trackNames.map((item) => String(item || '').trim()).filter(Boolean)
+            : [];
+        const fallbackTrackNames = isAudioDraft
+            ? ['A1']
+            : isVideoDraft
+                ? ['V1', 'A1']
+                : ['V1', 'T1'];
+        const timelineTrackNames = Array.from(new Set([
+            ...packageTrackNames,
+            ...timelineClips.map((item) => String(item.track || '').trim()).filter(Boolean),
+            ...(packageTrackNames.length === 0 && timelineClips.length === 0 ? fallbackTrackNames : []),
+        ]));
 
         return (
-            <div className={clsx('h-full min-h-0 flex flex-col', isImmersiveWorkbench ? 'bg-[#0f0f0f] text-white' : 'bg-background')}>
+            <div className={clsx('h-full min-h-0 flex flex-col', isImmersiveWorkbench ? 'editor-ui-shell bg-background text-text-primary' : 'bg-surface-primary')}>
                 <div className={clsx(
-                    'flex items-center justify-between gap-3 px-6 py-3 backdrop-blur-sm',
+                    'flex items-center justify-between gap-3 px-6 py-3.5 backdrop-blur-md z-30',
                     isImmersiveWorkbench
-                        ? 'border-b border-white/10 bg-[#111111]'
-                        : 'border-b border-border/70 bg-background/95'
+                        ? 'border-b border-border bg-background/86 backdrop-blur-[32px]'
+                        : 'border-b border-black/[0.03] bg-white/80 backdrop-blur-[32px]'
                 )}>
-                    <div className="flex items-center gap-3 min-w-0">
+                    <div className="flex items-center gap-4 min-w-0">
                         <button
                             type="button"
                             onClick={() => setMode('gallery')}
                             className={clsx(
-                                'inline-flex items-center gap-2 rounded-lg px-3 py-1.5 text-sm transition-colors',
+                                'group inline-flex items-center gap-2 rounded-xl px-3.5 py-1.5 text-[13px] font-bold transition-all active:scale-95',
                                 isImmersiveWorkbench
-                                    ? 'border border-white/10 text-white/70 hover:bg-white/5 hover:text-white'
-                                    : 'border border-border text-text-secondary hover:bg-surface-secondary hover:text-text-primary'
+                                    ? 'bg-surface-secondary/50 border border-border text-text-secondary hover:bg-surface-secondary/80 hover:text-text-primary'
+                                    : 'bg-black/[0.03] border border-black/[0.02] text-text-secondary hover:bg-black/[0.06] hover:text-text-primary'
                             )}
                         >
-                            <ArrowLeft className="w-4 h-4" />
+                            <ArrowLeft className="w-4 h-4 transition-transform group-hover:-translate-x-0.5" />
                             返回草稿
                         </button>
                         <div className="min-w-0">
-                            <div className="flex flex-wrap items-center gap-2">
-                                <div className={clsx('text-sm font-medium truncate', isImmersiveWorkbench ? 'text-white' : 'text-text-primary')}>{currentDescriptor.title}</div>
-                                <span className={clsx('rounded-full px-2.5 py-1 text-[10px] font-medium', draftTheme.chip)}>
+                            <div className="flex flex-wrap items-center gap-2.5">
+                                <div className={clsx('text-[15px] font-extrabold tracking-tight truncate', isImmersiveWorkbench ? 'text-text-primary' : 'text-text-primary')}>{currentDescriptor.title}</div>
+                                <span className={clsx('rounded-lg px-2 py-0.5 text-[9px] font-bold uppercase tracking-widest', draftTheme.chip)}>
                                     {resolveDraftTypeLabel(draftType)}
                                 </span>
                             </div>
-                            <div className={clsx('text-xs truncate', isImmersiveWorkbench ? 'text-white/35' : 'text-text-tertiary')}>{editorFile}</div>
+                            <div className={clsx('mt-0.5 text-[10px] font-bold uppercase tracking-tighter truncate opacity-60', isImmersiveWorkbench ? 'text-text-tertiary' : 'text-text-tertiary')}>{editorFile}</div>
                         </div>
                     </div>
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-1.5">
+                        {isAudioDraft && (
+                            <div className="mr-2 flex items-center gap-1 rounded-xl border border-border bg-surface-secondary/50 px-1 py-1">
+                                <EditorLayoutToggleButton
+                                    kind="timeline"
+                                    collapsed={immersiveTimelineCollapsed}
+                                    onClick={() => setImmersiveTimelineCollapsed((value) => !value)}
+                                    title={immersiveTimelineCollapsed ? '展开时间轴' : '折叠时间轴'}
+                                />
+                                <EditorLayoutToggleButton
+                                    kind="materials"
+                                    collapsed={immersiveMaterialsCollapsed}
+                                    onClick={() => setImmersiveMaterialsCollapsed((value) => !value)}
+                                    title={immersiveMaterialsCollapsed ? '展开素材栏' : '折叠素材栏'}
+                                />
+                            </div>
+                        )}
+                        
                         {canUpgradeToArticle && (
                             <button
                                 type="button"
                                 onClick={() => void handleUpgradeDraftPackage('article')}
                                 disabled={isUpgradingDraft}
                                 className={clsx(
-                                    'inline-flex items-center gap-2 rounded-lg px-3 py-1.5 text-sm disabled:opacity-60',
+                                    'inline-flex items-center gap-1.5 rounded-xl px-4 py-2 text-[12px] font-bold transition-all disabled:opacity-40 active:scale-95 shadow-sm',
                                     isImmersiveWorkbench
-                                        ? 'border border-white/10 text-white/70 hover:bg-white/5 hover:text-white'
-                                        : 'border border-border text-text-secondary hover:bg-surface-secondary hover:text-text-primary'
+                                        ? 'bg-accent-primary text-white hover:bg-accent-hover'
+                                        : 'bg-text-primary text-white hover:bg-text-primary/90 shadow-text-primary/10'
                                 )}
                             >
-                                <Sparkles className="h-4 w-4" />
-                                {isUpgradingDraft ? '升级中...' : '升级为排版工程'}
+                                <Sparkles className="h-3.5 w-3.5" />
+                                {isUpgradingDraft ? 'UPGRADING...' : '升级为排版工程'}
                             </button>
                         )}
                         {canUpgradeToPost && (
@@ -1332,18 +3021,52 @@ export function Manuscripts({ pendingFile, onFileConsumed, onNavigateToRedClaw, 
                                 onClick={() => void handleUpgradeDraftPackage('post')}
                                 disabled={isUpgradingDraft}
                                 className={clsx(
-                                    'inline-flex items-center gap-2 rounded-lg px-3 py-1.5 text-sm disabled:opacity-60',
+                                    'inline-flex items-center gap-1.5 rounded-xl px-4 py-2 text-[12px] font-bold transition-all disabled:opacity-40 active:scale-95 shadow-sm',
                                     isImmersiveWorkbench
-                                        ? 'border border-white/10 text-white/70 hover:bg-white/5 hover:text-white'
-                                        : 'border border-border text-text-secondary hover:bg-surface-secondary hover:text-text-primary'
+                                        ? 'bg-accent-primary text-white hover:bg-accent-hover'
+                                        : 'bg-text-primary text-white hover:bg-text-primary/90 shadow-text-primary/10'
                                 )}
                             >
-                                <Sparkles className="h-4 w-4" />
-                                {isUpgradingDraft ? '升级中...' : '升级为图文工程'}
+                                <Sparkles className="h-3.5 w-3.5" />
+                                {isUpgradingDraft ? 'UPGRADING...' : '升级为图文工程'}
                             </button>
                         )}
-                        {(isArticlePackage || isPostPackage) && (
-                            <>
+                        
+                        {isArticlePackage && (
+                            <div className="flex items-center gap-1">
+                                <button
+                                    type="button"
+                                    onClick={() => void handleGeneratePackageHtml('layout')}
+                                    disabled={isGeneratingLayoutHtml}
+                                    className={clsx(
+                                        'inline-flex items-center gap-1.5 rounded-xl px-3.5 py-1.5 text-[12px] font-bold transition-all disabled:opacity-40 active:scale-95',
+                                        isImmersiveWorkbench
+                                            ? 'border border-border bg-surface-secondary/50 text-text-secondary hover:bg-surface-secondary/80 hover:text-text-primary'
+                                            : 'bg-black/[0.03] border border-black/[0.02] text-text-secondary hover:text-text-primary hover:bg-black/[0.06]'
+                                    )}
+                                >
+                                    {isGeneratingLayoutHtml ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
+                                    {articleLayoutPreview.hasContent ? '重做排版' : '生成排版'}
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => void handleGeneratePackageHtml('wechat')}
+                                    disabled={isGeneratingWechatHtml}
+                                    className={clsx(
+                                        'inline-flex items-center gap-1.5 rounded-xl px-3.5 py-1.5 text-[12px] font-bold transition-all disabled:opacity-40 active:scale-95',
+                                        isImmersiveWorkbench
+                                            ? 'border border-border bg-surface-secondary/50 text-text-secondary hover:bg-surface-secondary/80 hover:text-text-primary'
+                                            : 'bg-black/[0.03] border border-black/[0.02] text-text-secondary hover:text-text-primary hover:bg-black/[0.06]'
+                                    )}
+                                >
+                                    {isGeneratingWechatHtml ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
+                                    {articleWechatPreview.hasContent ? '重做公众号' : '生成公众号'}
+                                </button>
+                            </div>
+                        )}
+
+                        {isArticlePackage && (
+                            <div className="flex items-center gap-1">
                                 <button
                                     type="button"
                                     onClick={() => {
@@ -1351,14 +3074,14 @@ export function Manuscripts({ pendingFile, onFileConsumed, onNavigateToRedClaw, 
                                         setIsBindAssetModalOpen(true);
                                     }}
                                     className={clsx(
-                                        'inline-flex items-center gap-2 rounded-lg px-3 py-1.5 text-sm',
+                                        'inline-flex items-center gap-1.5 rounded-xl px-3.5 py-1.5 text-[12px] font-bold transition-all active:scale-95',
                                         isImmersiveWorkbench
-                                            ? 'border border-white/10 text-white/70 hover:bg-white/5 hover:text-white'
-                                            : 'border border-border text-text-secondary hover:bg-surface-secondary hover:text-text-primary'
+                                            ? 'border border-border bg-surface-secondary/50 text-text-secondary hover:bg-surface-secondary/80 hover:text-text-primary'
+                                            : 'bg-black/[0.03] border border-black/[0.02] text-text-secondary hover:text-text-primary hover:bg-black/[0.06]'
                                     )}
                                 >
-                                    <ImageIcon className="h-4 w-4" />
-                                    {isPostPackage ? '设置封面' : '绑定封面'}
+                                    <ImageIcon className="h-3.5 w-3.5" />
+                                    绑定封面
                                 </button>
                                 <button
                                     type="button"
@@ -1367,37 +3090,54 @@ export function Manuscripts({ pendingFile, onFileConsumed, onNavigateToRedClaw, 
                                         setIsBindAssetModalOpen(true);
                                     }}
                                     className={clsx(
-                                        'inline-flex items-center gap-2 rounded-lg px-3 py-1.5 text-sm',
+                                        'inline-flex items-center gap-1.5 rounded-xl px-3.5 py-1.5 text-[12px] font-bold transition-all active:scale-95',
                                         isImmersiveWorkbench
-                                            ? 'border border-white/10 text-white/70 hover:bg-white/5 hover:text-white'
-                                            : 'border border-border text-text-secondary hover:bg-surface-secondary hover:text-text-primary'
+                                            ? 'border border-border bg-surface-secondary/50 text-text-secondary hover:bg-surface-secondary/80 hover:text-text-primary'
+                                            : 'bg-black/[0.03] border border-black/[0.02] text-text-secondary hover:text-text-primary hover:bg-black/[0.06]'
                                     )}
                                 >
-                                    <FileImage className="h-4 w-4" />
-                                    {isPostPackage ? '添加配图' : '插入配图'}
+                                    <FileImage className="h-3.5 w-3.5" />
+                                    插入配图
                                 </button>
-                            </>
+                            </div>
                         )}
-                        {(isVideoPackage || isAudioPackage) && (
+                        
+                        {isVideoPackage && (
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    void handleRenderRemotionVideo();
+                                }}
+                                disabled={isRenderingRemotion || !isScriptConfirmed}
+                                title={isScriptConfirmed ? '导出当前视频' : '先确认脚本，再导出视频'}
+                                className="inline-flex items-center gap-2 rounded-xl bg-accent-primary px-4 py-2 text-[12px] font-bold text-white shadow-lg shadow-accent-primary/20 hover:bg-accent-hover transition-all active:scale-95 disabled:opacity-40"
+                            >
+                                {isRenderingRemotion ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ExternalLink className="h-3.5 w-3.5" />}
+                                {isRenderingRemotion ? 'EXPORTING...' : '导出视频'}
+                            </button>
+                        )}
+                        {isAudioPackage && (
                             <button
                                 type="button"
                                 onClick={() => {
                                     void handleImportAndBindAssetsToPackage();
                                 }}
-                                className="inline-flex items-center gap-2 rounded-lg border border-white/10 px-3 py-1.5 text-sm text-white/75 hover:bg-white/5 hover:text-white"
+                                className="inline-flex items-center gap-2 rounded-xl bg-accent-primary px-4 py-2 text-[12px] font-bold text-white shadow-lg shadow-accent-primary/20 hover:bg-accent-hover transition-all active:scale-95"
                             >
-                                <Upload className="h-4 w-4" />
+                                <Upload className="h-3.5 w-3.5" />
                                 导入素材
                             </button>
                         )}
                     </div>
                 </div>
                 {isVideoDraft ? (
-                    <Suspense fallback={<div className="h-full flex items-center justify-center text-white/45">视频工作台加载中...</div>}>
+                    <Suspense fallback={<div className="flex h-full items-center justify-center text-text-tertiary">视频工作台加载中...</div>}>
                         <VideoDraftWorkbench
+                            isActive={isActive}
                             title={currentDescriptor.title}
                             editorFile={editorFile}
                             packageAssets={packageAssets}
+                            packageState={packageState}
                             packagePreviewAssets={packagePreviewAssets}
                             primaryVideoAsset={primaryVideoAsset}
                             timelineClipCount={timelineClipCount}
@@ -1406,7 +3146,13 @@ export function Manuscripts({ pendingFile, onFileConsumed, onNavigateToRedClaw, 
                             editorBody={editorBody}
                             editorBodyDirty={editorBodyDirty}
                             isSavingEditorBody={isSavingEditorBody}
+                            materialsCollapsed={immersiveMaterialsCollapsed}
+                            timelineCollapsed={immersiveTimelineCollapsed}
                             editorChatSessionId={editorChatSessionId}
+                            remotionComposition={packageState?.remotion || null}
+                            remotionRenderPath={packageState?.remotion?.render?.outputPath || null}
+                            isGeneratingRemotion={isGeneratingRemotion}
+                            isRenderingRemotion={isRenderingRemotion}
                             onEditorBodyChange={(value) => {
                                 setEditorBody(value);
                                 setEditorBodyDirty(true);
@@ -1414,11 +3160,26 @@ export function Manuscripts({ pendingFile, onFileConsumed, onNavigateToRedClaw, 
                             onOpenBindAssets={() => {
                                 void handleImportAndBindAssetsToPackage();
                             }}
-                            onPackageStateChange={(state) => setPackageState(state as PackageState)}
+                            onPackageStateChange={(state) => applyPackageState(editorFile, state as PackageState)}
+                            onConfirmScript={() => {
+                                void handleConfirmEditorScript();
+                            }}
+                            onGenerateRemotionScene={(instructions) => {
+                                void handleGenerateRemotionScene(instructions);
+                            }}
+                            onSaveRemotionScene={(scene) => {
+                                void handleSaveRemotionScene(scene);
+                            }}
+                            onRenderRemotionVideo={() => {
+                                void handleRenderRemotionVideo();
+                            }}
+                            onOpenRenderedVideo={() => {
+                                void handleOpenRenderedRemotionVideo();
+                            }}
                         />
                     </Suspense>
                 ) : isAudioDraft ? (
-                    <Suspense fallback={<div className="h-full flex items-center justify-center text-white/45">音频工作台加载中...</div>}>
+                    <Suspense fallback={<div className="flex h-full items-center justify-center text-text-tertiary">音频工作台加载中...</div>}>
                         <AudioDraftWorkbench
                             editorFile={editorFile}
                             packageAssets={packageAssets}
@@ -1430,6 +3191,8 @@ export function Manuscripts({ pendingFile, onFileConsumed, onNavigateToRedClaw, 
                             editorBody={editorBody}
                             editorBodyDirty={editorBodyDirty}
                             isSavingEditorBody={isSavingEditorBody}
+                            materialsCollapsed={immersiveMaterialsCollapsed}
+                            timelineCollapsed={immersiveTimelineCollapsed}
                             editorChatSessionId={editorChatSessionId}
                             onEditorBodyChange={(value) => {
                                 setEditorBody(value);
@@ -1438,99 +3201,61 @@ export function Manuscripts({ pendingFile, onFileConsumed, onNavigateToRedClaw, 
                             onOpenBindAssets={() => {
                                 void handleImportAndBindAssetsToPackage();
                             }}
-                            onPackageStateChange={(state) => setPackageState(state as PackageState)}
+                            onPackageStateChange={(state) => applyPackageState(editorFile, state as PackageState)}
                         />
                     </Suspense>
-                ) : isRichPostDraft ? (
-                    <div className="flex-1 min-h-0 grid grid-cols-[minmax(0,1fr)_420px]">
-                        <div className="min-h-0">
-                            <Suspense fallback={<div className="h-full flex items-center justify-center text-text-tertiary">编辑器加载中...</div>}>
-                                <LegacyManuscriptsWorkspace pendingFile={editorFile} onNavigateToRedClaw={onNavigateToRedClaw} isActive={true} />
-                            </Suspense>
-                        </div>
-                        <div className="border-l border-border/70 bg-[#fffaf3] px-6 py-5">
-                            <div className="text-xs uppercase tracking-[0.24em] text-amber-600/70">Mobile Preview</div>
-                            {(isPostPackage || isArticlePackage) && (
-                                <div className="mt-3 rounded-2xl border border-amber-200/70 bg-white/85 px-4 py-3 text-xs text-text-secondary">
-                                    <div>封面：{packageCoverId ? '已绑定' : '未绑定'}</div>
-                                    <div className="mt-1">配图：{packageImages.length} 张</div>
-                                    {isArticlePackage && (
-                                        <div className="mt-1">排版：{packageState?.hasWechatHtml ? '已生成公众号 HTML' : '尚未生成'}</div>
-                                    )}
-                                </div>
-                            )}
-                            <div className="mt-4 rounded-[36px] border border-border bg-white p-5 shadow-[0_18px_40px_rgba(15,23,42,0.08)]">
-                                <div className="mx-auto w-[252px] rounded-[30px] border border-border bg-white p-4">
-                                    {packageCoverId && packagePreviewAssets.find((asset) => asset.id === packageCoverId) ? (
-                                        <img
-                                            src={resolveAssetUrl(packagePreviewAssets.find((asset) => asset.id === packageCoverId)?.previewUrl || packagePreviewAssets.find((asset) => asset.id === packageCoverId)?.relativePath || '')}
-                                            alt="封面"
-                                            className="h-40 w-full rounded-3xl object-cover"
-                                        />
-                                    ) : (
-                                        <div className="h-40 rounded-3xl bg-[linear-gradient(135deg,#fed7aa,#fdba74_38%,#fb7185)]" />
-                                    )}
-                                    <div className="mt-4 h-3 w-4/5 rounded-full bg-surface-secondary" />
-                                    <div className="mt-2 h-3 w-3/5 rounded-full bg-surface-secondary" />
-                                    <div className="mt-5 space-y-2">
-                                        <div className="h-2.5 rounded-full bg-surface-secondary" />
-                                        <div className="h-2.5 rounded-full bg-surface-secondary" />
-                                        <div className="h-2.5 w-4/5 rounded-full bg-surface-secondary" />
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
                 ) : (
-                    <div className="flex-1 min-h-0 grid grid-cols-[minmax(0,1fr)_340px]">
-                        <div className="min-h-0">
-                            <Suspense fallback={<div className="h-full flex items-center justify-center text-text-tertiary">编辑器加载中...</div>}>
-                                <LegacyManuscriptsWorkspace pendingFile={editorFile} onNavigateToRedClaw={onNavigateToRedClaw} isActive={true} />
-                            </Suspense>
-                        </div>
-                        <div className="border-l border-border/70 bg-[#fbf8ef] px-5 py-5">
-                            <div className="text-xs uppercase tracking-[0.24em] text-[#8a6d3b]">Document Outline</div>
-                            {isArticlePackage && (
-                                <div className="mt-4 rounded-2xl border border-[#eadfbe] bg-white/85 px-4 py-3 text-xs text-text-secondary">
-                                    <div>封面：{packageCoverId ? '已绑定' : '未绑定'}</div>
-                                    <div className="mt-1">插图：{packageImages.length} 张</div>
-                                    <div className="mt-1">公众号 HTML：{packageState?.hasWechatHtml ? '已生成' : '未生成'}</div>
-                                </div>
-                            )}
-                            {isArticlePackage && articlePreviewHtml ? (
-                                <div className="mt-4 overflow-hidden rounded-2xl border border-[#eadfbe] bg-white">
-                                    <iframe
-                                        title="文章排版预览"
-                                        srcDoc={articlePreviewHtml}
-                                        className="h-[520px] w-full bg-white"
-                                    />
-                                </div>
-                            ) : (
-                                <div className="mt-4 space-y-3">
-                                    {['标题与摘要', '正文结构', '引用与资料', '复盘备注'].map((item) => (
-                                        <div key={item} className="rounded-2xl border border-[#eadfbe] bg-white/85 px-4 py-3 text-sm text-text-secondary">
-                                            {item}
-                                        </div>
-                                    ))}
-                                </div>
-                            )}
-                            {(isArticlePackage || isPostPackage) && packagePreviewAssets.length > 0 && (
-                                <div className="mt-4 space-y-2">
-                                    {packagePreviewAssets.slice(0, 4).map((asset) => (
-                                        <div key={asset.id} className="flex items-center gap-3 rounded-2xl border border-[#eadfbe] bg-white/85 px-3 py-2">
-                                            <div className="h-12 w-12 overflow-hidden rounded-xl bg-surface-secondary">
-                                                <img src={resolveAssetUrl(asset.previewUrl || asset.relativePath || '')} alt={asset.title || asset.id} className="h-full w-full object-cover" />
-                                            </div>
-                                            <div className="min-w-0 flex-1">
-                                                <div className="truncate text-sm font-medium text-text-primary">{asset.title || asset.relativePath || asset.id}</div>
-                                                <div className="truncate text-xs text-text-tertiary">{asset.id === packageCoverId ? '封面' : '配图素材'}</div>
-                                            </div>
-                                        </div>
-                                    ))}
-                                </div>
-                            )}
-                        </div>
-                    </div>
+                    <WritingDraftWorkbench
+                        isActive={isActive}
+                        draftType={isRichPostDraft ? 'richpost' : draftType === 'longform' ? 'longform' : 'unknown'}
+                        title={currentDescriptor.title}
+                        filePath={editorFile}
+                        editorBody={editorBody}
+                        writeProposal={editorWriteProposalView}
+                        editorBodyDirty={editorBodyDirty}
+                        isSavingEditorBody={isSavingEditorBody}
+                        isApplyingWriteProposal={isApplyingWriteProposal}
+                        isRejectingWriteProposal={isRejectingWriteProposal}
+                        editorChatSessionId={editorChatSessionId}
+                        editorChatReady={editorChatSessionReady}
+                        layoutPreview={articleLayoutPreview}
+                        wechatPreview={articleWechatPreview}
+                        hasGeneratedHtml={Boolean(packageState?.hasWechatHtml || packageState?.hasLayoutHtml)}
+                        richpostThemeId={typeof packageState?.richpostThemeId === 'string' ? packageState.richpostThemeId : null}
+                        richpostFontScale={Number(packageState?.richpostFontScale || 1) || 1}
+                        richpostLineHeightScale={Number(packageState?.richpostLineHeightScale || 1) || 1}
+                        richpostThemePresets={Array.isArray(packageState?.richpostThemeCatalog) ? packageState.richpostThemeCatalog : []}
+                        richpostThemesDir={typeof packageState?.richpostThemesDir === 'string' ? packageState.richpostThemesDir : null}
+                        richpostThemeTemplateFile={typeof packageState?.richpostThemeTemplateFile === 'string' ? packageState.richpostThemeTemplateFile : null}
+                        isApplyingRichpostTheme={String(workingId || '').startsWith('richpost-theme:')}
+                        longformLayoutPresetId={typeof packageState?.longformLayoutPresetId === 'string' ? packageState.longformLayoutPresetId : null}
+                        longformLayoutPresets={Array.isArray(packageState?.longformLayoutPresetCatalog) ? packageState.longformLayoutPresetCatalog : []}
+                        isApplyingLongformLayoutPreset={String(workingId || '').startsWith('longform-layout-preset:')}
+                        richpostPages={richpostPagePreviews}
+                        coverAsset={packageCoverAsset}
+                        imageAssets={packageImageAssets}
+                            onEditorBodyChange={(value) => {
+                                setEditorBody(value);
+                                setEditorBodyDirty(true);
+                            }}
+                        onAcceptWriteProposal={() => {
+                            void handleAcceptEditorWriteProposal();
+                        }}
+                        onSelectRichpostTheme={(themeId) => {
+                            void handleSelectRichpostTheme(themeId);
+                        }}
+                        onUpdateRichpostTypography={(settings) => {
+                            void handleUpdateRichpostTypography(settings);
+                        }}
+                        onSelectLongformLayoutPreset={(presetId, target) => {
+                            void handleSelectLongformLayoutPreset(presetId, target);
+                        }}
+                            onAiWorkspaceModeChange={setEditorAiWorkspaceMode}
+                            onPackageStateChange={(state) => applyPackageState(editorFile, state as PackageState)}
+                            onRejectWriteProposal={() => {
+                                void handleRejectEditorWriteProposal();
+                            }}
+                    />
                 )}
             </div>
         );
@@ -1538,202 +3263,259 @@ export function Manuscripts({ pendingFile, onFileConsumed, onNavigateToRedClaw, 
 
     return (
         <>
-        <div className="h-full min-h-0 overflow-auto bg-background text-text-primary">
-            <div className="mx-auto flex w-full max-w-[1680px] flex-col px-5 py-4">
-                <div className="border-b border-border/60 px-2 py-4">
-                        <div className="flex flex-wrap items-center justify-between gap-4">
-                            <div className="flex min-w-0 flex-wrap items-center gap-5 text-sm">
+        <div className="h-full min-h-0 overflow-auto bg-surface-primary text-text-primary">
+            <div className="mx-auto flex w-full max-w-[1680px] flex-col px-6 py-2">
+                {/* 顶部导航与操作栏 - 更加精致 */}
+                <div className="border-b border-black/[0.03] py-5 px-1">
+                        <div className="flex flex-wrap items-center justify-between gap-6">
+                            <div className="flex min-w-0 items-center gap-8">
                                 {[
-                                    { id: 'all', label: '我的空间' },
+                                    { id: 'all', label: '全部' },
                                     { id: 'drafts', label: '我的稿件' },
-                                    { id: 'media', label: '素材画廊' },
-                                    { id: 'folders', label: '文件夹' },
+                                    { id: 'media', label: '素材库' },
                                 ].map((item) => (
                                     <button
                                         key={item.id}
                                         type="button"
                                         onClick={() => setFilter(item.id as DraftFilter)}
                                         className={clsx(
-                                            'relative pb-1 transition-colors',
-                                            filter === item.id ? 'font-semibold text-text-primary' : 'text-text-secondary hover:text-text-primary'
+                                            'relative py-1 text-[15px] font-bold transition-all',
+                                            filter === item.id ? 'text-text-primary' : 'text-text-tertiary hover:text-text-secondary'
                                         )}
                                     >
                                         {item.label}
-                                        {filter === item.id && <span className="absolute inset-x-0 -bottom-[21px] h-0.5 rounded-full bg-accent-primary" />}
+                                        {filter === item.id && (
+                                            <div className="absolute -bottom-[21px] left-0 right-0 h-1 rounded-t-full bg-accent-primary shadow-[0_0_8px_rgba(var(--color-accent-primary),0.4)]" />
+                                        )}
                                     </button>
                                 ))}
                             </div>
-                            <div className="flex flex-wrap items-center gap-3">
-                                <label className="relative w-[420px] max-w-[60vw] min-w-[260px]">
-                                    <Search className="absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-text-tertiary" />
-                                    <input
-                                        value={query}
-                                        onChange={(event) => setQuery(event.target.value)}
-                                        placeholder="搜索我的空间"
-                                        className="h-11 w-full rounded-2xl border border-border/60 bg-white/70 pl-11 pr-4 text-sm shadow-[inset_0_1px_0_rgba(255,255,255,0.8)] focus:border-accent-primary focus:outline-none"
-                                    />
-                                </label>
+                            
+                            <div className="relative flex flex-wrap items-center gap-1.5">
+                                <div className="flex items-center gap-0.5 bg-black/[0.03] p-1 rounded-xl border border-black/[0.02]">
+                                    <button
+                                        type="button"
+                                        onClick={() => setFilter('folders')}
+                                        className={clsx(
+                                            "inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-bold transition-all",
+                                            filter === 'folders' ? "bg-white text-text-primary shadow-sm ring-1 ring-black/[0.02]" : "text-text-tertiary hover:text-text-primary hover:bg-black/[0.02]"
+                                        )}
+                                    >
+                                        <FolderOpen className="h-3.5 w-3.5" />
+                                        目录
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => {
+                                            setIsImageModalOpen(true);
+                                            void loadSettings();
+                                        }}
+                                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-bold text-text-tertiary transition-all hover:text-text-primary hover:bg-black/[0.02]"
+                                    >
+                                        <ImageIcon className="h-3.5 w-3.5" />
+                                        生图
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => {
+                                            setIsVideoModalOpen(true);
+                                            void loadSettings();
+                                        }}
+                                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-bold text-text-tertiary transition-all hover:text-text-primary hover:bg-black/[0.02]"
+                                    >
+                                        <Clapperboard className="h-3.5 w-3.5" />
+                                        生视频
+                                    </button>
+                                </div>
+
+                                <div className="w-[1px] h-4 bg-black/[0.06] mx-1" />
+
                                 <button
                                     type="button"
-                                    onClick={() => setFilter('folders')}
-                                    className="inline-flex items-center gap-2 rounded-2xl border border-border bg-white/70 px-4 py-2.5 text-sm text-text-secondary hover:text-text-primary"
+                                    onClick={() => void loadData()}
+                                    className="p-2 rounded-xl text-text-tertiary transition-all hover:bg-black/[0.04] hover:text-text-primary active:scale-90"
+                                    title="刷新"
                                 >
-                                    <FolderOpen className="h-4 w-4" />
-                                    空间目录
+                                    <RefreshCw className={clsx('h-4 w-4', isRefreshing && 'animate-spin')} />
                                 </button>
-                                <div className="flex items-center gap-2 rounded-2xl bg-accent-primary px-2 py-2 text-white shadow-[0_16px_36px_rgba(37,99,235,0.24)]">
-                                    <button type="button" onClick={() => setCreateOpen(true)} className="inline-flex items-center gap-2 rounded-xl px-3 py-1.5 text-sm font-medium">
-                                        <Plus className="h-4 w-4" />
+                                
+                                <button
+                                    type="button"
+                                    onClick={() => setIsSearchOpen((prev) => !prev)}
+                                    className={clsx(
+                                        'p-2 rounded-xl transition-all active:scale-90',
+                                        isSearchOpen
+                                            ? 'bg-accent-primary/10 text-accent-primary shadow-inner'
+                                            : 'text-text-tertiary hover:bg-black/[0.04] hover:text-text-primary'
+                                    )}
+                                    title="搜索"
+                                >
+                                    <Search className="h-4 w-4" />
+                                </button>
+
+                                <div className="ml-2 flex items-center gap-1 rounded-xl border border-border bg-surface-elevated p-1 shadow-lg shadow-black/5">
+                                    <button
+                                        type="button"
+                                        onClick={() => {
+                                            setCreateKind('longform');
+                                            setCreateOpen(true);
+                                        }}
+                                        className="inline-flex items-center gap-1.5 rounded-[10px] bg-accent-primary px-3 py-1.5 text-[12px] font-bold text-white shadow-sm shadow-accent-primary/20 hover:bg-accent-hover transition-all active:scale-95"
+                                    >
+                                        <Plus className="h-3.5 w-3.5" />
                                         新建
                                     </button>
                                     <button
                                         type="button"
                                         onClick={() => void handleImportMediaFiles()}
                                         disabled={workingId === 'media-import'}
-                                        className="inline-flex items-center gap-2 rounded-xl border border-white/20 bg-white/10 px-3 py-1.5 text-sm"
+                                        className="inline-flex items-center gap-1.5 rounded-[10px] px-3 py-1.5 text-[12px] font-bold text-text-secondary hover:bg-surface-secondary hover:text-text-primary transition-all active:scale-95 disabled:opacity-30"
                                     >
-                                        <Upload className="h-4 w-4" />
+                                        <Upload className="h-3.5 w-3.5" />
                                         {workingId === 'media-import' ? '导入中' : '上传'}
                                     </button>
+                                </div>
+
+                                {/* 搜索弹窗 - 采用毛玻璃精致风格 */}
+                                <div
+                                    ref={searchPopoverRef}
+                                    className={clsx(
+                                        'absolute right-0 top-[calc(100%+12px)] z-40 w-[min(480px,calc(100vw-4rem))] origin-top-right transition-all duration-300 ease-out',
+                                        isSearchOpen
+                                            ? 'pointer-events-auto translate-y-0 scale-100 opacity-100'
+                                            : 'pointer-events-none -translate-y-2 scale-[0.98] opacity-0'
+                                    )}
+                                >
+                                    <div className="rounded-[24px] border border-white/60 bg-white/85 p-4 shadow-[0_32px_80px_-16px_rgba(0,0,0,0.14)] backdrop-blur-[32px]">
+                                        <div className="flex items-center gap-3 rounded-xl border border-black/[0.05] bg-black/[0.02] px-4 py-2.5 focus-within:bg-white focus-within:ring-2 focus-within:ring-accent-primary/10 transition-all">
+                                            <Search className="h-4 w-4 text-text-tertiary" />
+                                            <input
+                                                ref={searchInputRef}
+                                                value={query}
+                                                onChange={(event) => setQuery(event.target.value)}
+                                                placeholder="搜索标题、摘要或标签..."
+                                                className="h-6 w-full bg-transparent text-[13px] font-medium text-text-primary placeholder:text-text-tertiary/60 focus:outline-none"
+                                            />
+                                            {query ? (
+                                                <button
+                                                    type="button"
+                                                    onClick={() => setQuery('')}
+                                                    className="flex h-6 w-6 items-center justify-center rounded-full text-text-tertiary hover:bg-black/[0.06] hover:text-text-primary"
+                                                >
+                                                    <X className="h-3.5 w-3.5" />
+                                                </button>
+                                            ) : null}
+                                        </div>
+                                        <div className="mt-3 px-1 text-[10px] font-bold text-text-tertiary/60 uppercase tracking-widest">
+                                            Quick Search Insight
+                                        </div>
+                                    </div>
                                 </div>
                             </div>
                         </div>
                     </div>
 
-                    <div className="border-b border-border/60 px-2 py-4">
-                        <div className="flex items-center justify-between gap-4">
-                            <div className="flex min-w-0 items-center gap-2 text-sm text-text-secondary">
-                                {activeTrail.map((crumb, index) => (
-                                    <div key={crumb.path || 'root'} className="flex min-w-0 items-center gap-2">
-                                        {index > 0 && <ChevronRight className="h-3.5 w-3.5 text-text-tertiary" />}
-                                        <button
-                                            type="button"
-                                            onClick={() => setActiveFolder(crumb.path)}
-                                            className={clsx('truncate transition-colors hover:text-text-primary', crumb.path === activeFolder && 'font-medium text-text-primary')}
-                                        >
-                                            {crumb.label}
-                                        </button>
-                                    </div>
-                                ))}
-                            </div>
-                            <div className="flex flex-wrap items-center gap-2">
-                                <button
-                                    type="button"
-                                    onClick={() => {
-                                        setIsImageModalOpen(true);
-                                        void loadSettings();
-                                    }}
-                                    className="inline-flex items-center gap-2 rounded-xl border border-border bg-white/70 px-3 py-2 text-sm text-text-secondary hover:text-text-primary"
-                                >
-                                    <ImageIcon className="h-4 w-4" />
-                                    生图
-                                </button>
-                                <button
-                                    type="button"
-                                    onClick={() => {
-                                        setIsVideoModalOpen(true);
-                                        void loadSettings();
-                                    }}
-                                    className="inline-flex items-center gap-2 rounded-xl border border-border bg-white/70 px-3 py-2 text-sm text-text-secondary hover:text-text-primary"
-                                >
-                                    <Clapperboard className="h-4 w-4" />
-                                    生视频
-                                </button>
-                                <button
-                                    type="button"
-                                    onClick={() => void loadData()}
-                                    className="inline-flex items-center gap-2 rounded-xl border border-border bg-white/70 px-3 py-2 text-sm text-text-secondary hover:text-text-primary"
-                                >
-                                    <RefreshCw className={clsx('h-4 w-4', isRefreshing && 'animate-spin')} />
-                                    {isRefreshing ? '刷新中' : '刷新'}
-                                </button>
-                                {activeFolder === '' && (
-                                    <button
-                                        type="button"
-                                        onClick={() => void window.ipcRenderer.invoke('media:open-root')}
-                                        className="inline-flex items-center gap-2 rounded-xl border border-border bg-white/70 px-3 py-2 text-sm text-text-secondary hover:text-text-primary"
-                                    >
-                                        <ExternalLink className="h-4 w-4" />
-                                        打开媒体目录
-                                    </button>
-                                )}
-                            </div>
+                    {/* 文件夹区域 - 紧凑型 */}
+                    <div className="border-b border-black/[0.03] py-6 px-1">
+                        <div className="flex items-center justify-between mb-4">
+                            <div className="text-[12px] font-bold text-text-tertiary uppercase tracking-widest px-1">文件夹 ({visibleFolders.length})</div>
                         </div>
-
-                        <div className="mt-4">
-                            <div className="mb-2 flex items-center justify-between">
-                                <div className="text-sm font-semibold text-text-primary">文件夹 ({visibleFolders.length})</div>
-                                <div className="text-xs text-text-tertiary">内容已经汇总进画廊，文件夹只负责整理。</div>
-                            </div>
-                            <div className="flex gap-3 overflow-x-auto pb-1">
+                        <div className="flex gap-2.5 overflow-x-auto pb-1 custom-scrollbar">
+                            {currentFolderPath ? (
                                 <button
                                     type="button"
                                     onClick={() => {
-                                        setCreateKind('folder');
-                                        setCreateTitle('');
-                                        setCreateOpen(true);
+                                        if (isMediaScope) {
+                                            setMediaFolder(getParentFolderPath(mediaFolder));
+                                        } else {
+                                            setActiveFolder(getParentFolderPath(activeFolder));
+                                        }
                                     }}
-                                    className="group min-w-[156px] rounded-2xl border border-dashed border-border bg-white/60 px-4 py-4 text-left hover:border-accent-primary/40 hover:bg-white"
+                                    className="group flex min-w-[80px] flex-col items-center gap-2 p-2 rounded-xl transition-all hover:bg-black/[0.03]"
                                 >
-                                    <div className="flex items-center gap-3">
-                                        <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-surface-secondary text-text-secondary">
-                                            <FolderPlus className="h-4.5 w-4.5" />
-                                        </div>
-                                        <div>
-                                            <div className="text-sm font-medium text-text-primary">新建文件夹</div>
-                                            <div className="mt-0.5 text-[11px] text-text-tertiary">整理内容</div>
-                                        </div>
+                                    <div className="flex h-12 w-12 items-center justify-center text-text-tertiary transition-all group-hover:-translate-x-0.5 group-hover:text-text-primary">
+                                        <ArrowLeft className="h-6 w-6" />
+                                    </div>
+                                    <div className="text-[10px] font-bold text-text-tertiary">返回上级</div>
+                                </button>
+                            ) : null}
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    setFolderCreateTitle('');
+                                    setFolderCreateOpen(true);
+                                }}
+                                className="group flex min-w-[80px] flex-col items-center gap-2 p-2 rounded-xl transition-all hover:bg-black/[0.03]"
+                            >
+                                <div className="flex h-12 w-12 items-center justify-center text-accent-primary/60 transition-all group-hover:scale-110 group-hover:text-accent-primary">
+                                    <FolderPlus className="h-7 w-7" />
+                                </div>
+                                <div className="text-[10px] font-bold text-text-tertiary">新建文件夹</div>
+                            </button>
+                            {visibleFolders.map((folder) => (
+                                <button
+                                    key={folder.path}
+                                    type="button"
+                                    onClick={() => {
+                                        if (isMediaScope) {
+                                            setMediaFolder(folder.path);
+                                        } else {
+                                            setActiveFolder(folder.path);
+                                        }
+                                    }}
+                                    onContextMenu={isMediaScope ? undefined : (event) => openFolderContextMenu(event, folder)}
+                                    className="group flex min-w-[80px] max-w-[100px] flex-col items-center gap-2 p-2 rounded-xl transition-all hover:bg-black/[0.03]"
+                                >
+                                    <div className="flex h-12 w-12 items-center justify-center text-accent-primary/50 transition-all group-hover:-translate-y-0.5 group-hover:text-accent-primary">
+                                        <Folder className="h-9 w-9" />
+                                    </div>
+                                    <div className="line-clamp-1 text-[11px] font-bold text-text-secondary group-hover:text-text-primary">
+                                        {folder.name}
                                     </div>
                                 </button>
-                                {visibleFolders.map((folder) => (
-                                    <button
-                                        key={folder.path}
-                                        type="button"
-                                        onClick={() => setActiveFolder(folder.path)}
-                                        className="min-w-[172px] rounded-2xl border border-border bg-white/70 px-4 py-4 text-left hover:bg-white"
-                                    >
-                                        <div className="flex items-center gap-3">
-                                            <div className="text-3xl leading-none">📁</div>
-                                            <div className="min-w-0">
-                                                <div className="truncate text-sm font-medium text-text-primary">{folder.name}</div>
-                                                <div className="mt-0.5 text-[11px] text-text-tertiary">点击进入</div>
-                                            </div>
-                                        </div>
-                                    </button>
-                                ))}
-                            </div>
+                            ))}
                         </div>
                     </div>
 
-                    <div className="border-b border-border/60 px-2 py-3">
+                    {/* 过滤器与布局切换 - 精密风格 */}
+                    <div className="border-b border-black/[0.03] py-4 px-1">
                         <div className="flex flex-wrap items-center gap-2">
-                            {FILTER_OPTIONS.map((item) => (
-                                <button
-                                    key={item.id}
-                                    type="button"
-                                    onClick={() => setFilter(item.id)}
-                                    className={clsx(
-                                        'rounded-full px-3.5 py-1.5 text-sm transition-colors',
-                                        filter === item.id ? 'bg-text-primary text-white' : 'text-text-secondary hover:bg-surface-secondary hover:text-text-primary'
-                                    )}
-                                >
-                                    {item.label}
-                                </button>
-                            ))}
-                            <div className="ml-auto inline-flex rounded-xl border border-border bg-white/70 p-1">
+                            <div className="flex items-center gap-1 bg-black/[0.03] p-1 rounded-xl border border-black/[0.02]">
+                                {FILTER_OPTIONS.map((item) => (
+                                    <button
+                                        key={item.id}
+                                        type="button"
+                                        onClick={() => setFilter(item.id)}
+                                        className={clsx(
+                                            'px-3 py-1.5 rounded-lg text-[11px] font-bold transition-all',
+                                            filter === item.id ? 'bg-white text-text-primary shadow-sm ring-1 ring-black/[0.02]' : 'text-text-tertiary hover:text-text-secondary hover:bg-black/[0.02]'
+                                        )}
+                                    >
+                                        {item.label}
+                                    </button>
+                                ))}
+                            </div>
+                            
+                            <div className="ml-auto flex items-center gap-0.5 bg-black/[0.03] p-1 rounded-xl border border-black/[0.02]">
                                 <button
                                     type="button"
                                     onClick={() => setLayout('gallery')}
-                                    className={clsx('rounded-lg p-2 transition-colors', layout === 'gallery' ? 'bg-background text-text-primary shadow-sm' : 'text-text-tertiary hover:text-text-primary')}
+                                    className={clsx(
+                                        'p-1.5 rounded-lg transition-all',
+                                        layout === 'gallery' ? 'bg-white text-text-primary shadow-sm ring-1 ring-black/[0.02]' : 'text-text-tertiary hover:text-text-primary'
+                                    )}
                                 >
-                                    <Grid2X2 className="h-4 w-4" />
+                                    <Grid2X2 className="h-3.5 w-3.5" />
                                 </button>
                                 <button
                                     type="button"
                                     onClick={() => setLayout('list')}
-                                    className={clsx('rounded-lg p-2 transition-colors', layout === 'list' ? 'bg-background text-text-primary shadow-sm' : 'text-text-tertiary hover:text-text-primary')}
+                                    className={clsx(
+                                        'p-1.5 rounded-lg transition-all',
+                                        layout === 'list' ? 'bg-white text-text-primary shadow-sm ring-1 ring-black/[0.02]' : 'text-text-tertiary hover:text-text-primary'
+                                    )}
                                 >
-                                    <FolderOpen className="h-4 w-4" />
+                                    <FolderOpen className="h-3.5 w-3.5" />
                                 </button>
                             </div>
                         </div>
@@ -1753,7 +3535,14 @@ export function Manuscripts({ pendingFile, onFileConsumed, onNavigateToRedClaw, 
                                         <button
                                             key={folder.path}
                                             type="button"
-                                            onClick={() => setActiveFolder(folder.path)}
+                                            onClick={() => {
+                                                if (isMediaScope) {
+                                                    setMediaFolder(folder.path);
+                                                } else {
+                                                    setActiveFolder(folder.path);
+                                                }
+                                            }}
+                                            onContextMenu={isMediaScope ? undefined : (event) => openFolderContextMenu(event, folder)}
                                             className={clsx(
                                                 'rounded-2xl border border-border bg-white/70 text-left hover:bg-white',
                                                 layout === 'gallery' ? 'p-4' : 'w-full px-4 py-3'
@@ -1772,15 +3561,15 @@ export function Manuscripts({ pendingFile, onFileConsumed, onNavigateToRedClaw, 
                             )
                         ) : (
                             <div className="space-y-4">
-                                {activeFolder && visibleAssets.length === 0 && (filter === 'all' || filter === 'media' || filter === 'image' || filter === 'video' || filter === 'audio') && (
+                                {activeFolder && filter === 'all' ? (
                                     <div className="rounded-2xl border border-dashed border-border px-4 py-3 text-sm text-text-tertiary">
-                                        媒体素材当前仍统一展示在“全部草稿”根目录。文件夹内目前以稿件为主。
+                                        当前目录优先展示稿件内容。素材库素材仍会在“全部”根目录和“素材库”筛选里显示。
                                     </div>
-                                )}
+                                ) : null}
                                 {contentCards.length === 0 ? (
                                     <div className="rounded-2xl border border-dashed border-border px-4 py-12 text-sm text-text-tertiary">当前没有符合筛选条件的内容。</div>
                                 ) : (
-                                    <div className={clsx(layout === 'gallery' ? 'grid grid-cols-[repeat(auto-fill,minmax(196px,1fr))] gap-x-3.5 gap-y-5' : 'space-y-2')}>
+                                    <div className={clsx(layout === 'gallery' ? 'grid grid-cols-[repeat(auto-fill,minmax(176px,1fr))] gap-x-4 gap-y-6' : 'space-y-2')}>
                                         {contentCards.map((card) => {
                                             if (card.kind === 'draft') {
                                                 const typeTheme = resolveDraftTypeTheme(card.draftType);
@@ -1791,62 +3580,87 @@ export function Manuscripts({ pendingFile, onFileConsumed, onNavigateToRedClaw, 
                                                         : card.draftType === 'richpost'
                                                             ? FileImage
                                                             : FileText;
-                                                const isBusy = workingId === card.file.path;
+                                                const previewOverride = richpostPreviewOverrides[card.file.path];
+                                                const previewOverrideIsFresh = Boolean(
+                                                    previewOverride?.fileUrl
+                                                    && Number(previewOverride.updatedAt || 0) >= Number(card.richpostPreviewPageUpdatedAt || 0)
+                                                );
+                                                const richpostPreviewSrc = card.draftType === 'richpost'
+                                                    ? resolveAssetUrl(
+                                                        previewOverrideIsFresh
+                                                            ? `${previewOverride?.fileUrl || ''}${String(previewOverride?.fileUrl || '').includes('?') ? '&' : '?'}v=${previewOverride?.updatedAt || card.updatedAt || 0}`
+                                                            : card.richpostPreviewFileUrl
+                                                                ? `${card.richpostPreviewFileUrl}${card.richpostPreviewFileUrl.includes('?') ? '&' : '?'}v=${card.richpostPreviewUpdatedAt || card.updatedAt || 0}`
+                                                                : ''
+                                                    )
+                                                    : '';
+                                                const showRichpostPreview = card.draftType === 'richpost'
+                                                    && Boolean(richpostPreviewSrc);
+                                                const openDraftCard = () => {
+                                                    void openDraftEditor(card.file.path);
+                                                };
+                                                const handleDraftCardKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+                                                    if (event.key === 'Enter' || event.key === ' ') {
+                                                        event.preventDefault();
+                                                        openDraftCard();
+                                                    }
+                                                };
                                                 return (
-                                                    <div key={card.id} className={clsx(layout === 'gallery' ? '' : 'rounded-2xl border border-border bg-white/75 px-4 py-3')}>
-                                                        <button type="button" onClick={() => void openDraftEditor(card.file.path)} className={clsx(layout === 'gallery' ? 'w-full text-left' : 'flex w-full items-center gap-4 text-left')}>
-                                                            <div className={clsx(layout === 'gallery' ? 'overflow-hidden rounded-[20px] border border-border bg-white/90' : 'flex-1 min-w-0')}>
-                                                                {layout === 'gallery' ? (
-                                                                    <>
-                                                                        <div className={clsx('relative aspect-[5/6] px-4 py-4', typeTheme.tile)}>
-                                                                            <div className={clsx('inline-flex h-9 w-9 items-center justify-center rounded-xl', typeTheme.iconWrap)}>
-                                                                                <Icon className="h-4.5 w-4.5" />
+                                                    <div key={card.id} className={clsx(layout === 'gallery' ? 'group' : 'rounded-xl border border-black/[0.04] bg-white/70 px-4 py-2.5 transition-all hover:bg-white hover:shadow-sm')}>
+                                                        {layout === 'gallery' ? (
+                                                            <div
+                                                                role="button"
+                                                                tabIndex={0}
+                                                                onClick={openDraftCard}
+                                                                onKeyDown={handleDraftCardKeyDown}
+                                                                onContextMenu={(event) => openDraftContextMenu(event, card.file, card.title)}
+                                                                className="block w-full text-left outline-none"
+                                                            >
+                                                                <div className={clsx(
+                                                                    'relative aspect-[5/6] overflow-hidden rounded-[14px] border border-black/[0.04] bg-white transition-all duration-300 group-hover:-translate-y-1 group-hover:shadow-[0_12px_24px_-8px_rgba(0,0,0,0.12)] focus-visible:ring-2 focus-visible:ring-accent-primary/30',
+                                                                    !showRichpostPreview && typeTheme.tile
+                                                                )}>
+                                                                    {showRichpostPreview ? (
+                                                                        <img
+                                                                            src={richpostPreviewSrc}
+                                                                            alt={`${card.title} 首图缩略图`}
+                                                                            loading="lazy"
+                                                                            draggable={false}
+                                                                            className="h-full w-full select-none object-cover pointer-events-none bg-white"
+                                                                        />
+                                                                    ) : (
+                                                                        <div className="absolute inset-0 p-4 flex flex-col">
+                                                                            <div className={clsx('inline-flex h-8 w-8 items-center justify-center rounded-lg shadow-sm', typeTheme.iconWrap)}>
+                                                                                <Icon className="h-4 w-4" />
                                                                             </div>
-                                                                            <div className="mt-4 text-[10px] uppercase tracking-[0.22em] text-white/60">{resolveDraftTypeLabel(card.draftType)}</div>
-                                                                            <div className="mt-2 line-clamp-2 text-lg font-semibold leading-tight">{card.title}</div>
-                                                                            <div className="absolute inset-x-4 bottom-4 rounded-xl border border-white/15 bg-white/10 px-2.5 py-2 text-[11px] text-white/80 backdrop-blur-sm">
-                                                                                {card.summary || '打开后继续编辑、排版或交给 AI 处理。'}
-                                                                            </div>
+                                                                            <div className="mt-4 text-[9px] font-bold uppercase tracking-[0.24em] text-white/50">{resolveDraftTypeLabel(card.draftType)}</div>
+                                                                            <div className="mt-1.5 line-clamp-3 text-[15px] font-extrabold leading-tight text-white tracking-tight">{card.title}</div>
                                                                         </div>
-                                                                        <div className="space-y-1.5 px-2 pb-1 pt-2.5">
-                                                                            <div className="truncate text-[13px] font-medium text-text-primary">{card.title}</div>
-                                                                            <div className="flex items-center gap-2 text-[11px]">
-                                                                                <span className={clsx('rounded-full px-2.5 py-1 font-medium', typeTheme.chip)}>{resolveDraftTypeLabel(card.draftType)}</span>
-                                                                                <span className="text-text-tertiary">{formatDateLabel(card.updatedAt)}</span>
-                                                                            </div>
-                                                                        </div>
-                                                                    </>
-                                                                ) : (
-                                                                    <div className="flex min-w-0 items-center gap-4">
-                                                                        <div className={clsx('flex h-10 w-10 items-center justify-center rounded-xl', typeTheme.tile)}>
-                                                                            <Icon className="h-4.5 w-4.5" />
-                                                                        </div>
-                                                                        <div className="min-w-0 flex-1">
-                                                                            <div className="truncate text-sm font-medium text-text-primary">{card.title}</div>
-                                                                            <div className="mt-1 truncate text-xs text-text-tertiary">{card.summary || card.file.path}</div>
-                                                                        </div>
+                                                                    )}
+                                                                </div>
+                                                                <div className="mt-2.5 px-1">
+                                                                    <div className="truncate text-[13px] font-bold text-text-primary transition-colors group-hover:text-accent-primary">{card.title}</div>
+                                                                    <div className="mt-0.5 text-[10px] font-bold uppercase tracking-tighter text-text-tertiary/60">{formatDateLabel(card.updatedAt)}</div>
+                                                                </div>
+                                                            </div>
+                                                        ) : (
+                                                            <button
+                                                                type="button"
+                                                                onClick={openDraftCard}
+                                                                onContextMenu={(event) => openDraftContextMenu(event, card.file, card.title)}
+                                                                className="flex w-full items-center gap-4 text-left"
+                                                            >
+                                                                <div className="flex min-w-0 items-center gap-4">
+                                                                    <div className={clsx('flex h-9 w-9 items-center justify-center rounded-lg shadow-sm', typeTheme.tile)}>
+                                                                        <Icon className="h-4 w-4 text-white" />
                                                                     </div>
-                                                                )}
-                                                            </div>
-                                                        </button>
-                                                        <div className={clsx('mt-3 flex items-center justify-between gap-2', layout === 'gallery' ? 'px-1' : '')}>
-                                                            <div className="text-xs text-text-tertiary">{card.file.path}</div>
-                                                            <div className="flex items-center gap-2">
-                                                                {onNavigateToRedClaw && (
-                                                                    <button type="button" onClick={() => pushToRedClaw(card.file.path)} className="rounded-lg border border-border px-3 py-1.5 text-xs text-text-secondary hover:bg-surface-secondary hover:text-text-primary">
-                                                                        交给 RedClaw
-                                                                    </button>
-                                                                )}
-                                                                <button
-                                                                    type="button"
-                                                                    onClick={() => void handleDeleteDraft(card.file.path)}
-                                                                    disabled={isBusy}
-                                                                    className="rounded-lg border border-border px-3 py-1.5 text-xs text-text-secondary hover:bg-surface-secondary hover:text-red-600 disabled:opacity-50"
-                                                                >
-                                                                    删除
-                                                                </button>
-                                                            </div>
-                                                        </div>
+                                                                    <div className="min-w-0 flex-1">
+                                                                        <div className="truncate text-[13px] font-bold text-text-primary">{card.title}</div>
+                                                                        <div className="mt-0.5 truncate text-[11px] font-medium text-text-tertiary/70">{card.summary || card.file.path}</div>
+                                                                    </div>
+                                                                </div>
+                                                            </button>
+                                                        )}
                                                     </div>
                                                 );
                                             }
@@ -1854,68 +3668,80 @@ export function Manuscripts({ pendingFile, onFileConsumed, onNavigateToRedClaw, 
                                             const asset = card.asset;
                                             const previewSrc = resolveAssetUrl(asset.previewUrl || asset.relativePath || asset.absolutePath || '');
                                             const assetKind = card.assetKind;
-                                            const isBusy = workingId === asset.id;
                                             return (
-                                                    <div key={card.id} className={clsx(layout === 'gallery' ? '' : 'rounded-2xl border border-border bg-white/75 px-4 py-3')}>
+                                                <div key={card.id} className={clsx(layout === 'gallery' ? 'group' : 'rounded-xl border border-black/[0.04] bg-white/70 px-4 py-2.5 transition-all hover:bg-white hover:shadow-sm')}>
                                                     <button
                                                         type="button"
                                                         onClick={() => setPreviewAsset(asset)}
+                                                        onContextMenu={(event) => openAssetContextMenu(event, asset)}
                                                         className={clsx(layout === 'gallery' ? 'w-full text-left' : 'flex w-full items-center gap-4 text-left')}
                                                     >
-                                                        <div className={clsx(layout === 'gallery' ? 'overflow-hidden rounded-[20px] border border-border bg-white/90' : 'flex-1 min-w-0')}>
-                                                            {layout === 'gallery' ? (
-                                                                <>
-                                                                    <div className="aspect-[5/6] overflow-hidden bg-surface-secondary/60">
-                                                                        {assetKind === 'image' ? (
-                                                                            <img src={previewSrc} alt={asset.title || asset.id} className="h-full w-full object-cover" />
-                                                                        ) : assetKind === 'video' ? (
-                                                                            <video src={previewSrc} className="h-full w-full object-cover" muted playsInline />
-                                                                        ) : (
-                                                                            <div className="flex h-full w-full items-center justify-center bg-[linear-gradient(135deg,#10253f,#315e8f)] text-white">
-                                                                                <AudioLines className="h-10 w-10" />
-                                                                            </div>
-                                                                        )}
-                                                                    </div>
-                                                                    <div className="space-y-1.5 px-2 pb-1 pt-2.5">
-                                                                        <div className="truncate text-[13px] font-medium text-text-primary">{card.title}</div>
-                                                                        <div className="flex items-center gap-2 text-[11px]">
-                                                                            <span className="rounded-full border border-border bg-white px-2.5 py-1 text-text-secondary">
-                                                                                {assetKind === 'image' ? '图片' : assetKind === 'video' ? '视频' : assetKind === 'audio' ? '音频' : '资产'}
-                                                                            </span>
-                                                                            <span className="rounded-full border border-border bg-white px-2.5 py-1 text-text-tertiary">
-                                                                                {asset.source === 'imported' ? '导入' : asset.source === 'generated' ? 'AI生成' : '计划项'}
-                                                                            </span>
+                                                        {layout === 'gallery' ? (
+                                                            <>
+                                                                <div className="relative aspect-[5/6] overflow-hidden rounded-[14px] border border-black/[0.04] bg-black/[0.02] transition-all duration-300 group-hover:-translate-y-1 group-hover:shadow-[0_12px_24px_-8px_rgba(0,0,0,0.12)]">
+                                                                    {asset.source === 'generated' ? (
+                                                                        <div className="absolute left-2.5 top-2.5 z-10 rounded-lg bg-black/60 px-2 py-1 text-[9px] font-bold text-white backdrop-blur-md uppercase tracking-widest border border-white/10">
+                                                                            AI
                                                                         </div>
-                                                                    </div>
-                                                                </>
-                                                            ) : (
-                                                                <div className="flex min-w-0 items-center gap-4">
-                                                                    <div className="h-12 w-14 overflow-hidden rounded-xl bg-surface-secondary/60">
-                                                                        {assetKind === 'image' ? (
-                                                                            <img src={previewSrc} alt={asset.title || asset.id} className="h-full w-full object-cover" />
-                                                                        ) : assetKind === 'video' ? (
-                                                                            <video src={previewSrc} className="h-full w-full object-cover" muted playsInline />
-                                                                        ) : (
-                                                                            <div className="flex h-full w-full items-center justify-center bg-[linear-gradient(135deg,#10253f,#315e8f)] text-white">
-                                                                                <AudioLines className="h-5 w-5" />
+                                                                    ) : null}
+                                                                    {assetKind === 'image' ? (
+                                                                        <img src={previewSrc} alt={asset.title || asset.id} className="h-full w-full object-cover" />
+                                                                    ) : assetKind === 'video' ? (
+                                                                        <>
+                                                                            <video
+                                                                                src={previewSrc}
+                                                                                className="h-full w-full object-cover bg-black"
+                                                                                muted
+                                                                                playsInline
+                                                                                preload="metadata"
+                                                                                onLoadedData={(event) => {
+                                                                                    try {
+                                                                                        if (event.currentTarget.currentTime < 0.05) {
+                                                                                            event.currentTarget.currentTime = 0.05;
+                                                                                        }
+                                                                                    } catch {
+                                                                                        // ignore
+                                                                                    }
+                                                                                }}
+                                                                            />
+                                                                            <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
+                                                                                <div className="flex h-10 w-10 items-center justify-center rounded-full bg-black/40 text-white backdrop-blur-md border border-white/20">
+                                                                                    <Play className="ml-0.5 h-4 w-4 fill-current" />
+                                                                                </div>
                                                                             </div>
-                                                                        )}
-                                                                    </div>
-                                                                    <div className="min-w-0 flex-1">
-                                                                        <div className="truncate text-sm font-medium text-text-primary">{card.title}</div>
-                                                                        <div className="mt-1 truncate text-xs text-text-tertiary">{card.summary || asset.relativePath || ''}</div>
-                                                                    </div>
+                                                                        </>
+                                                                    ) : (
+                                                                        <div className="flex h-full w-full items-center justify-center bg-[linear-gradient(135deg,#10253f,#315e8f)] text-white/80">
+                                                                            <AudioLines className="h-9 w-9" />
+                                                                        </div>
+                                                                    )}
+                                                                    <div className="pointer-events-none absolute inset-x-0 bottom-0 h-16 bg-gradient-to-t from-black/60 to-transparent" />
                                                                 </div>
-                                                            )}
-                                                        </div>
+                                                                <div className="px-1 mt-2.5">
+                                                                    <div className="truncate text-[13px] font-bold text-text-primary group-hover:text-accent-primary transition-colors">{card.title}</div>
+                                                                    <div className="mt-0.5 text-[10px] font-bold text-text-tertiary/60 uppercase tracking-tighter">{formatDateLabel(asset.updatedAt)}</div>
+                                                                </div>
+                                                            </>
+                                                        ) : (
+                                                            <div className="flex min-w-0 items-center gap-4">
+                                                                <div className="h-10 w-12 overflow-hidden rounded-lg bg-black/[0.03] border border-black/[0.04]">
+                                                                    {assetKind === 'image' ? (
+                                                                        <img src={previewSrc} alt={asset.title || asset.id} className="h-full w-full object-cover" />
+                                                                    ) : assetKind === 'video' ? (
+                                                                        <video src={previewSrc} className="h-full w-full object-cover bg-black" muted playsInline />
+                                                                    ) : (
+                                                                        <div className="flex h-full w-full items-center justify-center bg-black/[0.05] text-text-tertiary">
+                                                                            <AudioLines className="h-4 w-4" />
+                                                                        </div>
+                                                                    )}
+                                                                </div>
+                                                                <div className="min-w-0 flex-1">
+                                                                    <div className="truncate text-[13px] font-bold text-text-primary">{card.title}</div>
+                                                                    <div className="mt-0.5 truncate text-[11px] font-medium text-text-tertiary/70">{formatDateLabel(asset.updatedAt)}</div>
+                                                                </div>
+                                                            </div>
+                                                        )}
                                                     </button>
-                                                    <div className={clsx('mt-3 flex items-center justify-between gap-2', layout === 'gallery' ? 'px-1' : '')}>
-                                                        <div className="text-xs text-text-tertiary">{formatDateLabel(asset.updatedAt)}</div>
-                                                        <div className="flex items-center gap-2">
-                                                            <button type="button" onClick={() => void openAssetExternally(asset.id)} className="rounded-lg border border-border px-3 py-1.5 text-xs text-text-secondary hover:bg-surface-secondary hover:text-text-primary">打开</button>
-                                                            <button type="button" onClick={() => void handleDeleteAsset(asset.id)} disabled={isBusy} className="rounded-lg border border-border px-3 py-1.5 text-xs text-text-secondary hover:bg-surface-secondary hover:text-red-600 disabled:opacity-50">删除</button>
-                                                        </div>
-                                                    </div>
                                                 </div>
                                             );
                                         })}
@@ -2422,75 +4248,436 @@ export function Manuscripts({ pendingFile, onFileConsumed, onNavigateToRedClaw, 
             )}
 
             {createOpen && (
-                <div className="fixed inset-0 z-[1000] bg-black/35 backdrop-blur-[1px] flex items-center justify-center p-4" onMouseDown={() => !isCreating && setCreateOpen(false)}>
-                    <div className="w-full max-w-3xl rounded-3xl border border-border bg-background shadow-2xl" onMouseDown={(event) => event.stopPropagation()}>
-                        <div className="flex items-center justify-between px-6 py-5 border-b border-border/70">
-                            <div>
-                                <h2 className="text-lg font-semibold text-text-primary">新建内容</h2>
-                                <p className="mt-1 text-sm text-text-secondary">像在线 Office 一样，先选择要创建的内容类型。</p>
-                            </div>
-                            <button type="button" onClick={() => !isCreating && setCreateOpen(false)} className="rounded-xl p-2 text-text-tertiary hover:bg-surface-secondary hover:text-text-primary transition-colors">
+                <div className="fixed inset-0 z-[1000] bg-black/40 backdrop-blur-[4px] flex items-center justify-center p-4 animate-in fade-in duration-300" onMouseDown={() => !isCreating && setCreateOpen(false)}>
+                    <div className="w-full max-w-[680px] rounded-[24px] border border-white/30 bg-white shadow-[0_40px_100px_-24px_rgba(0,0,0,0.28)] flex flex-col overflow-hidden" onMouseDown={(event) => event.stopPropagation()}>
+                        <div className="flex items-center justify-between px-6 py-5 border-b border-black/[0.04] bg-white">
+                            <h2 className="text-[18px] font-extrabold tracking-tight text-text-primary">新建内容</h2>
+                            <button type="button" onClick={() => !isCreating && setCreateOpen(false)} className="flex h-9 w-9 items-center justify-center rounded-xl bg-black/[0.04] text-text-tertiary hover:bg-black/[0.08] hover:text-text-primary transition-all active:scale-90 disabled:opacity-40" disabled={isCreating}>
                                 <X className="w-5 h-5" />
                             </button>
                         </div>
-                        <div className="px-6 py-6 space-y-6">
-                            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+                        <div className="px-5 py-5 bg-white/50">
+                            <div className="grid grid-cols-2 gap-3">
                                 {CREATE_KIND_OPTIONS.map((option) => {
                                     const Icon = option.icon;
-                                    const isActiveOption = createKind === option.id;
+                                    const isCreatingOption = isCreating && createKind === option.id;
+                                    const isUnavailable = !option.available;
                                     return (
                                         <button
                                             key={option.id}
                                             type="button"
-                                            onClick={() => setCreateKind(option.id)}
+                                            onClick={() => {
+                                                if (isCreating || isUnavailable) return;
+                                                void handleCreateDraft(option.id);
+                                            }}
+                                            aria-disabled={isCreating || isUnavailable}
                                             className={clsx(
-                                                'rounded-2xl border p-4 text-left transition-colors min-h-[150px]',
-                                                isActiveOption
-                                                    ? 'border-accent-primary bg-accent-primary/8'
-                                                    : 'border-border bg-surface-secondary/20 hover:bg-surface-secondary/40'
+                                                'group relative rounded-[18px] border border-black/[0.05] bg-white p-4 text-left transition-all duration-200 min-h-[124px] flex flex-col justify-between',
+                                                !isUnavailable && 'hover:border-black/[0.1] hover:shadow-md',
+                                                isCreating && 'cursor-wait opacity-70',
+                                                isUnavailable && 'cursor-not-allowed opacity-60',
+                                                isCreatingOption && 'border-accent-primary shadow-lg ring-1 ring-accent-primary/10'
                                             )}
                                         >
-                                            <div className={clsx('w-10 h-10 rounded-xl flex items-center justify-center', isActiveOption ? 'bg-accent-primary/15 text-accent-primary' : 'bg-surface-primary text-text-secondary')}>
-                                                <Icon className="w-5 h-5" />
+                                            <div className={clsx('relative overflow-hidden rounded-[16px] border border-black/[0.05] bg-gradient-to-br p-3 transition-transform duration-200', option.accentClass, !isUnavailable && 'group-hover:scale-[1.02]')}>
+                                                <div className="absolute inset-x-3 bottom-2 h-5 rounded-full bg-white/60 blur-md" />
+                                                <div className="relative flex h-11 w-11 items-center justify-center rounded-[14px] bg-white/75 shadow-sm">
+                                                    {isCreatingOption ? <Loader2 className="h-5 w-5 animate-spin" /> : <Icon className="h-5 w-5" />}
+                                                </div>
                                             </div>
-                                            <div className="mt-4 font-medium text-text-primary">{option.label}</div>
-                                            <div className="mt-2 text-xs leading-5 text-text-secondary">{option.description}</div>
+                                            <div className="mt-3 flex items-center justify-between gap-3">
+                                                <div className="font-extrabold text-[14px] text-text-primary">{option.label}</div>
+                                                <div className="text-[10px] font-bold uppercase tracking-[0.18em] text-text-tertiary">
+                                                    {isCreatingOption ? '创建中' : isUnavailable ? '开发中' : '点击创建'}
+                                                </div>
+                                            </div>
+                                            {isUnavailable && option.unavailableHint ? (
+                                                <div className="pointer-events-none absolute left-1/2 top-3 z-10 -translate-x-1/2 -translate-y-1 opacity-0 transition-all duration-150 group-hover:translate-y-0 group-hover:opacity-100">
+                                                    <div className="rounded-full bg-text-primary px-3 py-1 text-[11px] font-bold text-white shadow-[0_10px_24px_-12px_rgba(0,0,0,0.45)]">
+                                                        {option.unavailableHint}
+                                                    </div>
+                                                </div>
+                                            ) : null}
                                         </button>
                                     );
                                 })}
                             </div>
+                        </div>
+                    </div>
+                </div>
+            )}
 
-                            {createKind === 'folder' ? (
-                                <div className="space-y-2">
-                                    <label className="text-sm font-medium text-text-primary">名称</label>
-                                    <input
-                                        autoFocus
-                                        value={createTitle}
-                                        onChange={(event) => setCreateTitle(event.target.value)}
-                                        onKeyDown={(event) => {
-                                            if (event.key === 'Enter' && !isCreating) {
-                                                event.preventDefault();
-                                                void handleCreate();
-                                            }
-                                        }}
-                                        placeholder="输入文件夹名称"
-                                        className="w-full rounded-2xl border border-border bg-surface-secondary/30 px-4 py-3 text-sm focus:outline-none focus:border-accent-primary"
-                                    />
-                                    <p className="text-xs text-text-tertiary">当前创建位置：{activeFolder || '全部草稿 / 根目录'}</p>
-                                </div>
-                            ) : (
-                                <div className="rounded-2xl border border-border bg-surface-secondary/20 px-4 py-4">
-                                    <div className="text-sm font-medium text-text-primary">草稿标题</div>
-                                    <div className="mt-1 text-sm text-text-secondary">创建后默认标题为“未命名”，后续在稿件内部随时修改。</div>
-                                    <div className="mt-2 text-xs text-text-tertiary">当前创建位置：{activeFolder || '全部草稿 / 根目录'}</div>
-                                </div>
-                            )}
+            {folderCreateOpen && (
+                <div className="fixed inset-0 z-[1000] bg-black/10 backdrop-blur-[6px] flex items-center justify-center p-4 animate-in fade-in duration-300" onMouseDown={() => !isCreating && setFolderCreateOpen(false)}>
+                    <div className="w-full max-w-md rounded-[24px] border border-white/60 bg-white/90 shadow-[0_40px_100px_-20px_rgba(0,0,0,0.2)] backdrop-blur-[32px] overflow-hidden flex flex-col" onMouseDown={(event) => event.stopPropagation()}>
+                        <div className="px-7 pt-7 pb-5">
+                            <h2 className="text-[17px] font-extrabold tracking-tight text-text-primary">新建文件夹</h2>
+                            <p className="mt-1 text-[10px] font-bold uppercase tracking-widest text-text-tertiary">Assign Directory Name</p>
+                        </div>
+                        <div className="px-7 py-2 space-y-4">
+                            <input
+                                autoFocus
+                                value={folderCreateTitle}
+                                onChange={(event) => setFolderCreateTitle(event.target.value)}
+                                onKeyDown={(event) => {
+                                    if (event.key === 'Enter' && !isCreating) {
+                                        event.preventDefault();
+                                        void handleCreateFolder();
+                                    }
+                                }}
+                                placeholder="输入文件夹名称..."
+                                className="w-full rounded-xl border border-black/[0.05] bg-black/[0.02] px-4 py-3 text-sm font-bold placeholder:text-text-tertiary/50 focus:outline-none focus:bg-white focus:ring-2 focus:ring-accent-primary/10 transition-all"
+                            />
+                        </div>
+                        <div className="flex items-center justify-end gap-2 px-7 py-6 mt-4">
+                            <button type="button" onClick={() => setFolderCreateOpen(false)} disabled={isCreating} className="px-4 py-2 rounded-lg text-[12px] font-bold text-text-tertiary hover:bg-black/[0.04] transition-all">取消</button>
+                            <button type="button" onClick={() => void handleCreateFolder()} disabled={isCreating || !folderCreateTitle.trim()} className="px-5 py-2 rounded-lg bg-text-primary text-[12px] font-bold text-white shadow-md hover:bg-text-primary/90 transition-all active:scale-95 disabled:opacity-30">
+                                {isCreating ? 'SAVING...' : '完成创建'}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {folderRenameOpen && (
+                <div className="fixed inset-0 z-[1000] bg-black/35 backdrop-blur-[1px] flex items-center justify-center p-4" onMouseDown={() => !isCreating && setFolderRenameOpen(false)}>
+                    <div className="w-full max-w-md rounded-3xl border border-border bg-background shadow-2xl" onMouseDown={(event) => event.stopPropagation()}>
+                        <div className="flex items-center justify-between px-6 py-5 border-b border-border/70">
+                            <div>
+                                <h2 className="text-lg font-semibold text-text-primary">重命名文件夹</h2>
+                                <p className="mt-1 text-sm text-text-secondary">输入新的文件夹名称。</p>
+                            </div>
+                            <button type="button" onClick={() => !isCreating && setFolderRenameOpen(false)} className="rounded-xl p-2 text-text-tertiary hover:bg-surface-secondary hover:text-text-primary transition-colors">
+                                <X className="w-5 h-5" />
+                            </button>
+                        </div>
+                        <div className="px-6 py-6 space-y-3">
+                            <label className="text-sm font-medium text-text-primary">名称</label>
+                            <input
+                                autoFocus
+                                value={folderRenameTitle}
+                                onChange={(event) => setFolderRenameTitle(event.target.value)}
+                                onKeyDown={(event) => {
+                                    if (event.key === 'Enter' && !isCreating) {
+                                        event.preventDefault();
+                                        void handleRenameFolder();
+                                    }
+                                }}
+                                placeholder="输入新的文件夹名称"
+                                className="w-full rounded-2xl border border-border bg-surface-secondary/30 px-4 py-3 text-sm focus:outline-none focus:border-accent-primary"
+                            />
                         </div>
                         <div className="flex items-center justify-end gap-3 px-6 py-5 border-t border-border/70 bg-surface-secondary/10 rounded-b-3xl">
-                            <button type="button" onClick={() => setCreateOpen(false)} disabled={isCreating} className="rounded-xl border border-border px-4 py-2 text-sm text-text-secondary hover:bg-surface-secondary hover:text-text-primary transition-colors disabled:opacity-50">取消</button>
-                            <button type="button" onClick={() => void handleCreate()} disabled={isCreating || (createKind === 'folder' && !createTitle.trim())} className="rounded-xl bg-accent-primary px-4 py-2 text-sm font-medium text-white hover:bg-accent-hover transition-colors disabled:opacity-50">
-                                {isCreating ? '创建中...' : createKind === 'folder' ? '创建文件夹' : '创建草稿'}
+                            <button type="button" onClick={() => setFolderRenameOpen(false)} disabled={isCreating} className="rounded-xl border border-border px-4 py-2 text-sm text-text-secondary hover:bg-surface-secondary hover:text-text-primary transition-colors disabled:opacity-50">取消</button>
+                            <button type="button" onClick={() => void handleRenameFolder()} disabled={isCreating || !folderRenameTitle.trim()} className="rounded-xl bg-accent-primary px-4 py-2 text-sm font-medium text-white hover:bg-accent-hover transition-colors disabled:opacity-50">
+                                {isCreating ? '处理中...' : '重命名'}
                             </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {assetRenameOpen && (
+                <div className="fixed inset-0 z-[1000] bg-black/35 backdrop-blur-[1px] flex items-center justify-center p-4" onMouseDown={() => !isCreating && setAssetRenameOpen(false)}>
+                    <div className="w-full max-w-md rounded-3xl border border-border bg-background shadow-2xl" onMouseDown={(event) => event.stopPropagation()}>
+                        <div className="flex items-center justify-between px-6 py-5 border-b border-border/70">
+                            <div>
+                                <h2 className="text-lg font-semibold text-text-primary">重命名素材</h2>
+                                <p className="mt-1 text-sm text-text-secondary">输入新的素材名称。</p>
+                            </div>
+                            <button type="button" onClick={() => !isCreating && setAssetRenameOpen(false)} className="rounded-xl p-2 text-text-tertiary hover:bg-surface-secondary hover:text-text-primary transition-colors">
+                                <X className="w-5 h-5" />
+                            </button>
+                        </div>
+                        <div className="px-6 py-6 space-y-3">
+                            <label className="text-sm font-medium text-text-primary">名称</label>
+                            <input
+                                autoFocus
+                                value={assetRenameTitle}
+                                onChange={(event) => setAssetRenameTitle(event.target.value)}
+                                onKeyDown={(event) => {
+                                    if (event.key === 'Enter' && !isCreating) {
+                                        event.preventDefault();
+                                        void handleRenameAsset();
+                                    }
+                                }}
+                                placeholder="输入新的素材名称"
+                                className="w-full rounded-2xl border border-border bg-surface-secondary/30 px-4 py-3 text-sm focus:outline-none focus:border-accent-primary"
+                            />
+                        </div>
+                        <div className="flex items-center justify-end gap-3 px-6 py-5 border-t border-border/70 bg-surface-secondary/10 rounded-b-3xl">
+                            <button type="button" onClick={() => setAssetRenameOpen(false)} disabled={isCreating} className="rounded-xl border border-border px-4 py-2 text-sm text-text-secondary hover:bg-surface-secondary hover:text-text-primary transition-colors disabled:opacity-50">取消</button>
+                            <button type="button" onClick={() => void handleRenameAsset()} disabled={isCreating || !assetRenameTitle.trim()} className="rounded-xl bg-accent-primary px-4 py-2 text-sm font-medium text-white hover:bg-accent-hover transition-colors disabled:opacity-50">
+                                {isCreating ? '处理中...' : '重命名'}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {draftRenameOpen && (
+                <div className="fixed inset-0 z-[1000] bg-black/35 backdrop-blur-[1px] flex items-center justify-center p-4" onMouseDown={() => !isCreating && setDraftRenameOpen(false)}>
+                    <div className="w-full max-w-md rounded-3xl border border-border bg-background shadow-2xl" onMouseDown={(event) => event.stopPropagation()}>
+                        <div className="flex items-center justify-between px-6 py-5 border-b border-border/70">
+                            <div>
+                                <h2 className="text-lg font-semibold text-text-primary">重命名稿件</h2>
+                                <p className="mt-1 text-sm text-text-secondary">输入新的稿件或工程名称。</p>
+                            </div>
+                            <button type="button" onClick={() => !isCreating && setDraftRenameOpen(false)} className="rounded-xl p-2 text-text-tertiary hover:bg-surface-secondary hover:text-text-primary transition-colors">
+                                <X className="w-5 h-5" />
+                            </button>
+                        </div>
+                        <div className="px-6 py-6 space-y-3">
+                            <label className="text-sm font-medium text-text-primary">名称</label>
+                            <input
+                                autoFocus
+                                value={draftRenameTitle}
+                                onChange={(event) => setDraftRenameTitle(event.target.value)}
+                                onKeyDown={(event) => {
+                                    if (event.key === 'Enter' && !isCreating) {
+                                        event.preventDefault();
+                                        void handleRenameDraft();
+                                    }
+                                }}
+                                placeholder="输入新的名称"
+                                className="w-full rounded-2xl border border-border bg-surface-secondary/30 px-4 py-3 text-sm focus:outline-none focus:border-accent-primary"
+                            />
+                        </div>
+                        <div className="flex items-center justify-end gap-3 px-6 py-5 border-t border-border/70 bg-surface-secondary/10 rounded-b-3xl">
+                            <button type="button" onClick={() => setDraftRenameOpen(false)} disabled={isCreating} className="rounded-xl border border-border px-4 py-2 text-sm text-text-secondary hover:bg-surface-secondary hover:text-text-primary transition-colors disabled:opacity-50">取消</button>
+                            <button type="button" onClick={() => void handleRenameDraft()} disabled={isCreating || !draftRenameTitle.trim()} className="rounded-xl bg-accent-primary px-4 py-2 text-sm font-medium text-white hover:bg-accent-hover transition-colors disabled:opacity-50">
+                                {isCreating ? '处理中...' : '重命名'}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {folderContextMenu.visible && (
+                <LiquidGlassMenuPanel
+                    ref={folderContextMenuRef}
+                    className="fixed z-[1100] min-w-[160px]"
+                    style={{
+                        left: Math.min(folderContextMenu.x, window.innerWidth - 176),
+                        top: Math.min(folderContextMenu.y, window.innerHeight - 176),
+                    }}
+                >
+                    <button
+                        type="button"
+                        onClick={() => {
+                            setFolderContextMenu((prev) => ({ ...prev, visible: false }));
+                            void handleShowInFolder(folderContextMenu.folderPath);
+                        }}
+                        className={getLiquidGlassMenuItemClassName()}
+                    >
+                        文件夹中打开
+                    </button>
+                    <LiquidGlassMenuSeparator />
+                    <button
+                        type="button"
+                        onClick={() => {
+                            setFolderContextMenu((prev) => ({ ...prev, visible: false }));
+                            setFolderRenamePath(folderContextMenu.folderPath);
+                            setFolderRenameTitle(folderContextMenu.folderName);
+                            setFolderRenameOpen(true);
+                        }}
+                        className={getLiquidGlassMenuItemClassName()}
+                    >
+                        重命名
+                    </button>
+                    <button
+                        type="button"
+                        onClick={() => void handleDeleteFolder(folderContextMenu.folderPath)}
+                        className={getLiquidGlassMenuItemClassName({ destructive: true })}
+                    >
+                        删除
+                    </button>
+                </LiquidGlassMenuPanel>
+            )}
+
+            {assetContextMenu.visible && (
+                <LiquidGlassMenuPanel
+                    ref={assetContextMenuRef}
+                    className="fixed z-[1100] min-w-[160px]"
+                    style={{
+                        left: Math.min(assetContextMenu.x, window.innerWidth - 176),
+                        top: Math.min(assetContextMenu.y, window.innerHeight - 132),
+                    }}
+                >
+                    <button
+                        type="button"
+                        onClick={() => {
+                            setAssetContextMenu((prev) => ({ ...prev, visible: false }));
+                            setAssetRenameId(assetContextMenu.assetId);
+                            setAssetRenameTitle(assetContextMenu.assetTitle);
+                            setAssetRenameOpen(true);
+                        }}
+                        className={getLiquidGlassMenuItemClassName()}
+                    >
+                        重命名
+                    </button>
+                    <button
+                        type="button"
+                        onClick={() => void handleDeleteAsset(assetContextMenu.assetId)}
+                        className={getLiquidGlassMenuItemClassName({ destructive: true })}
+                    >
+                        删除
+                    </button>
+                </LiquidGlassMenuPanel>
+            )}
+
+            {draftContextMenu.visible && (
+                <LiquidGlassMenuPanel
+                    ref={draftContextMenuRef}
+                    className="fixed z-[1100] min-w-[160px]"
+                    style={{
+                        left: Math.min(draftContextMenu.x, window.innerWidth - 176),
+                        top: Math.min(draftContextMenu.y, window.innerHeight - 176),
+                    }}
+                >
+                    <button
+                        type="button"
+                        onClick={() => {
+                            setDraftContextMenu((prev) => ({ ...prev, visible: false }));
+                            void handleShowInFolder(draftContextMenu.filePath);
+                        }}
+                        className={getLiquidGlassMenuItemClassName()}
+                    >
+                        文件夹中打开
+                    </button>
+                    <LiquidGlassMenuSeparator />
+                    <button
+                        type="button"
+                        onClick={() => {
+                            setDraftContextMenu((prev) => ({ ...prev, visible: false }));
+                            setDraftRenamePath(draftContextMenu.filePath);
+                            setDraftRenameTitle(draftContextMenu.title);
+                            setDraftRenameOpen(true);
+                        }}
+                        className={getLiquidGlassMenuItemClassName()}
+                    >
+                        重命名
+                    </button>
+                    <button
+                        type="button"
+                        onClick={() => {
+                            setDraftContextMenu((prev) => ({ ...prev, visible: false }));
+                            setPendingDeleteDraftPath(draftContextMenu.filePath);
+                        }}
+                        className={getLiquidGlassMenuItemClassName({ destructive: true })}
+                    >
+                        删除
+                    </button>
+                </LiquidGlassMenuPanel>
+            )}
+
+            {isExportVideoModalOpen && (
+                <div
+                    className="fixed inset-0 z-[1000] bg-black/35 backdrop-blur-[1px] flex items-center justify-center p-4"
+                    onMouseDown={() => !isRenderingRemotion && setIsExportVideoModalOpen(false)}
+                >
+                    <div
+                        className="w-full max-w-lg rounded-3xl border border-border bg-background shadow-2xl"
+                        onMouseDown={(event) => event.stopPropagation()}
+                    >
+                        <div className="flex items-center justify-between px-6 py-5 border-b border-border/70">
+                            <div>
+                                <h2 className="text-lg font-semibold text-text-primary">导出视频</h2>
+                                <p className="mt-1 text-sm text-text-secondary">选择清晰度和保存位置，然后开始导出。</p>
+                            </div>
+                            <button
+                                type="button"
+                                onClick={() => !isRenderingRemotion && setIsExportVideoModalOpen(false)}
+                                disabled={isRenderingRemotion}
+                                className="rounded-xl p-2 text-text-tertiary hover:bg-surface-secondary hover:text-text-primary transition-colors disabled:opacity-40"
+                            >
+                                <X className="w-5 h-5" />
+                            </button>
+                        </div>
+                        <div className="px-6 py-6 space-y-5">
+                            <div className="space-y-2">
+                                <label className="text-sm font-medium text-text-primary">清晰度</label>
+                                <select
+                                    value={exportVideoResolution}
+                                    onChange={(event) => setExportVideoResolution(event.target.value as ExportVideoResolution)}
+                                    disabled={isRenderingRemotion}
+                                    className="w-full rounded-2xl border border-border bg-surface-secondary/30 px-4 py-3 text-sm focus:outline-none focus:border-accent-primary disabled:opacity-60"
+                                >
+                                    <option value="source">原始尺寸</option>
+                                    <option value="1080p">1080p</option>
+                                    <option value="720p">720p</option>
+                                </select>
+                                <div className="text-xs text-text-tertiary">
+                                    导出尺寸：{exportTargetSize.width} x {exportTargetSize.height}
+                                </div>
+                            </div>
+                            <div className="space-y-2">
+                                <label className="text-sm font-medium text-text-primary">保存位置</label>
+                                <div className="flex items-center gap-2">
+                                    <input
+                                        value={exportVideoPath}
+                                        onChange={(event) => setExportVideoPath(event.target.value)}
+                                        placeholder="请选择导出位置"
+                                        disabled={isRenderingRemotion}
+                                        className="min-w-0 flex-1 rounded-2xl border border-border bg-surface-secondary/30 px-4 py-3 text-sm focus:outline-none focus:border-accent-primary disabled:opacity-60"
+                                    />
+                                    <button
+                                        type="button"
+                                        onClick={() => void handlePickExportVideoPath()}
+                                        disabled={isRenderingRemotion}
+                                        className="rounded-2xl border border-border px-4 py-3 text-sm text-text-primary hover:bg-surface-secondary transition-colors disabled:opacity-60"
+                                    >
+                                        选择位置
+                                    </button>
+                                </div>
+                            </div>
+                            <div className="rounded-2xl border border-border bg-surface-secondary/20 px-4 py-4">
+                                <div className="flex items-center justify-between text-sm text-text-primary">
+                                    <span>导出进度</span>
+                                    <span className="font-mono">{exportVideoProgress}%</span>
+                                </div>
+                                <div className="mt-3 h-2 overflow-hidden rounded-full bg-black/8">
+                                    <div
+                                        className="h-full rounded-full bg-accent-primary transition-[width] duration-300"
+                                        style={{ width: `${Math.max(0, Math.min(100, exportVideoProgress))}%` }}
+                                    />
+                                </div>
+                                <div className="mt-2 text-xs text-text-tertiary">
+                                    {exportVideoError || exportVideoStage || '尚未开始'}
+                                </div>
+                            </div>
+                        </div>
+                        <div className="flex items-center justify-between gap-3 px-6 py-5 border-t border-border/70 bg-surface-secondary/10 rounded-b-3xl">
+                            <div className="truncate text-xs text-text-tertiary">
+                                {exportVideoPath || '未选择导出位置'}
+                            </div>
+                            <div className="flex items-center gap-3">
+                                {(packageState?.videoProject?.renderOutput || packageState?.remotion?.render?.outputPath) && !isRenderingRemotion && exportVideoProgress >= 100 ? (
+                                    <button
+                                        type="button"
+                                        onClick={() => void handleOpenRenderedRemotionVideo()}
+                                        className="rounded-xl border border-border px-4 py-2 text-sm text-text-secondary hover:bg-surface-secondary hover:text-text-primary transition-colors"
+                                    >
+                                        打开文件
+                                    </button>
+                                ) : null}
+                                <button
+                                    type="button"
+                                    onClick={() => setIsExportVideoModalOpen(false)}
+                                    disabled={isRenderingRemotion}
+                                    className="rounded-xl border border-border px-4 py-2 text-sm text-text-secondary hover:bg-surface-secondary hover:text-text-primary transition-colors disabled:opacity-50"
+                                >
+                                    取消
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => void handleConfirmExportVideo()}
+                                    disabled={isRenderingRemotion}
+                                    className="rounded-xl bg-accent-primary px-4 py-2 text-sm font-medium text-white hover:bg-accent-hover transition-colors disabled:opacity-50"
+                                >
+                                    {isRenderingRemotion ? '导出中...' : '导出视频'}
+                                </button>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -2540,6 +4727,19 @@ export function Manuscripts({ pendingFile, onFileConsumed, onNavigateToRedClaw, 
                     </div>
                 </div>
             )}
+
+            <ConfirmDialog
+                open={Boolean(pendingDeleteDraftPath)}
+                title="删除草稿"
+                description="确认删除这个草稿或文件夹吗？"
+                confirmLabel="删除"
+                tone="danger"
+                onCancel={() => setPendingDeleteDraftPath(null)}
+                onConfirm={() => {
+                    if (!pendingDeleteDraftPath) return;
+                    void handleDeleteDraft(pendingDeleteDraftPath);
+                }}
+            />
         </>
     );
 }

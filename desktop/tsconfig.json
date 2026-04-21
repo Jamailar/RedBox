@@ -15,10 +15,14 @@
     "noUnusedLocals": false,
     "noUnusedParameters": false,
     "noFallthroughCasesInSwitch": true,
+    "types": ["node"],
     "baseUrl": ".",
     "paths": {
-      "@/*": ["electron/engine/*"]
+      "@redbox/*": ["src/*"],
+      "@/*": ["src/vendor/freecut/*"],
+      "@tauri-apps/api/core": ["src/compat/tauri-core.ts"],
+      "@tauri-apps/api/event": ["src/compat/tauri-event.ts"]
     }
   },
-  "include": ["src", "electron", "shared", "private"]
+  "include": ["electron", "shared", "private"]
 }

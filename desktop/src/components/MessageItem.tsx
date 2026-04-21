@@ -4,9 +4,10 @@ import ReactMarkdown, { Components, UrlTransform } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Copy, Check } from 'lucide-react';
 import { ProcessTimeline, ProcessItem } from './ProcessTimeline';
-import { ThinkingBubble, SkillActivatedBadge } from './ThinkingBubble';
+import { SkillActivatedBadge, ThinkingIndicator } from './ThinkingBubble';
 import { TodoList, PlanStep } from './TodoList';
 import { resolveAssetUrl, isLocalAssetUrl } from '../utils/pathManager';
+import { getLiquidGlassMenuItemClassName, LiquidGlassMenuPanel, LiquidGlassMenuSeparator } from '@/components/ui/liquid-glass-menu';
 import './chat-message.css';
 
 const copyTextWithClipboard = async (text: string): Promise<boolean> => {
@@ -172,6 +173,8 @@ export interface Message {
   activatedSkill?: SkillEvent;
 
   isStreaming?: boolean;
+  processingStartedAt?: number;
+  processingFinishedAt?: number;
 }
 
 interface MessageItemProps {
@@ -188,6 +191,53 @@ interface ImageContextMenuState {
   x: number;
   y: number;
   src: string;
+}
+
+function formatProcessingElapsed(totalMs: number): string {
+  const safeMs = Number.isFinite(totalMs) ? Math.max(0, totalMs) : 0;
+  const totalSeconds = Math.floor(safeMs / 1000);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+
+  if (hours > 0) {
+    return `${hours}h ${minutes}m ${seconds}s`;
+  }
+  if (minutes > 0) {
+    return `${minutes}m ${seconds}s`;
+  }
+  return `${seconds}s`;
+}
+
+function ProcessingTimerBadge({
+  startedAt,
+  finishedAt,
+  isStreaming,
+}: {
+  startedAt: number;
+  finishedAt?: number;
+  isStreaming?: boolean;
+}) {
+  const [liveNow, setLiveNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    if (!isStreaming) return;
+    setLiveNow(Date.now());
+    const timer = window.setInterval(() => {
+      setLiveNow(Date.now());
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [isStreaming, startedAt]);
+
+  const endAt = isStreaming ? liveNow : (finishedAt ?? liveNow);
+  const elapsedLabel = formatProcessingElapsed(endAt - startedAt);
+
+  return (
+    <div className="chat-processing-timer" aria-live="off">
+      <span className="chat-processing-timer__label">已处理</span>
+      <span className="chat-processing-timer__value">{elapsedLabel}</span>
+    </div>
+  );
 }
 
 const transformMarkdownUrl: UrlTransform = (url) => {
@@ -268,9 +318,12 @@ export const MessageItem = memo(({
     y: 0,
     src: '',
   });
+  const hasAssistantResponseContent = !isUser && Boolean(String(msg.content || '').trim());
+  const showPendingThinkingIndicator = !isUser && Boolean(msg.isStreaming && !hasAssistantResponseContent);
+  const showProcessingTimer = !isUser && typeof msg.processingStartedAt === 'number' && Number.isFinite(msg.processingStartedAt);
   const hasRenderableMessageContent = isUser
     ? Boolean(msg.displayContent || msg.content || (msg.isStreaming && !msg.thinking))
-    : Boolean(msg.content || (msg.isStreaming && !msg.thinking));
+    : hasAssistantResponseContent || showPendingThinkingIndicator;
   const showTimeline = !isUser && msg.timeline && msg.timeline.length > 0;
   const showLegacyWorkflow = !isUser && (!msg.timeline || msg.timeline.length === 0) && (msg.thinking || msg.tools.length > 0 || msg.activatedSkill);
   const showWorkflowOnTop = workflowPlacement === 'top';
@@ -572,16 +625,29 @@ export const MessageItem = memo(({
         ) : (
           /* AI 回复 */
           <div className={clsx('chat-ai-shell group', msg.isStreaming && 'chat-ai-shell-streaming')}>
+            {showProcessingTimer && (
+              <ProcessingTimerBadge
+                startedAt={msg.processingStartedAt as number}
+                finishedAt={msg.processingFinishedAt}
+                isStreaming={msg.isStreaming}
+              />
+            )}
             <div ref={aiContentRef} className={clsx('chat-ai-content', msg.isStreaming && 'chat-ai-content-streaming')}>
-              <div className="chat-markdown-body text-text-primary">
-                <ReactMarkdown
-                  remarkPlugins={[remarkGfm]}
-                  components={markdownComponents}
-                  urlTransform={transformMarkdownUrl}
-                >
-                  {msg.content}
-                </ReactMarkdown>
-                {msg.isStreaming && (
+              <div className={clsx('chat-markdown-body text-text-primary', showPendingThinkingIndicator && 'chat-markdown-body-pending')}>
+                {showPendingThinkingIndicator ? (
+                  <ThinkingIndicator />
+                ) : msg.isStreaming ? (
+                  <div className="whitespace-pre-wrap break-words">{msg.content}</div>
+                ) : (
+                  <ReactMarkdown
+                    remarkPlugins={[remarkGfm]}
+                    components={markdownComponents}
+                    urlTransform={transformMarkdownUrl}
+                  >
+                    {msg.content}
+                  </ReactMarkdown>
+                )}
+                {msg.isStreaming && !showPendingThinkingIndicator && (
                   <span className="ml-1 inline-block h-4 w-2 animate-pulse align-middle bg-accent-primary" />
                 )}
               </div>
@@ -637,28 +703,31 @@ export const MessageItem = memo(({
       )}
 
       {imageMenu.visible && (
-        <div
-          className="fixed z-[9999] min-w-[170px] overflow-hidden rounded-lg border border-border bg-surface-primary shadow-xl"
+        <LiquidGlassMenuPanel
+          className="fixed z-[9999] min-w-[170px]"
           style={{ left: imageMenu.x, top: imageMenu.y }}
           onClick={(event) => event.stopPropagation()}
         >
           <button
             type="button"
-            className="w-full px-3 py-2 text-left text-sm text-text-primary transition-colors hover:bg-surface-secondary"
+            className={getLiquidGlassMenuItemClassName()}
             onClick={() => void handleCopyImage()}
           >
             复制图片
           </button>
           {menuSupportsReveal && (
-            <button
-              type="button"
-              className="w-full border-t border-border px-3 py-2 text-left text-sm text-text-primary transition-colors hover:bg-surface-secondary"
-              onClick={() => void handleShowInFolder()}
-            >
-              在文件夹中打开
-            </button>
+            <>
+              <LiquidGlassMenuSeparator />
+              <button
+                type="button"
+                className={getLiquidGlassMenuItemClassName()}
+                onClick={() => void handleShowInFolder()}
+              >
+                在文件夹中打开
+              </button>
+            </>
           )}
-        </div>
+        </LiquidGlassMenuPanel>
       )}
 
       {previewImage && (
@@ -683,6 +752,8 @@ export const MessageItem = memo(({
   const msgChanged = 
     prevProps.msg.content !== nextProps.msg.content ||
     prevProps.msg.isStreaming !== nextProps.msg.isStreaming ||
+    prevProps.msg.processingStartedAt !== nextProps.msg.processingStartedAt ||
+    prevProps.msg.processingFinishedAt !== nextProps.msg.processingFinishedAt ||
     prevProps.msg.thinking !== nextProps.msg.thinking ||
     prevProps.msg.tools !== nextProps.msg.tools ||
     prevProps.msg.plan !== nextProps.msg.plan || // Check plan changes

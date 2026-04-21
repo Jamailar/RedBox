@@ -1,8 +1,10 @@
+import './ipc/bootstrap';
 import React from 'react'
 import ReactDOM from 'react-dom/client'
 import App from './App'
 import 'tippy.js/dist/tippy.css'
 import './index.css'
+import { appAlert } from './utils/appDialogs'
 
 const THEME_STORAGE_KEY = 'redbox:theme-mode:v1';
 
@@ -21,6 +23,16 @@ const initializeThemeMode = () => {
 };
 
 initializeThemeMode();
+
+window.alert = ((message?: unknown) => {
+  void appAlert(String(message ?? ''));
+}) as typeof window.alert;
+
+const disableNativeContextMenu = (event: MouseEvent) => {
+  event.preventDefault();
+};
+
+document.addEventListener('contextmenu', disableNativeContextMenu);
 
 class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { hasError: boolean; error: Error | null }> {
   constructor(props: { children: React.ReactNode }) {
@@ -61,6 +73,6 @@ const isDevRuntime = window.location.protocol !== 'file:';
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   isDevRuntime
-    ? <React.StrictMode>{appTree}</React.StrictMode>
+    ? appTree
     : appTree,
 )

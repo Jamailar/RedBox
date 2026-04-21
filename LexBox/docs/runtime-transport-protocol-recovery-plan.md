@@ -1,17 +1,13 @@
 ---
 doc_type: plan
-execution_status: in_progress
-execution_stage: architecture_defined
+execution_status: completed
+execution_stage: implemented
 last_updated: 2026-04-21
 owner: codex
 target_files:
-  - src-tauri/src/http_utils.rs
   - src-tauri/src/main.rs
   - src-tauri/src/agent/provider.rs
-  - src-tauri/src/events/
-  - src/pages/Chat.tsx
-  - src/pages/Wander.tsx
-  - src/utils/redclawAuthoring.ts
+  - src-tauri/src/runtime/interactive_recovery.rs
 success_metrics:
   - RedClaw/Wander interactive runs survive transient transport failures without losing tool state
   - Provider-specific incompatibilities are decided by capability tables, not scattered conditionals
@@ -19,6 +15,37 @@ success_metrics:
 ---
 
 # LexBox 网络传输、协议适配与 Runtime 恢复层优化计划
+
+## 0. 执行结果
+
+本计划已按当前最高风险链路落地，重点不是继续补 transport 特例，而是把 provider 恢复边界收成 typed contract：
+
+- `src-tauri/src/runtime/interactive_recovery.rs`
+  - 新增 `RuntimeErrorCategory`
+  - 新增 `InteractiveRecoveryContext`
+  - 新增 `InteractiveFallbackMode`
+  - 让恢复决策从“字符串 if/else”升级为“error envelope + recovery plan”
+- `src-tauri/src/agent/provider.rs`
+  - 在 provider 入口判断当前 session 是否已经进入 tool loop
+  - post-tool 失败时仍优先 interactive retry
+  - 禁止带工具上下文的失败直接降级成纯文本 fallback
+- `src-tauri/src/main.rs`
+  - 新增 `extract_openai_json_assistant_response(...)`
+  - 原 fallback 从 `streaming` 改成真正的 `non-streaming JSON completion`
+  - 如果 fallback 居然再次返回 `tool_calls`，直接判为恢复失败，不再误当成空文本
+
+这次实现直接解决了当前最痛的错误面：
+
+- 首轮拿到 `tool_calls` 后，第二轮流式 `partial body`
+- transport 已经降级到 `http1.1`，但 provider 仍在重复同类 streaming fallback
+- agent loop 明明有 tool state，却被错误地拉回文本收尾
+
+当前行为改成：
+
+1. 先按 typed recovery plan 判断错误层级和类别
+2. 对可恢复的 `transport/protocol` 错误先做 interactive retry
+3. 如果 session 已经进入 tool loop，则严格保留 interactive mode，不允许文本 fallback
+4. 只有还没进入 tool loop、且 provider 允许时，才切到 `JSON text fallback`
 
 ## 1. 目标
 

@@ -84,11 +84,17 @@ import {
 } from './core/fileMemoryStore';
 import { getRedClawProject, listRedClawProjects } from './core/redclawStore';
 import {
+  handleRedClawOnboardingTurn,
+  loadRedClawProfilePromptBundle,
+  updateRedClawProfileDocument,
+} from './core/redclawProfileStore';
+import {
   listMediaAssets,
   bindMediaAssetToManuscript,
   updateMediaAssetMetadata,
   deleteMediaAsset,
   importMediaFiles,
+  importMediaSources,
   getAbsoluteMediaPath,
   type MediaAsset,
 } from './core/mediaLibraryStore';
@@ -100,6 +106,12 @@ import {
   saveCoverTemplateImage,
   type CoverAsset,
 } from './core/coverStudioStore';
+import {
+  deleteCoverTemplate,
+  importLegacyCoverTemplates,
+  listCoverTemplates,
+  saveCoverTemplate,
+} from './core/coverTemplateStore';
 import { loadOfficialFeatureModule } from './officialFeatureBridge';
 import { applyGlobalNetworkProxy } from './core/networkProxy';
 import {
@@ -228,6 +240,134 @@ let appShutdownInProgress = false;
 let appShutdownPromise: Promise<void> | null = null;
 const MANUSCRIPT_TREE_CACHE_TTL_MS = 4000;
 const manuscriptTreeCache = new Map<string, { tree: unknown[]; generatedAt: number }>();
+type EditorRuntimeStateRecord = {
+  filePath: string;
+  sessionId?: string;
+  playheadSeconds: number;
+  selectedClipId?: string;
+  selectedClipIds?: unknown;
+  activeTrackId?: string;
+  selectedTrackIds?: unknown;
+  selectedSceneId?: string;
+  previewTab?: string;
+  canvasRatioPreset?: string;
+  activePanel?: string;
+  drawerPanel?: string;
+  sceneItemTransforms?: unknown;
+  sceneItemVisibility?: unknown;
+  sceneItemOrder?: unknown;
+  sceneItemLocks?: unknown;
+  sceneItemGroups?: unknown;
+  focusedGroupId?: string;
+  trackUi?: unknown;
+  viewportScrollLeft: number;
+  viewportMaxScrollLeft: number;
+  viewportScrollTop: number;
+  viewportMaxScrollTop: number;
+  timelineZoomPercent: number;
+  undoStack: unknown[];
+  redoStack: unknown[];
+  updatedAt: number;
+};
+const editorRuntimeStates = new Map<string, EditorRuntimeStateRecord>();
+
+function nowMs() {
+  return Date.now();
+}
+
+function buildEmptyEditorRuntimeState(filePath: string): EditorRuntimeStateRecord {
+  return {
+    filePath,
+    playheadSeconds: 0,
+    viewportScrollLeft: 0,
+    viewportMaxScrollLeft: 0,
+    viewportScrollTop: 0,
+    viewportMaxScrollTop: 0,
+    timelineZoomPercent: 100,
+    selectedClipIds: [],
+    selectedTrackIds: [],
+    undoStack: [],
+    redoStack: [],
+    updatedAt: nowMs(),
+  };
+}
+
+function serializeEditorRuntimeState(filePath: string) {
+  const state = editorRuntimeStates.get(filePath) || buildEmptyEditorRuntimeState(filePath);
+  return {
+    filePath: state.filePath,
+    sessionId: state.sessionId ?? null,
+    playheadSeconds: state.playheadSeconds,
+    selectedClipId: state.selectedClipId ?? null,
+    selectedClipIds: state.selectedClipIds ?? [],
+    activeTrackId: state.activeTrackId ?? null,
+    selectedTrackIds: state.selectedTrackIds ?? [],
+    selectedSceneId: state.selectedSceneId ?? null,
+    previewTab: state.previewTab ?? null,
+    canvasRatioPreset: state.canvasRatioPreset ?? null,
+    activePanel: state.activePanel ?? null,
+    drawerPanel: state.drawerPanel ?? null,
+    sceneItemTransforms: state.sceneItemTransforms ?? null,
+    sceneItemVisibility: state.sceneItemVisibility ?? null,
+    sceneItemOrder: state.sceneItemOrder ?? null,
+    sceneItemLocks: state.sceneItemLocks ?? null,
+    sceneItemGroups: state.sceneItemGroups ?? null,
+    focusedGroupId: state.focusedGroupId ?? null,
+    trackUi: state.trackUi ?? null,
+    viewportScrollLeft: state.viewportScrollLeft,
+    viewportMaxScrollLeft: state.viewportMaxScrollLeft,
+    viewportScrollTop: state.viewportScrollTop,
+    viewportMaxScrollTop: state.viewportMaxScrollTop,
+    timelineZoomPercent: state.timelineZoomPercent,
+    canUndo: state.undoStack.length > 0,
+    canRedo: state.redoStack.length > 0,
+    updatedAt: state.updatedAt,
+  };
+}
+
+function normalizeBindingText(value: unknown): string {
+  return String(value || '').trim();
+}
+
+function normalizeBindingMetadata(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? { ...(value as Record<string, unknown>) }
+    : {};
+}
+
+function deriveEditorBindingInitialContext(
+  binding: {
+    filePath?: string;
+    contextId: string;
+    modeLabel?: string;
+    targetTypeLabel?: string;
+    targetPath?: string;
+    initialContext?: string;
+  },
+  metadata: Record<string, unknown>,
+): string | undefined {
+  const explicit = normalizeBindingText(binding.initialContext);
+  if (explicit) {
+    return explicit;
+  }
+
+  const modeLabel = normalizeBindingText(binding.modeLabel)
+    || normalizeBindingText(metadata.associatedPackageWorkspaceModeLabel)
+    || normalizeBindingText(metadata.associatedPackageWorkspaceMode)
+    || '文件';
+  const targetTypeLabel = normalizeBindingText(binding.targetTypeLabel)
+    || normalizeBindingText(metadata.associatedPackageKind)
+    || '文件';
+  const targetPath = normalizeBindingText(binding.targetPath)
+    || normalizeBindingText(metadata.associatedFilePath)
+    || normalizeBindingText(binding.filePath)
+    || normalizeBindingText(binding.contextId);
+  if (!targetPath) {
+    return undefined;
+  }
+
+  return `当前聊天窗口正处于${modeLabel}模式，正在编辑的${targetTypeLabel}文件路径是${targetPath}`;
+}
 
 function emitRendererDataChanged(scope: string, payload: Record<string, unknown> = {}) {
   for (const browserWindow of BrowserWindow.getAllWindows()) {
@@ -1816,6 +1956,29 @@ ipcMain.handle('db:get-settings', () => {
   return getSettings()
 })
 
+ipcMain.handle('settings:pick-workspace-dir', async () => {
+  try {
+    const picker = await dialog.showOpenDialog({
+      title: '选择工作区目录',
+      properties: ['openDirectory', 'createDirectory'],
+      defaultPath: getDefaultWorkspaceDir(),
+    });
+    if (picker.canceled || !picker.filePaths.length) {
+      return { success: true, canceled: true, path: null };
+    }
+    return {
+      success: true,
+      canceled: false,
+      path: picker.filePaths[0],
+    };
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+});
+
 ipcMain.handle('debug:get-status', () => {
   const settings = (getSettings() || {}) as { debug_log_enabled?: boolean } | undefined;
   return {
@@ -1828,6 +1991,23 @@ ipcMain.handle('debug:get-recent', (_event, payload?: { limit?: number }) => {
   const limit = Number(payload?.limit || 200);
   return {
     lines: getRecentDebugLogs(Number.isFinite(limit) ? Math.max(1, Math.min(limit, 1000)) : 200),
+  };
+});
+
+ipcMain.handle('debug:get-runtime-summary', () => {
+  return {
+    generatedAt: Date.now(),
+    runtimeWarm: {
+      lastWarmedAt: 0,
+      entries: [],
+    },
+    phase0: {
+      personaGeneration: { count: 0, byAdvisor: [], recent: [] },
+      knowledgeIngest: { count: 0, byAdvisor: [], recent: [] },
+      runtimeQueries: { count: 0, byAdvisor: [], byMode: [], recent: [] },
+      skillInvocations: { count: 0, bySkill: [], recent: [] },
+      toolCalls: { count: 0, successCount: 0, successRate: 0, byAdvisor: [], byTool: [], recent: [] },
+    },
   };
 });
 
@@ -2191,6 +2371,59 @@ ipcMain.handle('app:open-release-page', async (_, payload?: { url?: string }) =>
     return {
       success: false,
       error: error instanceof Error ? error.message : String(error),
+    };
+  }
+});
+
+ipcMain.handle('app:open-path', async (_, payload?: { path?: string }) => {
+  const targetPath = String(payload?.path || '').trim();
+  if (!targetPath) {
+    return { success: false, error: 'path is required' };
+  }
+  try {
+    const openError = await shell.openPath(targetPath);
+    if (openError) {
+      return { success: false, error: openError };
+    }
+    return { success: true };
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+});
+
+ipcMain.handle('app:open-knowledge-api-guide', async () => {
+  const guidePath = path.join(__dirname, '../Docs/openai-compatible-video-api.md');
+  try {
+    const openError = await shell.openPath(guidePath);
+    if (openError) {
+      return { success: false, error: openError, path: guidePath };
+    }
+    return { success: true, path: guidePath };
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : String(error),
+      path: guidePath,
+    };
+  }
+});
+
+ipcMain.handle('app:open-richpost-theme-guide', async () => {
+  const docsPath = path.join(__dirname, '../Docs');
+  try {
+    const openError = await shell.openPath(docsPath);
+    if (openError) {
+      return { success: false, error: openError, path: docsPath };
+    }
+    return { success: true, path: docsPath };
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : String(error),
+      path: docsPath,
     };
   }
 });
@@ -2655,6 +2888,34 @@ ipcMain.handle('mcp:oauth-status', async (_, payload: { serverId?: string }) => 
   }
 });
 
+ipcMain.handle('mcp:sessions', async () => {
+  return { success: true, sessions: [] };
+});
+
+ipcMain.handle('mcp:list-tools', async () => {
+  return { success: false, error: 'Not supported in Electron compatibility mode', tools: [] };
+});
+
+ipcMain.handle('mcp:list-resources', async () => {
+  return { success: false, error: 'Not supported in Electron compatibility mode', resources: [] };
+});
+
+ipcMain.handle('mcp:list-resource-templates', async () => {
+  return { success: false, error: 'Not supported in Electron compatibility mode', resourceTemplates: [] };
+});
+
+ipcMain.handle('mcp:call', async () => {
+  return { success: false, error: 'Not supported in Electron compatibility mode' };
+});
+
+ipcMain.handle('mcp:disconnect', async () => {
+  return { success: true };
+});
+
+ipcMain.handle('mcp:disconnect-all', async () => {
+  return { success: true };
+});
+
 // AI Source: protocol detect / test / model list
 ipcMain.handle('ai:detect-protocol', async (_, payload: {
   baseURL?: string;
@@ -2872,6 +3133,106 @@ ipcMain.handle('chat:update-session-metadata', async (_, payload?: {
   return { success: true };
 });
 
+ipcMain.handle('chat:bind-editor-session', async (_, payload?: {
+  session?: {
+    scope?: string;
+    filePath?: string;
+    contextType?: string;
+    contextId?: string;
+    title?: string;
+    modeLabel?: string;
+    targetTypeLabel?: string;
+    targetPath?: string;
+    initialContext?: string;
+  };
+  metadata?: Record<string, unknown>;
+}) => {
+  try {
+    const binding = payload?.session;
+    const scope = normalizeBindingText(binding?.scope).toLowerCase() || 'file';
+    const contextType = normalizeBindingText(binding?.contextType) || 'file';
+    const contextId = normalizeBindingText(binding?.contextId);
+    const filePath = normalizeBindingText(binding?.filePath) || contextId;
+    const metadata = normalizeBindingMetadata(payload?.metadata);
+    const title = normalizeBindingText(binding?.title)
+      || (filePath ? stripManuscriptExtension(path.basename(filePath)) : 'New Chat');
+
+    let session = null as ReturnType<typeof getChatSession> | null;
+    if (scope === 'context') {
+      if (!contextId) {
+        return { success: false, error: 'contextId is required for context-bound editor chat' };
+      }
+      session = getChatSessionByContext(contextId, contextType);
+      if (!session) {
+        const sessionId = `session_${Date.now()}`;
+        session = createChatSession(sessionId, title, {
+          contextType,
+          contextId,
+          isContextBound: true,
+        });
+      }
+    } else if (scope === 'file') {
+      if (!filePath) {
+        return { success: false, error: 'filePath is required for file-bound editor chat' };
+      }
+      session = getChatSessionByFile(filePath);
+      if (!session) {
+        const sessionId = `session_${Date.now()}`;
+        session = createChatSession(sessionId, title, {
+          associatedFilePath: filePath,
+        });
+      }
+    } else {
+      return { success: false, error: `unsupported editor chat binding scope: ${scope}` };
+    }
+
+    if (!session) {
+      return { success: false, error: 'failed to create editor chat session' };
+    }
+
+    const currentMetadata = (() => {
+      if (!session?.metadata) return {};
+      try {
+        return JSON.parse(session.metadata) as Record<string, unknown>;
+      } catch {
+        return {};
+      }
+    })();
+    const nextMetadata = {
+      ...currentMetadata,
+      ...metadata,
+      contextType,
+      contextId,
+      isContextBound: true,
+      editorBindingVersion: currentMetadata.editorBindingVersion ?? metadata.editorBindingVersion ?? 1,
+      editorBindingScope: scope,
+    } as Record<string, unknown>;
+    if (!normalizeBindingText(nextMetadata.associatedFilePath) && filePath) {
+      nextMetadata.associatedFilePath = filePath;
+    }
+
+    const derivedInitialContext = deriveEditorBindingInitialContext({
+      filePath,
+      contextId,
+      modeLabel: binding?.modeLabel,
+      targetTypeLabel: binding?.targetTypeLabel,
+      targetPath: binding?.targetPath,
+      initialContext: binding?.initialContext,
+    }, nextMetadata);
+    if (derivedInitialContext) {
+      nextMetadata.initialContext = derivedInitialContext;
+    }
+
+    updateChatSessionMetadata(session.id, nextMetadata);
+    return getChatSession(session.id) || session;
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+});
+
 // 获取或创建上下文关联的会话 (知识库聊天)
 ipcMain.handle('chat:getOrCreateContextSession', async (_, { contextId, contextType, title, initialContext }: { contextId: string; contextType: string; title: string; initialContext: string }) => {
   if (!contextId || !contextType) return null;
@@ -2907,12 +3268,186 @@ ipcMain.handle('chat:getOrCreateContextSession', async (_, { contextId, contextT
   return { id: sessionId, title, timestamp: Date.now(), metadata: JSON.stringify(metadata) };
 });
 
+ipcMain.handle('chat:list-context-sessions', async (_, payload?: { contextId?: string; contextType?: string }) => {
+  const contextId = String(payload?.contextId || '').trim();
+  const contextType = String(payload?.contextType || '').trim();
+  if (!contextId || !contextType) {
+    return [];
+  }
+
+  return getChatSessions()
+    .filter((session) => {
+      if (!session.metadata) return false;
+      try {
+        const meta = JSON.parse(session.metadata) as Record<string, unknown>;
+        return meta.contextId === contextId && meta.contextType === contextType;
+      } catch {
+        return false;
+      }
+    })
+    .map((session) => ({
+      id: session.id,
+      messageCount: 0,
+      summary: '',
+      transcriptCount: 0,
+      checkpointCount: 0,
+      context: null,
+      chatSession: {
+        id: session.id,
+        title: session.title,
+        updatedAt: new Date(session.updated_at).toISOString(),
+      },
+    }));
+});
+
+ipcMain.handle('chat:create-context-session', async (_, payload?: {
+  contextId?: string;
+  contextType?: string;
+  title?: string;
+  initialContext?: string;
+}) => {
+  const contextId = String(payload?.contextId || '').trim();
+  const contextType = String(payload?.contextType || '').trim();
+  if (!contextId || !contextType) {
+    return null;
+  }
+
+  const sessionId = `session_${Date.now()}`;
+  const title = String(payload?.title || 'Context Chat').trim() || 'Context Chat';
+  const metadata = {
+    contextId,
+    contextType,
+    contextContent: String(payload?.initialContext || '').trim(),
+    isContextBound: true,
+  };
+  const created = createChatSession(sessionId, title, metadata);
+  return {
+    id: created.id,
+    title: created.title,
+    updatedAt: new Date(created.updated_at).toISOString(),
+  };
+});
+
+ipcMain.handle('chat:create-diagnostics-session', async (_, payload?: {
+  title?: string;
+  contextId?: string;
+  contextType?: string;
+}) => {
+  const sessionId = `session_${Date.now()}`;
+  const title = String(payload?.title || 'Diagnostics').trim() || 'Diagnostics';
+  const metadata = {
+    contextId: String(payload?.contextId || '').trim() || undefined,
+    contextType: String(payload?.contextType || '').trim() || undefined,
+    diagnostics: true,
+  };
+  const created = createChatSession(sessionId, title, metadata);
+  return {
+    id: created.id,
+    title: created.title,
+    updatedAt: new Date(created.updated_at).toISOString(),
+  };
+});
+
 ipcMain.handle('redclaw:list-projects', async (_, { limit }: { limit?: number } = {}) => {
   try {
     return await listRedClawProjects(limit || 20);
   } catch (error) {
     console.error('Failed to list RedClaw projects:', error);
     return [];
+  }
+});
+
+ipcMain.handle('redclaw:profile:get-bundle', async () => {
+  try {
+    const bundle = await loadRedClawProfilePromptBundle();
+    return {
+      success: true,
+      profileRoot: bundle.profileRoot,
+      agent: bundle.files.agent,
+      soul: bundle.files.soul,
+      identity: bundle.files.identity,
+      user: bundle.files.user,
+      creatorProfile: bundle.files.creatorProfile,
+      bootstrap: bundle.files.bootstrap,
+      onboardingState: bundle.onboardingState,
+    };
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+});
+
+ipcMain.handle('redclaw:profile:update-doc', async (_, payload?: {
+  docType?: 'agent' | 'soul' | 'user' | 'creator_profile';
+  markdown?: string;
+  reason?: string;
+}) => {
+  const docType = payload?.docType;
+  const markdown = String(payload?.markdown || '');
+  if (!docType) {
+    return { success: false, error: 'docType is required' };
+  }
+  if (!markdown.trim()) {
+    return { success: false, error: 'markdown is required' };
+  }
+
+  try {
+    const result = await updateRedClawProfileDocument(docType, markdown);
+    return {
+      success: true,
+      docType: result.docType,
+      fileName: path.basename(result.path),
+      path: result.path,
+      content: result.content,
+      reason: String(payload?.reason || '').trim() || undefined,
+    };
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+});
+
+ipcMain.handle('redclaw:profile:onboarding-status', async () => {
+  try {
+    const bundle = await loadRedClawProfilePromptBundle();
+    return {
+      success: true,
+      completed: Boolean(bundle.onboardingState.completedAt),
+      state: bundle.onboardingState,
+    };
+  } catch (error) {
+    return {
+      success: false,
+      completed: false,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+});
+
+ipcMain.handle('redclaw:profile:onboarding-turn', async (_, payload?: { input?: string }) => {
+  try {
+    const result = await handleRedClawOnboardingTurn(String(payload?.input || ''));
+    return {
+      success: true,
+      handled: result.handled,
+      completed: Boolean(result.completed),
+      responseText: result.responseText,
+      result: {
+        responseText: result.responseText,
+        completed: Boolean(result.completed),
+      },
+    };
+  } catch (error) {
+    return {
+      success: false,
+      handled: false,
+      completed: false,
+      error: error instanceof Error ? error.message : String(error),
+    };
   }
 });
 
@@ -3393,6 +3928,52 @@ ipcMain.handle('cover:list', async (_, { limit }: { limit?: number } = {}) => {
   } catch (error) {
     console.error('Failed to list cover assets:', error);
     return { success: false, error: String(error), assets: [] };
+  }
+});
+
+ipcMain.handle('cover:templates:list', async () => {
+  try {
+    return {
+      success: true,
+      templates: await listCoverTemplates(),
+    };
+  } catch (error) {
+    return { success: false, error: String(error), templates: [] };
+  }
+});
+
+ipcMain.handle('cover:templates:save', async (_, payload?: { template?: Record<string, unknown> }) => {
+  try {
+    const template = await saveCoverTemplate(payload?.template || {});
+    return {
+      success: true,
+      template,
+      templates: await listCoverTemplates(),
+    };
+  } catch (error) {
+    return { success: false, error: String(error), templates: [] };
+  }
+});
+
+ipcMain.handle('cover:templates:delete', async (_, payload?: { templateId?: string }) => {
+  try {
+    const templates = await deleteCoverTemplate(String(payload?.templateId || '').trim());
+    return { success: true, templates };
+  } catch (error) {
+    return { success: false, error: String(error), templates: [] };
+  }
+});
+
+ipcMain.handle('cover:templates:import-legacy', async (_, payload?: { templates?: Record<string, unknown>[] }) => {
+  try {
+    const templates = await importLegacyCoverTemplates(Array.isArray(payload?.templates) ? payload!.templates! : []);
+    return {
+      success: true,
+      imported: templates.length,
+      templates,
+    };
+  } catch (error) {
+    return { success: false, error: String(error), templates: [] };
   }
 });
 
@@ -4245,6 +4826,12 @@ ipcMain.on('ai:confirm-tool', (_, callId: string, confirmed: boolean) => {
   }
 })
 
+ipcMain.on('chat:confirm-tool', (_, payload?: { callId?: string; confirmed?: boolean }) => {
+  const callId = String(payload?.callId || '').trim();
+  if (!callId) return;
+  ipcMain.emit('ai:confirm-tool', {} as Electron.IpcMainEvent, callId, payload?.confirmed === true)
+})
+
 // 取消 Agent 执行（旧版）
 ipcMain.on('ai:cancel', () => {
   if (currentAgent) {
@@ -4666,6 +5253,10 @@ ipcMain.handle('advisors:list', async () => {
   }
 });
 
+ipcMain.handle('advisors:list-templates', async () => {
+  return [];
+});
+
 ipcMain.handle('advisors:get', async (_, advisorId: string) => {
   try {
     const cached = advisorDetailCache.get(advisorId);
@@ -4832,6 +5423,29 @@ ipcMain.handle('advisors:select-avatar', async () => {
   }
 });
 
+ipcMain.handle('advisors:pick-knowledge-files', async () => {
+  const result = await dialog.showOpenDialog(win!, {
+    properties: ['openFile', 'multiSelections'],
+    filters: [{ name: 'Text Files', extensions: ['txt', 'md', 'markdown'] }],
+  });
+
+  if (result.canceled || result.filePaths.length === 0) {
+    return { success: true, canceled: true, filePaths: [], files: [] };
+  }
+
+  const files = result.filePaths.map((filePath) => ({
+    path: filePath,
+    name: path.basename(filePath),
+  }));
+
+  return {
+    success: true,
+    canceled: false,
+    filePaths: result.filePaths,
+    files,
+  };
+});
+
 ipcMain.handle('advisors:delete', async (_, advisorId: string) => {
   const fs = require('fs/promises');
   const advisorDir = path.join(getAdvisorsDir(), advisorId);
@@ -4848,23 +5462,35 @@ ipcMain.handle('advisors:delete', async (_, advisorId: string) => {
   }
 });
 
-ipcMain.handle('advisors:upload-knowledge', async (_, advisorId: string) => {
-  const { dialog } = require('electron');
+ipcMain.handle('advisors:upload-knowledge', async (_, payload: string | { advisorId?: string; filePaths?: string[] }) => {
   const fs = require('fs/promises');
+  const advisorId = typeof payload === 'string'
+    ? payload
+    : String(payload?.advisorId || '').trim();
+  if (!advisorId) {
+    return { success: false, error: 'advisorId is required' };
+  }
 
-  const result = await dialog.showOpenDialog(win!, {
-    properties: ['openFile', 'multiSelections'],
-    filters: [{ name: 'Text Files', extensions: ['txt', 'md'] }]
-  });
+  let filePaths = Array.isArray((payload as { filePaths?: string[] } | undefined)?.filePaths)
+    ? ((payload as { filePaths?: string[] }).filePaths || []).filter(Boolean)
+    : [];
 
-  if (result.canceled || result.filePaths.length === 0) {
-    return { success: false };
+  if (filePaths.length === 0) {
+    const result = await dialog.showOpenDialog(win!, {
+      properties: ['openFile', 'multiSelections'],
+      filters: [{ name: 'Text Files', extensions: ['txt', 'md', 'markdown'] }]
+    });
+
+    if (result.canceled || result.filePaths.length === 0) {
+      return { success: false };
+    }
+    filePaths = result.filePaths;
   }
 
   const knowledgeDir = path.join(getAdvisorsDir(), advisorId, 'knowledge');
   await fs.mkdir(knowledgeDir, { recursive: true });
 
-  for (const filePath of result.filePaths) {
+  for (const filePath of filePaths) {
     const fileName = path.basename(filePath);
     const destPath = path.join(knowledgeDir, fileName);
     await fs.copyFile(filePath, destPath);
@@ -4886,7 +5512,7 @@ ipcMain.handle('advisors:upload-knowledge', async (_, advisorId: string) => {
 
   invalidateAdvisorCache(advisorId);
   emitRendererDataChanged('advisors', { action: 'update', entityId: advisorId });
-  return { success: true, count: result.filePaths.length };
+  return { success: true, count: filePaths.length };
 });
 
 ipcMain.handle('advisors:delete-knowledge', async (_, { advisorId, fileName }: { advisorId: string; fileName: string }) => {
@@ -7094,6 +7720,115 @@ ipcMain.handle('manuscripts:get-package-state', async (_, filePath: string) => {
   }
 });
 
+ipcMain.handle('manuscripts:get-editor-runtime-state', async (_, payload?: string | { filePath?: string }) => {
+  const filePath = typeof payload === 'string'
+    ? payload.trim()
+    : String(payload?.filePath || '').trim();
+  if (!filePath) {
+    return { success: false, error: 'filePath is required' };
+  }
+  return {
+    success: true,
+    state: serializeEditorRuntimeState(filePath),
+  };
+});
+
+ipcMain.handle('manuscripts:update-editor-runtime-state', async (_, payload?: {
+  filePath?: string;
+  sessionId?: string;
+  playheadSeconds?: number;
+  selectedClipId?: string;
+  selectedClipIds?: unknown;
+  activeTrackId?: string;
+  selectedTrackIds?: unknown;
+  selectedSceneId?: string;
+  previewTab?: string;
+  canvasRatioPreset?: string;
+  activePanel?: string;
+  drawerPanel?: string;
+  sceneItemTransforms?: unknown;
+  sceneItemVisibility?: unknown;
+  sceneItemOrder?: unknown;
+  sceneItemLocks?: unknown;
+  sceneItemGroups?: unknown;
+  focusedGroupId?: string;
+  trackUi?: unknown;
+  viewportScrollLeft?: number;
+  viewportMaxScrollLeft?: number;
+  viewportScrollTop?: number;
+  viewportMaxScrollTop?: number;
+  timelineZoomPercent?: number;
+}) => {
+  const filePath = String(payload?.filePath || '').trim();
+  if (!filePath) {
+    return { success: false, error: 'filePath is required' };
+  }
+
+  const previous = editorRuntimeStates.get(filePath) || buildEmptyEditorRuntimeState(filePath);
+  const next: EditorRuntimeStateRecord = {
+    ...previous,
+    filePath,
+    sessionId: String(payload?.sessionId || '').trim() || undefined,
+    playheadSeconds: Number.isFinite(Number(payload?.playheadSeconds))
+      ? Number(payload?.playheadSeconds)
+      : previous.playheadSeconds,
+    selectedClipId: String(payload?.selectedClipId || '').trim() || undefined,
+    selectedClipIds: payload && Object.prototype.hasOwnProperty.call(payload, 'selectedClipIds')
+      ? payload.selectedClipIds
+      : previous.selectedClipIds,
+    activeTrackId: String(payload?.activeTrackId || '').trim() || undefined,
+    selectedTrackIds: payload && Object.prototype.hasOwnProperty.call(payload, 'selectedTrackIds')
+      ? payload.selectedTrackIds
+      : previous.selectedTrackIds,
+    selectedSceneId: String(payload?.selectedSceneId || '').trim() || undefined,
+    previewTab: String(payload?.previewTab || '').trim() || undefined,
+    canvasRatioPreset: String(payload?.canvasRatioPreset || '').trim() || undefined,
+    activePanel: String(payload?.activePanel || '').trim() || undefined,
+    drawerPanel: String(payload?.drawerPanel || '').trim() || undefined,
+    sceneItemTransforms: payload && Object.prototype.hasOwnProperty.call(payload, 'sceneItemTransforms')
+      ? payload.sceneItemTransforms
+      : previous.sceneItemTransforms,
+    sceneItemVisibility: payload && Object.prototype.hasOwnProperty.call(payload, 'sceneItemVisibility')
+      ? payload.sceneItemVisibility
+      : previous.sceneItemVisibility,
+    sceneItemOrder: payload && Object.prototype.hasOwnProperty.call(payload, 'sceneItemOrder')
+      ? payload.sceneItemOrder
+      : previous.sceneItemOrder,
+    sceneItemLocks: payload && Object.prototype.hasOwnProperty.call(payload, 'sceneItemLocks')
+      ? payload.sceneItemLocks
+      : previous.sceneItemLocks,
+    sceneItemGroups: payload && Object.prototype.hasOwnProperty.call(payload, 'sceneItemGroups')
+      ? payload.sceneItemGroups
+      : previous.sceneItemGroups,
+    focusedGroupId: String(payload?.focusedGroupId || '').trim() || undefined,
+    trackUi: payload && Object.prototype.hasOwnProperty.call(payload, 'trackUi')
+      ? payload.trackUi
+      : previous.trackUi,
+    viewportScrollLeft: Number.isFinite(Number(payload?.viewportScrollLeft))
+      ? Number(payload?.viewportScrollLeft)
+      : previous.viewportScrollLeft,
+    viewportMaxScrollLeft: Number.isFinite(Number(payload?.viewportMaxScrollLeft))
+      ? Number(payload?.viewportMaxScrollLeft)
+      : previous.viewportMaxScrollLeft,
+    viewportScrollTop: Number.isFinite(Number(payload?.viewportScrollTop))
+      ? Number(payload?.viewportScrollTop)
+      : previous.viewportScrollTop,
+    viewportMaxScrollTop: Number.isFinite(Number(payload?.viewportMaxScrollTop))
+      ? Number(payload?.viewportMaxScrollTop)
+      : previous.viewportMaxScrollTop,
+    timelineZoomPercent: Number.isFinite(Number(payload?.timelineZoomPercent))
+      ? Number(payload?.timelineZoomPercent)
+      : previous.timelineZoomPercent,
+    updatedAt: nowMs(),
+  };
+
+  editorRuntimeStates.set(filePath, next);
+  return {
+    success: true,
+    state: serializeEditorRuntimeState(filePath),
+  };
+});
+
 ipcMain.handle('manuscripts:update-package-clip', async (_, payload?: {
   filePath?: string;
   clipId?: string;
@@ -7725,6 +8460,172 @@ const scheduleStaleDocumentIndexRefresh = async (sources: DocumentSourceRecord[]
   }
 };
 
+const listKnowledgeCatalogNotes = async () => {
+  await ensureKnowledgeRedbookDir();
+  const dirs = await fs.readdir(getKnowledgeRedbookDir(), { withFileTypes: true }).catch(() => []);
+  const notes: Array<Record<string, any>> = [];
+
+  for (const dir of dirs) {
+    if (!dir.isDirectory()) continue;
+    const noteDir = path.join(getKnowledgeRedbookDir(), dir.name);
+    const metaPath = path.join(noteDir, 'meta.json');
+    try {
+      const metaContent = await fs.readFile(metaPath, 'utf-8');
+      const meta = JSON.parse(metaContent) as Record<string, any>;
+      let cover = String(meta.cover || '').trim();
+      if (cover && !cover.startsWith('http')) {
+        cover = toLocalFileUrl(path.join(noteDir, cover));
+      }
+      const tags = Array.isArray(meta.tags) ? meta.tags.map((value: unknown) => String(value || '').trim()).filter(Boolean) : [];
+      notes.push({
+        id: dir.name,
+        title: String(meta.title || dir.name),
+        author: String(meta.author || meta.siteName || '原文链接'),
+        content: String(meta.content || ''),
+        excerpt: String(meta.excerpt || meta.summary || meta.content || ''),
+        siteName: String(meta.siteName || ''),
+        sourceUrl: String(meta.sourceUrl || meta.url || ''),
+        folderPath: noteDir,
+        coverUrl: cover || undefined,
+        createdAt: String(meta.createdAt || meta.updatedAt || new Date().toISOString()),
+        updatedAt: String(meta.updatedAt || meta.createdAt || new Date().toISOString()),
+        noteType: String(meta.type || ''),
+        captureKind: String(meta.captureKind || ''),
+        hasVideo: Boolean(meta.video),
+        hasTranscript: Boolean(String(meta.transcript || '').trim()),
+        status: String(meta.transcriptionStatus || ''),
+        tags,
+      });
+    } catch {
+      continue;
+    }
+  }
+
+  return notes;
+};
+
+const listKnowledgeCatalogYoutubeVideos = async () => {
+  await ensureKnowledgeYoutubeDir();
+  const dirs = await fs.readdir(getKnowledgeYoutubeDir(), { withFileTypes: true }).catch(() => []);
+  const videos: Array<Record<string, any>> = [];
+
+  for (const dir of dirs) {
+    if (!dir.isDirectory()) continue;
+    const videoDir = path.join(getKnowledgeYoutubeDir(), dir.name);
+    const metaPath = path.join(videoDir, 'meta.json');
+    try {
+      const metaContent = await fs.readFile(metaPath, 'utf-8');
+      const meta = JSON.parse(metaContent) as Record<string, any>;
+      let thumbnailUrl = String(meta.thumbnailUrl || '').trim();
+      if (meta.thumbnail) {
+        thumbnailUrl = toLocalFileUrl(path.join(videoDir, String(meta.thumbnail)));
+      }
+      let subtitleContent = '';
+      if (meta.subtitleFile) {
+        subtitleContent = await fs.readFile(path.join(videoDir, String(meta.subtitleFile)), 'utf-8').catch(() => '');
+      }
+      videos.push({
+        id: dir.name,
+        title: String(meta.title || dir.name),
+        description: String(meta.description || ''),
+        summary: String(meta.summary || subtitleContent || meta.description || ''),
+        thumbnailUrl: thumbnailUrl || undefined,
+        sourceUrl: String(meta.videoUrl || ''),
+        folderPath: videoDir,
+        createdAt: String(meta.createdAt || meta.updatedAt || new Date().toISOString()),
+        updatedAt: String(meta.updatedAt || meta.createdAt || new Date().toISOString()),
+        hasSubtitle: Boolean(meta.hasSubtitle),
+        subtitleContent,
+        status: String(meta.status || ''),
+        tags: [],
+      });
+    } catch {
+      continue;
+    }
+  }
+
+  return videos;
+};
+
+const buildKnowledgeCatalogItems = async () => {
+  const [notes, videos, { views, sources }] = await Promise.all([
+    listKnowledgeCatalogNotes(),
+    listKnowledgeCatalogYoutubeVideos(),
+    buildDocumentKnowledgeSourceViews(),
+  ]);
+
+  const items = [
+    ...notes.map((note) => ({
+      itemId: note.id,
+      kind: 'redbook-note' as const,
+      noteType: note.noteType,
+      captureKind: note.captureKind,
+      title: note.title,
+      author: note.author,
+      siteName: note.siteName || undefined,
+      sourceUrl: note.sourceUrl || undefined,
+      folderPath: note.folderPath,
+      coverUrl: note.coverUrl,
+      thumbnailUrl: undefined,
+      previewText: note.excerpt || note.content || '',
+      createdAt: note.createdAt,
+      updatedAt: note.updatedAt,
+      hasVideo: note.hasVideo,
+      hasTranscript: note.hasTranscript,
+      tags: note.tags,
+      status: note.status || undefined,
+      sampleFiles: [],
+      fileCount: 0,
+    })),
+    ...videos.map((video) => ({
+      itemId: video.id,
+      kind: 'youtube-video' as const,
+      title: video.title,
+      author: 'YouTube',
+      siteName: 'YouTube',
+      sourceUrl: video.sourceUrl || undefined,
+      folderPath: video.folderPath,
+      coverUrl: undefined,
+      thumbnailUrl: video.thumbnailUrl,
+      previewText: video.summary || video.description || '',
+      createdAt: video.createdAt,
+      updatedAt: video.updatedAt,
+      hasVideo: true,
+      hasTranscript: Boolean(video.subtitleContent),
+      tags: video.tags,
+      status: video.status || undefined,
+      sampleFiles: [],
+      fileCount: 0,
+    })),
+    ...views.map((source) => ({
+      itemId: source.id,
+      kind: 'document-source' as const,
+      title: source.name,
+      author: source.kind === 'obsidian-vault' ? 'Obsidian' : 'Docs',
+      siteName: 'Documents',
+      sourceUrl: undefined,
+      folderPath: undefined,
+      rootPath: source.rootPath,
+      coverUrl: undefined,
+      thumbnailUrl: undefined,
+      previewText: source.sampleFiles.join('\n'),
+      createdAt: source.createdAt,
+      updatedAt: source.updatedAt,
+      hasVideo: false,
+      hasTranscript: false,
+      tags: [],
+      status: source.indexing ? 'processing' : source.indexError ? 'failed' : 'completed',
+      sampleFiles: source.sampleFiles,
+      fileCount: source.fileCount,
+    })),
+  ];
+
+  return {
+    items: items.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)),
+    sources,
+  };
+};
+
 ipcMain.handle('knowledge:docs:list', async () => {
   try {
     const { views, sources } = await buildDocumentKnowledgeSourceViews();
@@ -7929,6 +8830,160 @@ ipcMain.handle('knowledge:docs:delete-source', async (_, sourceId: string) => {
   } catch (error) {
     console.error('Failed to delete document source:', error);
     return { success: false, error: String(error) };
+  }
+});
+
+ipcMain.handle('knowledge:get-index-status', async () => {
+  try {
+    const { items } = await buildKnowledgeCatalogItems();
+    const failedCount = items.filter((item) => item.status === 'failed').length;
+    const pendingCount = items.filter((item) => item.status === 'processing').length;
+    return {
+      indexedCount: Math.max(0, items.length - failedCount - pendingCount),
+      pendingCount,
+      failedCount,
+      lastIndexedAt: items[0]?.updatedAt || null,
+      isBuilding: pendingCount > 0,
+      lastError: null,
+    };
+  } catch (error) {
+    return {
+      indexedCount: 0,
+      pendingCount: 0,
+      failedCount: 0,
+      lastIndexedAt: null,
+      isBuilding: false,
+      lastError: error instanceof Error ? error.message : String(error),
+    };
+  }
+});
+
+ipcMain.handle('knowledge:list-page', async (_, payload?: {
+  payload?: {
+    cursor?: string | null;
+    limit?: number;
+    kind?: 'redbook-note' | 'youtube-video' | 'document-source';
+    query?: string;
+    sort?: string;
+  };
+}) => {
+  const query = String(payload?.payload?.query || '').trim().toLowerCase();
+  const kind = String(payload?.payload?.kind || '').trim();
+  const limit = Math.max(1, Math.min(Number(payload?.payload?.limit || 200) || 200, 500));
+  const cursor = Math.max(0, Number(payload?.payload?.cursor || 0) || 0);
+
+  const { items } = await buildKnowledgeCatalogItems();
+  const filtered = items.filter((item) => {
+    if (kind && item.kind !== kind) return false;
+    if (!query) return true;
+    const haystack = [
+      item.title,
+      item.author,
+      item.siteName,
+      item.previewText,
+      item.sourceUrl,
+      ...(Array.isArray(item.tags) ? item.tags : []),
+      ...(Array.isArray(item.sampleFiles) ? item.sampleFiles : []),
+    ].join('\n').toLowerCase();
+    return haystack.includes(query);
+  });
+
+  const pageItems = filtered.slice(cursor, cursor + limit);
+  const nextCursor = cursor + limit < filtered.length ? String(cursor + limit) : null;
+  const kindCounts = filtered.reduce<Record<string, number>>((acc, item) => {
+    acc[item.kind] = (acc[item.kind] || 0) + 1;
+    return acc;
+  }, {});
+
+  return {
+    items: pageItems,
+    nextCursor,
+    total: filtered.length,
+    kindCounts,
+  };
+});
+
+ipcMain.handle('knowledge:get-item-detail', async (_, payload?: {
+  payload?: {
+    itemId?: string;
+    kind?: 'redbook-note' | 'youtube-video' | 'document-source';
+  };
+}) => {
+  const itemId = String(payload?.payload?.itemId || '').trim();
+  const kind = String(payload?.payload?.kind || '').trim();
+  if (!itemId || !kind) {
+    return null;
+  }
+
+  if (kind === 'redbook-note') {
+    const notes = await (async () => {
+      const list = await listKnowledgeCatalogNotes();
+      return list.map((item) => ({
+        id: item.id,
+        title: item.title,
+        author: item.author,
+        content: item.content,
+        excerpt: item.excerpt,
+        siteName: item.siteName,
+        sourceUrl: item.sourceUrl,
+        images: [],
+        tags: item.tags,
+        cover: item.coverUrl,
+        video: undefined,
+        videoUrl: undefined,
+        transcript: item.hasTranscript ? '' : undefined,
+        transcriptionStatus: item.status || undefined,
+        stats: { likes: 0, collects: 0 },
+        createdAt: item.createdAt,
+        folderPath: item.folderPath,
+      }));
+    })();
+    return notes.find((item) => item.id === itemId) || null;
+  }
+
+  if (kind === 'youtube-video') {
+    const videos = await listKnowledgeCatalogYoutubeVideos();
+    const video = videos.find((item) => item.id === itemId);
+    if (!video) return null;
+    return {
+      id: video.id,
+      videoId: video.id,
+      videoUrl: video.sourceUrl || '',
+      title: video.title,
+      description: video.description,
+      summary: video.summary,
+      thumbnailUrl: video.thumbnailUrl,
+      hasSubtitle: video.hasSubtitle,
+      subtitleContent: video.subtitleContent,
+      status: video.status || undefined,
+      createdAt: video.createdAt,
+      folderPath: video.folderPath,
+    };
+  }
+
+  if (kind === 'document-source') {
+    const { views } = await buildDocumentKnowledgeSourceViews();
+    return views.find((item) => item.id === itemId) || null;
+  }
+
+  return null;
+});
+
+ipcMain.handle('knowledge:rebuild-catalog', async () => {
+  return { success: true };
+});
+
+ipcMain.handle('knowledge:open-index-root', async () => {
+  try {
+    const docsRoot = ensureKnowledgeDocsDir(getWorkspacePaths()).then(() => getKnowledgeDocsImportedDir(getWorkspacePaths()));
+    const targetPath = await docsRoot;
+    const openError = await shell.openPath(targetPath);
+    if (openError) {
+      return { success: false, error: openError };
+    }
+    return { success: true, path: targetPath };
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : String(error) };
   }
 });
 
@@ -9241,6 +10296,476 @@ const localizeGenericArticleHtml = async (
   }
 };
 
+type KnowledgeEntryPayload = {
+  kind?: string;
+  source?: {
+    sourceLink?: string;
+    sourceUrl?: string;
+    sourceDomain?: string;
+    externalId?: string;
+  };
+  content?: {
+    title?: string;
+    text?: string;
+    excerpt?: string;
+    description?: string;
+    html?: string;
+    indexText?: string;
+    author?: string;
+    authorProfileUrl?: string;
+    siteName?: string;
+    tags?: string[];
+    publishedAt?: string;
+    commentsSnapshot?: Array<{
+      author?: string;
+      text?: string;
+      likes?: number;
+      replies?: number;
+      createdAt?: string;
+      location?: string;
+    }>;
+    stats?: {
+      likes?: number;
+      collects?: number;
+      comments?: number;
+      shares?: number;
+    };
+  };
+  assets?: {
+    coverUrl?: string;
+    imageUrls?: string[];
+    videoUrl?: string;
+    thumbnailUrl?: string;
+  };
+  options?: {
+    allowUpdate?: boolean;
+    transcribe?: boolean;
+  };
+};
+
+function extByMimeLoose(mimeType: string, fallback = 'bin'): string {
+  const lower = String(mimeType || '').toLowerCase();
+  if (lower.includes('jpeg') || lower.includes('jpg')) return 'jpg';
+  if (lower.includes('png')) return 'png';
+  if (lower.includes('webp')) return 'webp';
+  if (lower.includes('gif')) return 'gif';
+  if (lower.includes('bmp')) return 'bmp';
+  if (lower.includes('svg')) return 'svg';
+  if (lower.includes('mp4')) return 'mp4';
+  if (lower.includes('webm')) return 'webm';
+  if (lower.includes('quicktime') || lower.includes('mov')) return 'mov';
+  if (lower.includes('mpeg')) return 'mp3';
+  if (lower.includes('wav')) return 'wav';
+  return fallback;
+}
+
+function decodeBase64DataUrl(raw: string): { mimeType: string; buffer: Buffer } | null {
+  const match = String(raw || '').trim().match(/^data:([^;]+);base64,(.+)$/i);
+  if (!match) return null;
+  return {
+    mimeType: String(match[1] || 'application/octet-stream').toLowerCase(),
+    buffer: Buffer.from(String(match[2] || ''), 'base64'),
+  };
+}
+
+function inferExtensionFromUrl(raw: string, fallback = 'bin'): string {
+  try {
+    const pathname = new URL(String(raw || '').trim()).pathname || '';
+    const ext = path.extname(pathname).replace(/^\./, '').trim().toLowerCase();
+    return ext || fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function ensureFileNameWithExtension(fileName: string, ext: string): string {
+  const normalized = String(fileName || '').trim();
+  if (!normalized) {
+    return `asset.${ext}`;
+  }
+  if (path.extname(normalized)) {
+    return normalized;
+  }
+  return `${normalized}.${ext}`;
+}
+
+function sanitizeKnowledgeEntryId(raw: string, fallbackPrefix: string): string {
+  const normalized = String(raw || '').trim();
+  if (!normalized) {
+    return `${fallbackPrefix}_${Date.now()}`;
+  }
+  const sanitized = normalized
+    .normalize('NFKD')
+    .replace(/[^\w\-.一-龥]+/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_+|_+$/g, '');
+  return sanitized || `${fallbackPrefix}_${Date.now()}`;
+}
+
+function countTruthyDirectoryEntries(entries: Array<string | fsSync.Dirent>): number {
+  return entries.filter(Boolean).length;
+}
+
+function createKnowledgeAssetPersister(noteDir: string) {
+  const persistedBySource = new Map<string, string>();
+  let nextImageIndex = 0;
+
+  const persistAsset = async (input: {
+    source: string;
+    preferredName?: string;
+    kind: 'image' | 'video';
+  }): Promise<string> => {
+    const source = String(input.source || '').trim();
+    if (!source) return '';
+    if (persistedBySource.has(source)) {
+      return persistedBySource.get(source) || '';
+    }
+
+    const targetDir = input.kind === 'image' ? path.join(noteDir, 'images') : noteDir;
+    await fs.mkdir(targetDir, { recursive: true });
+
+    const decoded = decodeBase64DataUrl(source);
+    const fallbackExt = input.kind === 'image'
+      ? 'jpg'
+      : 'mp4';
+    const ext = decoded
+      ? extByMimeLoose(decoded.mimeType, fallbackExt)
+      : inferExtensionFromUrl(source, fallbackExt);
+    const defaultFileName = input.kind === 'image'
+      ? `${nextImageIndex++}.${ext}`
+      : `video.${ext}`;
+    const fileName = ensureFileNameWithExtension(input.preferredName || defaultFileName, ext);
+    const outputPath = path.join(targetDir, fileName);
+
+    if (decoded) {
+      await fs.writeFile(outputPath, decoded.buffer);
+    } else if (/^https?:\/\//i.test(source)) {
+      if (input.kind === 'image') {
+        await downloadImageToFile(source, outputPath);
+      } else {
+        await downloadFile(source, outputPath);
+      }
+    } else {
+      return '';
+    }
+
+    const relativePath = path.relative(noteDir, outputPath).replace(/\\/g, '/');
+    persistedBySource.set(source, relativePath);
+    return relativePath;
+  };
+
+  return {
+    persistImage: async (source: string, preferredName?: string) => {
+      return persistAsset({ source, preferredName, kind: 'image' });
+    },
+    persistVideo: async (source: string, preferredName?: string) => {
+      return persistAsset({ source, preferredName, kind: 'video' });
+    },
+  };
+}
+
+async function queueKnowledgeVideoTranscription(input: {
+  noteId: string;
+  noteDir: string;
+  metaPath: string;
+  meta: Record<string, any>;
+}) {
+  if (!input?.meta?.video) {
+    return;
+  }
+
+  const noteId = String(input.noteId || '').trim();
+  const noteDir = input.noteDir;
+  const metaPath = input.metaPath;
+  const meta = input.meta;
+
+  (async () => {
+    const videoPath = path.join(noteDir, String(meta.video));
+    const transcriptResult = await transcribeVideoToText(videoPath);
+    const transcript = transcriptResult.text;
+    if (transcript) {
+      meta.transcript = transcript;
+      meta.transcriptFile = 'transcript.txt';
+      meta.transcriptionStatus = 'completed';
+      await fs.writeFile(path.join(noteDir, meta.transcriptFile), transcript);
+      await fs.writeFile(metaPath, JSON.stringify(meta, null, 2));
+      indexManager.addToQueue(normalizeVideo(
+        noteId,
+        meta,
+        transcript,
+        'user'
+      ));
+      win?.webContents.send('knowledge:note-updated', { noteId, hasTranscript: true, transcriptionStatus: 'completed' });
+    } else if (transcriptResult.error) {
+      meta.transcriptionStatus = 'failed';
+      await fs.writeFile(metaPath, JSON.stringify(meta, null, 2));
+      console.warn(`[Transcription] Skipped background transcript for ${noteId}: ${transcriptResult.error}`);
+      win?.webContents.send('knowledge:note-updated', { noteId, hasTranscript: false, transcriptionStatus: 'failed' });
+    }
+  })().catch((err) => {
+    console.error('Failed to transcribe video:', err);
+    meta.transcriptionStatus = 'failed';
+    fs.writeFile(metaPath, JSON.stringify(meta, null, 2)).catch(() => {});
+    win?.webContents.send('knowledge:note-updated', { noteId, hasTranscript: false, transcriptionStatus: 'failed' });
+  });
+}
+
+async function persistStructuredKnowledgeNote(input: {
+  noteId: string;
+  kind: string;
+  title: string;
+  content: string;
+  indexText?: string;
+  sourceUrl?: string;
+  siteName?: string;
+  author?: string;
+  authorProfileUrl?: string;
+  excerpt?: string;
+  tags?: string[];
+  publishedAt?: string;
+  commentsSnapshot?: Array<{
+    author?: string;
+    text?: string;
+    likes?: number;
+    replies?: number;
+    createdAt?: string;
+    location?: string;
+  }>;
+  stats?: { likes?: number; collects?: number; comments?: number; shares?: number };
+  coverUrl?: string;
+  imageUrls?: string[];
+  videoUrl?: string;
+  videoSourceUrl?: string;
+  html?: string;
+  allowUpdate?: boolean;
+  transcribe?: boolean;
+}): Promise<{ success: boolean; noteId?: string; duplicate?: boolean; updated?: boolean; error?: string }> {
+  const noteId = sanitizeKnowledgeEntryId(input.noteId, 'entry');
+  const noteDir = path.join(getKnowledgeRedbookDir(), noteId);
+  const metaPath = path.join(noteDir, 'meta.json');
+
+  try {
+    await fs.mkdir(noteDir, { recursive: true });
+
+    let existingMeta: Record<string, any> | null = null;
+    try {
+      existingMeta = JSON.parse(await fs.readFile(metaPath, 'utf-8'));
+    } catch {
+      existingMeta = null;
+    }
+
+    if (existingMeta && !input.allowUpdate) {
+      return { success: true, noteId, duplicate: true };
+    }
+
+    const { persistImage, persistVideo } = createKnowledgeAssetPersister(noteDir);
+    const meta: Record<string, any> = {
+      id: noteId,
+      type: input.kind || 'webpage',
+      title: input.title || existingMeta?.title || '未命名内容',
+      author: input.author || existingMeta?.author || '未知',
+      authorProfileUrl: input.authorProfileUrl || existingMeta?.authorProfileUrl || '',
+      content: input.content || '',
+      indexText: input.indexText || existingMeta?.indexText || input.content || '',
+      sourceUrl: input.sourceUrl || existingMeta?.sourceUrl || '',
+      siteName: input.siteName || existingMeta?.siteName || '',
+      excerpt: input.excerpt || buildExcerpt(input.content || '', 180),
+      publishedAt: input.publishedAt || existingMeta?.publishedAt || '',
+      stats: {
+        likes: Number(input.stats?.likes ?? existingMeta?.stats?.likes ?? 0),
+        collects: Number(input.stats?.collects ?? existingMeta?.stats?.collects ?? 0),
+        comments: Number(input.stats?.comments ?? existingMeta?.stats?.comments ?? 0),
+        shares: Number(input.stats?.shares ?? existingMeta?.stats?.shares ?? 0),
+      },
+      commentsSnapshot: Array.isArray(input.commentsSnapshot)
+        ? input.commentsSnapshot.filter((item) => item && (item.author || item.text))
+        : Array.isArray(existingMeta?.commentsSnapshot)
+          ? existingMeta.commentsSnapshot
+          : [],
+      images: [],
+      cover: '',
+      tags: Array.isArray(input.tags) ? input.tags.filter(Boolean) : [],
+      createdAt: String(existingMeta?.createdAt || new Date().toISOString()),
+      updatedAt: new Date().toISOString(),
+    };
+
+    if (typeof input.coverUrl === 'string' && input.coverUrl.trim()) {
+      try {
+        const coverPath = await persistImage(input.coverUrl.trim(), 'cover');
+        if (coverPath) {
+          meta.cover = coverPath;
+          meta.images.push(coverPath);
+        }
+      } catch (error) {
+        console.error('Failed to persist knowledge cover:', error);
+      }
+    }
+
+    if (Array.isArray(input.imageUrls)) {
+      for (const imageSource of input.imageUrls) {
+        try {
+          const imagePath = await persistImage(String(imageSource || '').trim());
+          if (imagePath && !meta.images.includes(imagePath)) {
+            meta.images.push(imagePath);
+          }
+        } catch (error) {
+          console.error('Failed to persist knowledge image:', error);
+        }
+      }
+    }
+
+    if (!meta.cover && meta.images.length > 0) {
+      meta.cover = meta.images[0];
+    }
+
+    if (typeof input.videoUrl === 'string' && input.videoUrl.trim()) {
+      try {
+        const videoPath = await persistVideo(input.videoUrl.trim(), 'video');
+        if (videoPath) {
+          const absoluteVideoPath = path.join(noteDir, videoPath);
+          await verifyVideoFileDecodable(absoluteVideoPath);
+          meta.video = videoPath;
+          meta.videoUrl = input.videoSourceUrl || input.videoUrl;
+          if (input.transcribe) {
+            meta.transcriptionStatus = 'processing';
+          }
+        }
+      } catch (error) {
+        console.error('Failed to persist knowledge video:', error);
+        if (input.transcribe) {
+          meta.transcriptionStatus = 'failed';
+        }
+      }
+    }
+
+    if (typeof input.html === 'string' && input.html.trim()) {
+      const htmlFile = 'content.html';
+      const localizedHtml = await localizeGenericArticleHtml(
+        input.html,
+        noteDir,
+        async (imageSource, preferredName) => {
+          const imagePath = await persistImage(imageSource, preferredName);
+          if (imagePath && !meta.images.includes(imagePath)) {
+            meta.images.push(imagePath);
+          }
+          return imagePath;
+        },
+      );
+      if (!meta.cover && meta.images.length > 0) {
+        meta.cover = meta.images[0];
+      }
+      await fs.writeFile(path.join(noteDir, htmlFile), localizedHtml, 'utf-8');
+      meta.htmlFile = htmlFile;
+    }
+
+    await fs.writeFile(metaPath, JSON.stringify(meta, null, 2));
+    await fs.writeFile(path.join(noteDir, 'content.md'), meta.content || '', 'utf-8');
+
+    indexManager.addToQueue(normalizeNote(noteId, meta, meta.indexText || meta.content || ''));
+    if (existingMeta) {
+      win?.webContents.send('knowledge:note-updated', { noteId, hasTranscript: Boolean(meta.transcript), transcriptionStatus: meta.transcriptionStatus });
+    } else {
+      win?.webContents.send('knowledge:new-note', { noteId, title: meta.title });
+    }
+    win?.webContents.send('knowledge-updated');
+
+    if (meta.video && input.transcribe) {
+      await queueKnowledgeVideoTranscription({
+        noteId,
+        noteDir,
+        metaPath,
+        meta,
+      });
+    }
+
+    return {
+      success: true,
+      noteId,
+      duplicate: false,
+      updated: Boolean(existingMeta),
+    };
+  } catch (error) {
+    console.error('Failed to persist structured knowledge note:', error);
+    return { success: false, error: String(error) };
+  }
+}
+
+async function persistKnowledgeEntry(entry: KnowledgeEntryPayload): Promise<{ success: boolean; entryId?: string; duplicate?: boolean; updated?: boolean; error?: string }> {
+  const kind = String(entry?.kind || '').trim();
+  const source = entry?.source || {};
+  const content = entry?.content || {};
+  const assets = entry?.assets || {};
+  const options = entry?.options || {};
+  const sourceLink = String(source?.sourceLink || source?.sourceUrl || '').trim();
+  const externalId = String(source?.externalId || '').trim();
+
+  if (kind === 'youtube-video') {
+    const videoUrl = String(sourceLink || '').trim();
+    const videoId = externalId || (() => {
+      try {
+        const parsed = new URL(videoUrl);
+        if (parsed.hostname === 'youtu.be') {
+          return parsed.pathname.split('/').filter(Boolean).pop() || '';
+        }
+        return parsed.searchParams.get('v') || '';
+      } catch {
+        return '';
+      }
+    })();
+    const result = await persistYoutubeNote({
+      videoId,
+      videoUrl,
+      title: String(content?.title || '').trim(),
+      description: String(content?.description || content?.text || '').trim(),
+      thumbnailUrl: String(assets?.thumbnailUrl || assets?.coverUrl || '').trim(),
+    });
+    return {
+      success: result.success,
+      entryId: result.noteId,
+      duplicate: result.duplicate,
+      updated: false,
+      error: result.error,
+    };
+  }
+
+  const rawVideoSource = String(assets?.videoUrl || '').trim();
+  const persistedVideoSource = rawVideoSource.startsWith('data:')
+    ? rawVideoSource
+    : rawVideoSource || '';
+
+  const result = await persistStructuredKnowledgeNote({
+    noteId: externalId || `${kind || 'entry'}_${Date.now()}`,
+    kind: kind || 'webpage',
+    title: String(content?.title || '').trim() || '未命名内容',
+    content: String(content?.text || content?.description || '').trim(),
+    indexText: String(content?.indexText || content?.text || content?.description || '').trim(),
+    sourceUrl: sourceLink,
+    siteName: String(content?.siteName || source?.sourceDomain || '').trim(),
+    author: String(content?.author || '').trim(),
+    authorProfileUrl: String(content?.authorProfileUrl || '').trim(),
+    excerpt: String(content?.excerpt || '').trim(),
+    tags: Array.isArray(content?.tags) ? content.tags.filter(Boolean) : [],
+    publishedAt: String(content?.publishedAt || '').trim(),
+    commentsSnapshot: Array.isArray(content?.commentsSnapshot) ? content.commentsSnapshot : [],
+    stats: content?.stats,
+    coverUrl: String(assets?.coverUrl || assets?.thumbnailUrl || '').trim(),
+    imageUrls: Array.isArray(assets?.imageUrls) ? assets.imageUrls.filter(Boolean) : [],
+    videoUrl: persistedVideoSource,
+    videoSourceUrl: rawVideoSource.startsWith('data:') ? sourceLink : rawVideoSource,
+    html: String(content?.html || '').trim(),
+    allowUpdate: Boolean(options?.allowUpdate),
+    transcribe: Boolean(options?.transcribe),
+  });
+
+  return {
+    success: result.success,
+    entryId: result.noteId,
+    duplicate: result.duplicate,
+    updated: result.updated,
+    error: result.error,
+  };
+}
+
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const fetchWithRetries = async (
@@ -10062,7 +11587,7 @@ ipcMain.handle('indexing:rebuild-all', async () => {
         indexManager.addToQueue(normalizeNote(
           dir.name,
           meta,
-          meta.content || meta.transcript || ''
+          meta.indexText || meta.content || meta.transcript || ''
         ));
       } catch {}
     }
@@ -10334,36 +11859,14 @@ async function persistXhsNote(note: any): Promise<{ success: boolean; noteId?: s
 
     indexManager.addToQueue(normalizeNote(noteId, meta, noteContent || ''));
     win?.webContents.send('knowledge:new-note', { noteId, title: meta.title });
+    win?.webContents.send('knowledge-updated');
 
     if (meta.video) {
-      (async () => {
-        const videoPath = path.join(noteDir, meta.video as string);
-        const transcriptResult = await transcribeVideoToText(videoPath);
-        const transcript = transcriptResult.text;
-        if (transcript) {
-          meta.transcript = transcript;
-          meta.transcriptFile = 'transcript.txt';
-          meta.transcriptionStatus = 'completed';
-          await fs.writeFile(path.join(noteDir, meta.transcriptFile), transcript);
-          await fs.writeFile(metaPath, JSON.stringify(meta, null, 2));
-          indexManager.addToQueue(normalizeVideo(
-            noteId,
-            meta,
-            transcript,
-            'user'
-          ));
-          win?.webContents.send('knowledge:note-updated', { noteId, hasTranscript: true, transcriptionStatus: 'completed' });
-        } else if (transcriptResult.error) {
-          meta.transcriptionStatus = 'failed';
-          await fs.writeFile(metaPath, JSON.stringify(meta, null, 2));
-          console.warn(`[Transcription] Skipped background transcript for ${noteId}: ${transcriptResult.error}`);
-          win?.webContents.send('knowledge:note-updated', { noteId, hasTranscript: false, transcriptionStatus: 'failed' });
-        }
-      })().catch((err) => {
-        console.error('Failed to transcribe video:', err);
-        meta.transcriptionStatus = 'failed';
-        fs.writeFile(metaPath, JSON.stringify(meta, null, 2)).catch(() => {});
-        win?.webContents.send('knowledge:note-updated', { noteId, hasTranscript: false, transcriptionStatus: 'failed' });
+      await queueKnowledgeVideoTranscription({
+        noteId,
+        noteDir,
+        metaPath,
+        meta,
       });
     }
 
@@ -10666,6 +12169,100 @@ function startHttpServer() {
     if (req.method === 'OPTIONS') {
       res.writeHead(204);
       res.end();
+      return;
+    }
+
+    if (req.method === 'GET' && req.url === '/api/knowledge/health') {
+      try {
+        await ensureKnowledgeRedbookDir();
+        await ensureKnowledgeYoutubeDir();
+        const [redbookDirs, youtubeDirs, mediaAssets] = await Promise.all([
+          fs.readdir(getKnowledgeRedbookDir(), { withFileTypes: true }).catch(() => []),
+          fs.readdir(getKnowledgeYoutubeDir(), { withFileTypes: true }).catch(() => []),
+          listMediaAssets(5000).catch(() => []),
+        ]);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          success: true,
+          status: 'ok',
+          app: 'RedConvert',
+          counts: {
+            redbook: countTruthyDirectoryEntries(redbookDirs.filter((entry: fsSync.Dirent) => entry.isDirectory())),
+            youtube: countTruthyDirectoryEntries(youtubeDirs.filter((entry: fsSync.Dirent) => entry.isDirectory())),
+            media: Array.isArray(mediaAssets) ? mediaAssets.length : 0,
+          },
+        }));
+      } catch (error) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, error: String(error) }));
+      }
+      return;
+    }
+
+    if (req.method === 'POST' && req.url === '/api/knowledge/entries') {
+      let body = '';
+      req.on('data', (chunk) => { body += chunk; });
+      req.on('end', async () => {
+        try {
+          const payload = JSON.parse(body || '{}') as KnowledgeEntryPayload;
+          const result = await persistKnowledgeEntry(payload);
+          if (!result.success) {
+            throw new Error(result.error || '保存失败');
+          }
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({
+            success: true,
+            entryId: result.entryId,
+            duplicate: Boolean(result.duplicate),
+            updated: Boolean(result.updated),
+          }));
+        } catch (error) {
+          console.error('Failed to persist knowledge entry:', error);
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ success: false, error: String(error) }));
+        }
+      });
+      return;
+    }
+
+    if (req.method === 'POST' && req.url === '/api/knowledge/media-assets') {
+      let body = '';
+      req.on('data', (chunk) => { body += chunk; });
+      req.on('end', async () => {
+        try {
+          const payload = JSON.parse(body || '{}') as {
+            items?: Array<{ title?: string; source?: string }>;
+          };
+          const items = Array.isArray(payload?.items)
+            ? payload.items
+                .map((item) => ({
+                  title: String(item?.title || '').trim(),
+                  source: String(item?.source || '').trim(),
+                }))
+                .filter((item) => item.source)
+            : [];
+          if (items.length === 0) {
+            throw new Error('items is required');
+          }
+          const imported = await importMediaSources(items);
+          emitRendererDataChanged('media', { action: 'import' });
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({
+            success: true,
+            imported: imported.length,
+            items: imported.map((asset) => ({
+              id: asset.id,
+              title: asset.title,
+              mimeType: asset.mimeType,
+              relativePath: asset.relativePath,
+            })),
+          }));
+        } catch (error) {
+          console.error('Failed to import media assets:', error);
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ success: false, error: String(error) }));
+        }
+      });
       return;
     }
 

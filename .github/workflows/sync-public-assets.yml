@@ -46,17 +46,18 @@ jobs:
                     git checkout -B "$TARGET_BRANCH"
                   fi
 
-            - name: Sync README, Plugin and images
+            - name: Sync README, Plugin, images and desktop source
               run: |
                   set -euo pipefail
 
                   sync_dir() {
                     local src="$1"
                     local dst="$2"
+                    shift 2
 
                     if [ -d "$src" ]; then
                       mkdir -p "$dst"
-                      rsync -av --delete "$src"/ "$dst"/
+                      rsync -av --delete "$@" "$src"/ "$dst"/
                     else
                       rm -rf "$dst"
                     fi
@@ -73,11 +74,19 @@ jobs:
                   done < <(
                     find private-repo \
                       -path 'private-repo/.git' -prune -o \
+                      -path 'private-repo/LexBox' -prune -o \
                       -type f \( -iname 'readme*.md' \) -print0
                   )
 
                   sync_dir private-repo/Plugin public-repo/Plugin
                   sync_dir private-repo/images public-repo/images
+                  sync_dir private-repo/desktop public-repo/desktop \
+                    --exclude dist/ \
+                    --exclude dist-electron/ \
+                    --exclude release/ \
+                    --exclude node_modules/ \
+                    --exclude .private-runtime/ \
+                    --exclude .plugin-runtime/
 
             - name: Commit and Push
               run: |

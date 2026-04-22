@@ -1,9 +1,21 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
-import { MessageSquarePlus, Plus, Send, Loader2, X, MoreVertical, UserPlus, UserMinus, Pencil, Check, Trash2 } from 'lucide-react';
+import { MessageSquarePlus, Plus, X, MoreVertical, UserPlus, UserMinus, Pencil, Check, Trash2, Loader2 } from 'lucide-react';
 import { clsx } from 'clsx';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import {
+    blobToBase64,
+    buildChatModelOptions,
+    ChatComposer,
+    type ChatComposerHandle,
+    type ChatModelOption,
+    type ChatSettingsSnapshot,
+    type UploadedFileAttachment,
+} from '../components/ChatComposer';
 import { hasRenderableAssetUrl, resolveAssetUrl } from '../utils/pathManager';
+import { subscribeRuntimeEventStream } from '../runtime/runtimeEventStream';
+import { ConfirmDialog } from '../components/ConfirmDialog';
+import { appAlert } from '../utils/appDialogs';
 
 interface Advisor {
     id: string;
@@ -33,6 +45,9 @@ interface ChatMessage {
     ragInfo?: { method: string; sources: string[] };
     phase?: 'introduction' | 'discussion' | 'summary';
 }
+
+export type CreativeChatAdvisor = Advisor;
+export type CreativeChatRoom = ChatRoom;
 
 // 总监常量
 const DIRECTOR_ID = 'director-system';
@@ -87,8 +102,29 @@ const AVATAR_COLORS = [
     'bg-blue-500', 'bg-purple-500', 'bg-pink-500', 'bg-orange-500',
     'bg-green-500', 'bg-teal-500', 'bg-indigo-500', 'bg-rose-500'
 ];
+const STREAM_FLUSH_INTERVAL_MS = 120;
 
-export function CreativeChat({ activeFile }: { activeFile?: { path: string; content: string } }) {
+interface CreativeChatProps {
+    activeFile?: { path: string; content: string };
+    isActive?: boolean;
+    onExecutionStateChange?: (active: boolean) => void;
+    hideRoomList?: boolean;
+    selectedRoomId?: string | null;
+    onSelectedRoomIdChange?: (roomId: string | null) => void;
+    onRoomsChange?: (rooms: ChatRoom[]) => void;
+    createRequestKey?: number;
+}
+
+export function CreativeChat({
+    activeFile,
+    isActive = true,
+    onExecutionStateChange,
+    hideRoomList = false,
+    selectedRoomId,
+    onSelectedRoomIdChange,
+    onRoomsChange,
+    createRequestKey,
+}: CreativeChatProps) {
     const [rooms, setRooms] = useState<ChatRoom[]>([]);
     const [selectedRoom, setSelectedRoom] = useState<ChatRoom | null>(null);
     const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -98,12 +134,51 @@ export function CreativeChat({ activeFile }: { activeFile?: { path: string; cont
     const [isSending, setIsSending] = useState(false);
     const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
     const [isManageModalOpen, setIsManageModalOpen] = useState(false);
-    const [isComposing, setIsComposing] = useState(false); // 中文输入法状态
+    const [errorNotice, setErrorNotice] = useState<string | null>(null);
+    const [pendingAttachment, setPendingAttachment] = useState<UploadedFileAttachment | null>(null);
+    const [chatModelOptions, setChatModelOptions] = useState<ChatModelOption[]>([]);
+    const [selectedChatModelKey, setSelectedChatModelKey] = useState('');
+    const [isRecordingAudio, setIsRecordingAudio] = useState(false);
+    const [isTranscribingAudio, setIsTranscribingAudio] = useState(false);
+    const [pendingRoomClear, setPendingRoomClear] = useState<ChatRoom | null>(null);
+    const [pendingRoomDelete, setPendingRoomDelete] = useState<ChatRoom | null>(null);
     const messagesEndRef = useRef<HTMLDivElement>(null);
+    const composerRef = useRef<ChatComposerHandle>(null);
+    const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+    const mediaChunksRef = useRef<Blob[]>([]);
+    const mediaStreamRef = useRef<MediaStream | null>(null);
     const selectedRoomIdRef = useRef<string | null>(null);
+    const selectedRoomRef = useRef<ChatRoom | null>(null);
+    const roomsRef = useRef<ChatRoom[]>([]);
+    const advisorsRef = useRef<Advisor[]>([]);
+    const isActiveRef = useRef<boolean>(isActive);
+    const loadRoomsRequestRef = useRef(0);
+    const loadMessagesRequestRef = useRef(0);
+    const hasRoomsSnapshotRef = useRef(false);
+    const createRequestKeyRef = useRef<number | undefined>(createRequestKey);
+    const pendingStreamMapRef = useRef<Record<string, {
+        roomId?: string;
+        advisorId: string;
+        advisorName?: string;
+        advisorAvatar?: string;
+        content: string;
+        done: boolean;
+    }>>({});
+    const streamFlushTimerRef = useRef<number | null>(null);
     const isSixHatAdvisor = useCallback((advisorId?: string) => {
         return SIX_HAT_IDS.has(String(advisorId || '').trim());
     }, []);
+
+    useEffect(() => {
+        onExecutionStateChange?.(isSending);
+    }, [isSending, onExecutionStateChange]);
+
+    useEffect(() => {
+        return () => {
+            onExecutionStateChange?.(false);
+        };
+    }, [onExecutionStateChange]);
+
     const getSafeAdvisorIds = useCallback((room?: ChatRoom | null): string[] => {
         if (!room || !Array.isArray(room.advisorIds)) return [];
         return room.advisorIds.map((id) => String(id || '').trim()).filter(Boolean);
@@ -122,7 +197,7 @@ export function CreativeChat({ activeFile }: { activeFile?: { path: string; cont
 
     const loadAdvisorsOnly = useCallback(async () => {
         try {
-            const advisorList = await window.ipcRenderer.invoke('advisors:list') as Advisor[];
+            const advisorList = await window.ipcRenderer.advisors.list<Advisor>();
             setAdvisors(normalizeAdvisors(advisorList));
         } catch (e) {
             console.error('Failed to refresh advisors:', e);
@@ -130,11 +205,16 @@ export function CreativeChat({ activeFile }: { activeFile?: { path: string; cont
     }, [normalizeAdvisors]);
 
     const loadRooms = useCallback(async () => {
-        setIsLoading(true);
+        const requestId = loadRoomsRequestRef.current + 1;
+        loadRoomsRequestRef.current = requestId;
+        const hasLocalData = hasRoomsSnapshotRef.current || roomsRef.current.length > 0 || advisorsRef.current.length > 0;
+        if (!hasLocalData) {
+            setIsLoading(true);
+        }
         try {
             const [roomList, advisorList] = await Promise.all([
                 window.ipcRenderer.invoke('chatrooms:list') as Promise<ChatRoom[]>,
-                window.ipcRenderer.invoke('advisors:list') as Promise<Advisor[]>
+                window.ipcRenderer.advisors.list<Advisor>()
             ]);
             const normalizedRooms = (roomList || [])
                 .filter((room): room is ChatRoom => Boolean(room && typeof room === 'object' && typeof room.id === 'string' && room.id.trim()))
@@ -144,19 +224,43 @@ export function CreativeChat({ activeFile }: { activeFile?: { path: string; cont
                     advisorIds: getSafeAdvisorIds(room),
                 }));
             const normalizedAdvisors = normalizeAdvisors(advisorList);
+            if (requestId !== loadRoomsRequestRef.current) {
+                return;
+            }
             setRooms(normalizedRooms);
             setAdvisors(normalizedAdvisors);
+            setSelectedRoom((prev) => {
+                if (!prev) return prev;
+                return normalizedRooms.find((room) => room.id === prev.id) || null;
+            });
+            hasRoomsSnapshotRef.current = true;
         } catch (e) {
+            if (requestId !== loadRoomsRequestRef.current) {
+                return;
+            }
             console.error('Failed to load rooms:', e);
         } finally {
-            setIsLoading(false);
+            if (requestId === loadRoomsRequestRef.current) {
+                setIsLoading(false);
+            }
         }
     }, [getSafeAdvisorIds, normalizeAdvisors]);
 
     const loadMessages = useCallback(async (roomId: string) => {
+        const requestId = loadMessagesRequestRef.current + 1;
+        loadMessagesRequestRef.current = requestId;
         try {
             const msgs = await window.ipcRenderer.invoke('chatrooms:messages', roomId) as ChatMessage[];
-            setMessages(msgs || []);
+            if (requestId !== loadMessagesRequestRef.current) return;
+            if (selectedRoomIdRef.current && selectedRoomIdRef.current !== roomId) return;
+            const next = Array.isArray(msgs) ? [...msgs] : [];
+            next.sort((a, b) => {
+                const leftTime = String(a?.timestamp || '');
+                const rightTime = String(b?.timestamp || '');
+                if (leftTime !== rightTime) return leftTime.localeCompare(rightTime);
+                return String(a?.id || '').localeCompare(String(b?.id || ''));
+            });
+            setMessages(next);
             // 首次加载时直接定位到底部（无动画）
             setTimeout(() => {
                 messagesEndRef.current?.scrollIntoView({ behavior: 'instant' });
@@ -167,10 +271,19 @@ export function CreativeChat({ activeFile }: { activeFile?: { path: string; cont
     }, []);
 
     useEffect(() => {
-        loadRooms();
-    }, [loadRooms]);
+        isActiveRef.current = isActive;
+    }, [isActive]);
 
     useEffect(() => {
+        if (!isActive) return;
+        void loadRooms();
+        if (selectedRoomRef.current?.id) {
+            void loadMessages(selectedRoomRef.current.id);
+        }
+    }, [isActive, loadMessages, loadRooms]);
+
+    useEffect(() => {
+        if (!isActive) return;
         const handleAdvisorsChanged = () => {
             void loadAdvisorsOnly();
         };
@@ -178,25 +291,234 @@ export function CreativeChat({ activeFile }: { activeFile?: { path: string; cont
         return () => {
             window.ipcRenderer.off('advisors:changed', handleAdvisorsChanged);
         };
-    }, [loadAdvisorsOnly]);
+    }, [isActive, loadAdvisorsOnly]);
 
     useEffect(() => {
+        if (!isActive) return;
         if (selectedRoom) {
-            loadMessages(selectedRoom.id);
+            void loadMessages(selectedRoom.id);
         }
-    }, [selectedRoom, loadMessages]);
+    }, [isActive, selectedRoom, loadMessages]);
 
     useEffect(() => {
         selectedRoomIdRef.current = selectedRoom?.id || null;
+        selectedRoomRef.current = selectedRoom;
     }, [selectedRoom]);
 
-    // 只在有流式消息时才平滑滚动
+    useEffect(() => {
+        roomsRef.current = rooms;
+    }, [rooms]);
+
+    useEffect(() => {
+        advisorsRef.current = advisors;
+    }, [advisors]);
+
+    useEffect(() => {
+        onRoomsChange?.(rooms);
+    }, [onRoomsChange, rooms]);
+
+    useEffect(() => {
+        if (createRequestKey === undefined) return;
+        if (createRequestKeyRef.current === createRequestKey) return;
+        createRequestKeyRef.current = createRequestKey;
+        setIsCreateModalOpen(true);
+    }, [createRequestKey]);
+
+    // 流式消息只做即时滚动，避免每个 chunk 触发 smooth scroll 造成主线程卡顿
     const hasStreamingMessage = messages.some(m => m.isStreaming);
     useEffect(() => {
         if (hasStreamingMessage) {
-            messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+            messagesEndRef.current?.scrollIntoView({ behavior: 'instant' });
         }
     }, [messages, hasStreamingMessage]);
+
+    const selectedChatModel = chatModelOptions.find((item) => item.key === selectedChatModelKey) || null;
+
+    const clearPendingAttachment = useCallback(() => {
+        setPendingAttachment(null);
+        requestAnimationFrame(() => {
+            composerRef.current?.focus();
+            composerRef.current?.syncHeight();
+        });
+    }, []);
+
+    const loadChatModelOptions = useCallback(async () => {
+        if (!isActiveRef.current) return;
+        try {
+            const settings = await window.ipcRenderer.getSettings() as ChatSettingsSnapshot | undefined;
+            const options = buildChatModelOptions(settings);
+            setChatModelOptions(options);
+            setSelectedChatModelKey((current) => {
+                if (current && options.some((item) => item.key === current)) return current;
+                return options.find((item) => item.isDefault)?.key || options[0]?.key || '';
+            });
+        } catch (error) {
+            console.error('Failed to load creative chat model options:', error);
+        }
+    }, []);
+
+    useEffect(() => {
+        if (!isActive) return;
+        void loadChatModelOptions();
+    }, [isActive, loadChatModelOptions]);
+
+    const cleanupAudioCapture = useCallback(() => {
+        if (mediaRecorderRef.current) {
+            mediaRecorderRef.current.ondataavailable = null;
+            mediaRecorderRef.current.onstop = null;
+            mediaRecorderRef.current.onerror = null;
+            mediaRecorderRef.current = null;
+        }
+        if (mediaStreamRef.current) {
+            mediaStreamRef.current.getTracks().forEach((track) => track.stop());
+            mediaStreamRef.current = null;
+        }
+        mediaChunksRef.current = [];
+    }, []);
+
+    useEffect(() => {
+        return () => {
+            cleanupAudioCapture();
+        };
+    }, [cleanupAudioCapture]);
+
+    const pickAttachment = useCallback(async () => {
+        if (isSending) return;
+        try {
+            const result = await window.ipcRenderer.chat.pickAttachment({
+                sessionId: selectedRoom?.id || undefined,
+            }) as { success?: boolean; canceled?: boolean; error?: string; attachment?: UploadedFileAttachment };
+            if (!result?.success) {
+                setErrorNotice(result?.error || '上传文件失败');
+                return;
+            }
+            if (result.canceled) return;
+            if (result.attachment) {
+                setErrorNotice(null);
+                setPendingAttachment(result.attachment);
+                requestAnimationFrame(() => {
+                    composerRef.current?.syncHeight();
+                    composerRef.current?.focus();
+                });
+            }
+        } catch (error) {
+            setErrorNotice(String(error || '上传文件失败'));
+        }
+    }, [isSending, selectedRoom?.id]);
+
+    const getChatModelConfig = useCallback(() => {
+        if (!selectedChatModel) return undefined;
+        return {
+            apiKey: selectedChatModel.apiKey,
+            baseURL: selectedChatModel.baseURL,
+            modelName: selectedChatModel.modelName,
+        };
+    }, [selectedChatModel]);
+
+    const transcribeAudioBlob = useCallback(async (blob: Blob) => {
+        setIsTranscribingAudio(true);
+        setErrorNotice(null);
+        try {
+            const audioBase64 = await blobToBase64(blob);
+            const result = await window.ipcRenderer.chat.transcribeAudio({
+                audioBase64,
+                mimeType: blob.type || 'audio/webm',
+                fileName: `creative_chat_audio_${Date.now()}.webm`,
+            });
+            if (!result?.success || !String(result.text || '').trim()) {
+                throw new Error(result?.error || '语音转文字失败');
+            }
+            setInputValue((prev) => {
+                const current = String(prev || '').trim();
+                const next = String(result.text || '').trim();
+                return current ? `${current}${current.endsWith('\n') ? '' : '\n'}${next}` : next;
+            });
+            requestAnimationFrame(() => {
+                composerRef.current?.focus();
+                composerRef.current?.syncHeight();
+            });
+        } catch (error) {
+            setErrorNotice(error instanceof Error ? error.message : String(error));
+        } finally {
+            setIsTranscribingAudio(false);
+        }
+    }, []);
+
+    const stopAudioRecording = useCallback(() => {
+        const recorder = mediaRecorderRef.current;
+        if (!recorder) return;
+        if (recorder.state !== 'inactive') {
+            recorder.stop();
+        } else {
+            cleanupAudioCapture();
+            setIsRecordingAudio(false);
+        }
+    }, [cleanupAudioCapture]);
+
+    const startAudioRecording = useCallback(async () => {
+        if (isSending || isTranscribingAudio) return;
+        if (!navigator.mediaDevices?.getUserMedia) {
+            setErrorNotice('当前环境不支持麦克风录音');
+            return;
+        }
+
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            const preferredMimeType = typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+                ? 'audio/webm;codecs=opus'
+                : 'audio/webm';
+            const recorder = new MediaRecorder(stream, preferredMimeType ? { mimeType: preferredMimeType } : undefined);
+            mediaStreamRef.current = stream;
+            mediaRecorderRef.current = recorder;
+            mediaChunksRef.current = [];
+
+            recorder.ondataavailable = (event) => {
+                if (event.data && event.data.size > 0) {
+                    mediaChunksRef.current.push(event.data);
+                }
+            };
+            recorder.onerror = () => {
+                setErrorNotice('录音失败，请检查麦克风权限');
+                cleanupAudioCapture();
+                setIsRecordingAudio(false);
+            };
+            recorder.onstop = () => {
+                const chunks = [...mediaChunksRef.current];
+                cleanupAudioCapture();
+                setIsRecordingAudio(false);
+                if (!chunks.length) return;
+                void transcribeAudioBlob(new Blob(chunks, { type: recorder.mimeType || preferredMimeType || 'audio/webm' }));
+            };
+
+            recorder.start();
+            setIsRecordingAudio(true);
+            setErrorNotice(null);
+        } catch (error) {
+            cleanupAudioCapture();
+            setIsRecordingAudio(false);
+            setErrorNotice(error instanceof Error ? error.message : '无法访问麦克风');
+        }
+    }, [cleanupAudioCapture, isSending, isTranscribingAudio, transcribeAudioBlob]);
+
+    const handleAudioInput = useCallback(() => {
+        if (isRecordingAudio) {
+            stopAudioRecording();
+            return;
+        }
+        void startAudioRecording();
+    }, [isRecordingAudio, startAudioRecording, stopAudioRecording]);
+
+    const handleCancelSend = useCallback(async () => {
+        if (!selectedRoom) return;
+        try {
+            await window.ipcRenderer.invoke('chatrooms:cancel', { roomId: selectedRoom.id });
+        } catch (error) {
+            console.error('Failed to cancel creative chat:', error);
+        }
+        setIsSending(false);
+        setThinkingState({});
+        setMessages((prev) => prev.map((msg) => msg.isStreaming ? { ...msg, isStreaming: false } : msg));
+    }, [selectedRoom]);
 
     // Thinking chain state per advisor
     const [thinkingState, setThinkingState] = useState<Record<string, {
@@ -206,66 +528,36 @@ export function CreativeChat({ activeFile }: { activeFile?: { path: string; cont
         tools?: { name: string; status: 'running' | 'done'; result?: string }[];
     }>>({});
 
-    // Listen for streaming responses
-    useEffect(() => {
-        // Clean up any stale listeners first
-        (window.ipcRenderer as { removeAllListeners?: (channel: string) => void }).removeAllListeners?.('creative-chat:stream');
-        (window.ipcRenderer as { removeAllListeners?: (channel: string) => void }).removeAllListeners?.('creative-chat:advisor-start');
-        (window.ipcRenderer as { removeAllListeners?: (channel: string) => void }).removeAllListeners?.('creative-chat:done');
-        (window.ipcRenderer as { removeAllListeners?: (channel: string) => void }).removeAllListeners?.('creative-chat:thinking');
-        (window.ipcRenderer as { removeAllListeners?: (channel: string) => void }).removeAllListeners?.('creative-chat:rag');
-        (window.ipcRenderer as { removeAllListeners?: (channel: string) => void }).removeAllListeners?.('creative-chat:tool');
-        (window.ipcRenderer as { removeAllListeners?: (channel: string) => void }).removeAllListeners?.('creative-chat:user-message');
+    const flushBufferedStreams = useCallback(() => {
+        streamFlushTimerRef.current = null;
+        const pending = Object.values(pendingStreamMapRef.current);
+        if (pending.length === 0) return;
+        pendingStreamMapRef.current = {};
 
-        // 处理从其他页面发送的用户消息
-        const handleUserMessage = (_event: unknown, data: { roomId: string; message: ChatMessage }) => {
-            // 如果当前选中的房间就是消息所属的房间，添加到消息列表
-            if (selectedRoom?.id === data.roomId) {
-                setMessages(prev => {
-                    // 避免重复添加
-                    if (prev.some(m => m.id === data.message.id)) return prev;
-                    return [...prev, data.message];
-                });
-            }
-            // 如果当前没有选中房间，自动选中这个房间
-            if (!selectedRoom) {
-                // 重新加载房间列表并选中
-                loadRooms().then(() => {
-                    const targetRoom = rooms.find(r => r.id === data.roomId);
-                    if (targetRoom) {
-                        setSelectedRoom(targetRoom);
-                        loadMessages(data.roomId);
-                    }
-                });
-            }
-        };
-
-        const handleStream = (_event: unknown, data: { roomId?: string; advisorId: string; advisorName?: string; advisorAvatar?: string; content: string; done: boolean }) => {
-            if (data.roomId && selectedRoom?.id && data.roomId !== selectedRoom.id) {
-                return;
-            }
-
-            setMessages(prev => {
+        const activeRoomId = selectedRoomIdRef.current;
+        setMessages(prev => {
+            let next = [...prev];
+            for (const data of pending) {
+                if (data.roomId && activeRoomId && data.roomId !== activeRoomId) {
+                    continue;
+                }
                 let lastMsgIdx = -1;
-                for (let i = prev.length - 1; i >= 0; i -= 1) {
-                    if (prev[i].advisorId === data.advisorId && prev[i].isStreaming) {
+                for (let i = next.length - 1; i >= 0; i -= 1) {
+                    if (next[i].advisorId === data.advisorId && next[i].isStreaming) {
                         lastMsgIdx = i;
                         break;
                     }
                 }
                 if (lastMsgIdx !== -1) {
-                    const updated = [...prev];
-                    updated[lastMsgIdx] = {
-                        ...updated[lastMsgIdx],
-                        content: updated[lastMsgIdx].content + data.content,
-                        isStreaming: !data.done
+                    next[lastMsgIdx] = {
+                        ...next[lastMsgIdx],
+                        content: next[lastMsgIdx].content + data.content,
+                        isStreaming: !data.done,
                     };
-                    return updated;
+                    continue;
                 }
-
-                // 兜底：若流式分片先于 advisor-start 到达，先创建占位消息，避免回复丢失
                 const isDirector = data.advisorId === DIRECTOR_ID;
-                const fallbackMessage: ChatMessage = {
+                next.push({
                     id: `msg_${Date.now()}_${data.advisorId}_stream`,
                     role: isDirector ? 'director' : 'advisor',
                     advisorId: data.advisorId,
@@ -274,21 +566,97 @@ export function CreativeChat({ activeFile }: { activeFile?: { path: string; cont
                     content: data.content || '',
                     timestamp: new Date().toISOString(),
                     isStreaming: !data.done,
-                };
-                return [...prev, fallbackMessage];
-            });
+                });
+            }
+            return next;
+        });
 
-            // Clear thinking state when done
-            if (data.done) {
-                setThinkingState(prev => ({
-                    ...prev,
-                    [data.advisorId]: { ...prev[data.advisorId], isThinking: false }
-                }));
+        const completedAdvisorIds = pending
+            .filter((item) => item.done)
+            .map((item) => item.advisorId);
+        if (completedAdvisorIds.length > 0) {
+            setThinkingState(prev => {
+                const next = { ...prev };
+                for (const advisorId of completedAdvisorIds) {
+                    next[advisorId] = { ...next[advisorId], isThinking: false };
+                }
+                return next;
+            });
+        }
+    }, []);
+
+    const scheduleBufferedStreamFlush = useCallback(() => {
+        if (streamFlushTimerRef.current !== null) return;
+        streamFlushTimerRef.current = window.setTimeout(() => {
+            flushBufferedStreams();
+        }, STREAM_FLUSH_INTERVAL_MS);
+    }, [flushBufferedStreams]);
+
+    // Listen for streaming responses through unified runtime:event only
+    useEffect(() => {
+        const handleCreativeChatError = (data?: { roomId?: string; message?: string }) => {
+            if (data?.roomId && selectedRoomIdRef.current && data.roomId !== selectedRoomIdRef.current) {
+                return;
+            }
+            console.error('Creative chat execution failed:', data?.message || 'unknown error');
+            setIsSending(false);
+        };
+
+        // 处理从其他页面发送的用户消息
+        const handleUserMessage = (data: { roomId: string; message: ChatMessage }) => {
+            if (!isActiveRef.current) return;
+            // 如果当前选中的房间就是消息所属的房间，添加到消息列表
+            if (selectedRoomIdRef.current === data.roomId) {
+                setMessages(prev => {
+                    // 避免重复添加
+                    if (prev.some(m => m.id === data.message.id)) return prev;
+                    if (data.message.role === 'user' && prev.some((m) => {
+                        if (m.role !== 'user') return false;
+                        if (String(m.content || '').trim() !== String(data.message.content || '').trim()) return false;
+                        const leftTs = Date.parse(String(m.timestamp || ''));
+                        const rightTs = Date.parse(String(data.message.timestamp || ''));
+                        if (!Number.isFinite(leftTs) || !Number.isFinite(rightTs)) return false;
+                        return Math.abs(leftTs - rightTs) <= 5000;
+                    })) {
+                        return prev;
+                    }
+                    return [...prev, data.message];
+                });
+            }
+            // 如果当前没有选中房间，自动选中这个房间
+            if (!selectedRoomRef.current) {
+                // 重新加载房间列表并选中
+                loadRooms().then(() => {
+                    const targetRoom = roomsRef.current.find(r => r.id === data.roomId);
+                    if (targetRoom) {
+                        setSelectedRoom(targetRoom);
+                        loadMessages(data.roomId);
+                    }
+                });
             }
         };
 
-        const handleNewAdvisor = (_event: unknown, data: { roomId?: string; advisorId: string; advisorName: string; advisorAvatar: string; phase?: string }) => {
-            if (data.roomId && selectedRoom?.id && data.roomId !== selectedRoom.id) {
+        const handleStream = (data: { roomId?: string; advisorId: string; advisorName?: string; advisorAvatar?: string; content: string; done: boolean }) => {
+            if (!isActiveRef.current) return;
+            if (data.roomId && selectedRoomIdRef.current && data.roomId !== selectedRoomIdRef.current) {
+                return;
+            }
+            const key = `${data.roomId || selectedRoomIdRef.current || 'room'}:${data.advisorId}`;
+            const existing = pendingStreamMapRef.current[key];
+            pendingStreamMapRef.current[key] = {
+                roomId: data.roomId,
+                advisorId: data.advisorId,
+                advisorName: data.advisorName,
+                advisorAvatar: data.advisorAvatar,
+                content: `${existing?.content || ''}${data.content || ''}`,
+                done: Boolean(data.done),
+            };
+            scheduleBufferedStreamFlush();
+        };
+
+        const handleNewAdvisor = (data: { roomId?: string; advisorId: string; advisorName: string; advisorAvatar: string; phase?: string }) => {
+            if (!isActiveRef.current) return;
+            if (data.roomId && selectedRoomIdRef.current && data.roomId !== selectedRoomIdRef.current) {
                 return;
             }
 
@@ -321,8 +689,9 @@ export function CreativeChat({ activeFile }: { activeFile?: { path: string; cont
             }));
         };
 
-        const handleThinking = (_event: unknown, data: { roomId?: string; advisorId: string; type: string; content: string }) => {
-            if (data?.roomId && selectedRoom?.id && data.roomId !== selectedRoom.id) {
+        const handleThinking = (data: { roomId?: string; advisorId: string; type: string; content: string }) => {
+            if (!isActiveRef.current) return;
+            if (data?.roomId && selectedRoomIdRef.current && data.roomId !== selectedRoomIdRef.current) {
                 return;
             }
 
@@ -336,8 +705,9 @@ export function CreativeChat({ activeFile }: { activeFile?: { path: string; cont
             }));
         };
 
-        const handleRag = (_event: unknown, data: { roomId?: string; advisorId: string; type: string; content?: string; sources?: string[] }) => {
-            if (data?.roomId && selectedRoom?.id && data.roomId !== selectedRoom.id) {
+        const handleRag = (data: { roomId?: string; advisorId: string; type: string; content?: string; sources?: string[] }) => {
+            if (!isActiveRef.current) return;
+            if (data?.roomId && selectedRoomIdRef.current && data.roomId !== selectedRoomIdRef.current) {
                 return;
             }
 
@@ -351,8 +721,9 @@ export function CreativeChat({ activeFile }: { activeFile?: { path: string; cont
             }));
         };
 
-        const handleTool = (_event: unknown, data: { roomId?: string; advisorId: string; type: string; tool: { name: string; result?: { success: boolean; content: string } } }) => {
-            if (data?.roomId && selectedRoom?.id && data.roomId !== selectedRoom.id) {
+        const handleTool = (data: { roomId?: string; advisorId: string; type: string; tool: { name: string; result?: { success: boolean; content: string } } }) => {
+            if (!isActiveRef.current) return;
+            if (data?.roomId && selectedRoomIdRef.current && data.roomId !== selectedRoomIdRef.current) {
                 return;
             }
 
@@ -380,77 +751,163 @@ export function CreativeChat({ activeFile }: { activeFile?: { path: string; cont
             });
         };
 
-        const handleDone = (_event: unknown, data?: { roomId?: string }) => {
+        const handleDone = (data?: { roomId?: string }) => {
+            flushBufferedStreams();
             setIsSending(false);
-            if (data?.roomId && selectedRoom?.id && data.roomId !== selectedRoom.id) {
+            if (!isActiveRef.current) return;
+            if (data?.roomId && selectedRoomIdRef.current && data.roomId !== selectedRoomIdRef.current) {
                 return;
             }
             setMessages(prev => prev.map(msg => msg.isStreaming ? { ...msg, isStreaming: false } : msg));
             // Reset all thinking states
             setThinkingState({});
         };
+        if (!isActive) {
+            return;
+        }
 
-        window.ipcRenderer.on('creative-chat:user-message', handleUserMessage);
-        window.ipcRenderer.on('creative-chat:stream', handleStream);
-        window.ipcRenderer.on('creative-chat:advisor-start', handleNewAdvisor);
-        window.ipcRenderer.on('creative-chat:thinking', handleThinking);
-        window.ipcRenderer.on('creative-chat:rag', handleRag);
-        window.ipcRenderer.on('creative-chat:tool', handleTool);
-        window.ipcRenderer.on('creative-chat:done', handleDone);
+        const disposeRuntimeEvents = subscribeRuntimeEventStream({
+            onCreativeChatUserMessage: ({ roomId, message }) => {
+                handleUserMessage({
+                    roomId,
+                    message: message as unknown as ChatMessage,
+                });
+            },
+            onCreativeChatStream: ({ roomId, advisorId, advisorName, advisorAvatar, content, done }) => {
+                handleStream({
+                    roomId,
+                    advisorId,
+                    advisorName,
+                    advisorAvatar,
+                    content,
+                    done,
+                });
+            },
+            onCreativeChatAdvisorStart: ({ roomId, advisorId, advisorName, advisorAvatar, phase }) => {
+                handleNewAdvisor({
+                    roomId,
+                    advisorId,
+                    advisorName,
+                    advisorAvatar,
+                    phase,
+                });
+            },
+            onCreativeChatThinking: ({ roomId, advisorId, thinkingType, content }) => {
+                handleThinking({
+                    roomId,
+                    advisorId,
+                    type: thinkingType,
+                    content,
+                });
+            },
+            onCreativeChatRag: ({ roomId, advisorId, ragType, content, sources }) => {
+                handleRag({
+                    roomId,
+                    advisorId,
+                    type: ragType,
+                    content,
+                    sources,
+                });
+            },
+            onCreativeChatTool: ({ roomId, advisorId, toolType, tool }) => {
+                handleTool({
+                    roomId,
+                    advisorId,
+                    type: toolType,
+                    tool: tool as unknown as { name: string; result?: { success: boolean; content: string } },
+                });
+            },
+            onCreativeChatDone: ({ roomId }) => {
+                handleDone({ roomId });
+            },
+            onCreativeChatError: ({ roomId, error }) => {
+                handleCreativeChatError({
+                    roomId,
+                    message: String((error as { message?: unknown })?.message || ''),
+                });
+            },
+        });
 
         return () => {
-            window.ipcRenderer.off('creative-chat:user-message', handleUserMessage);
-            window.ipcRenderer.off('creative-chat:stream', handleStream);
-            window.ipcRenderer.off('creative-chat:advisor-start', handleNewAdvisor);
-            window.ipcRenderer.off('creative-chat:thinking', handleThinking);
-            window.ipcRenderer.off('creative-chat:rag', handleRag);
-            window.ipcRenderer.off('creative-chat:tool', handleTool);
-            window.ipcRenderer.off('creative-chat:done', handleDone);
+            if (streamFlushTimerRef.current !== null) {
+                window.clearTimeout(streamFlushTimerRef.current);
+                streamFlushTimerRef.current = null;
+            }
+            disposeRuntimeEvents();
         };
-    }, [selectedRoom, rooms, loadRooms, loadMessages]);
+    }, [flushBufferedStreams, isActive, loadMessages, loadRooms, scheduleBufferedStreamFlush]);
 
 
-    const handleSelectRoom = (room: ChatRoom) => {
+    const handleSelectRoom = useCallback((room: ChatRoom) => {
+        selectedRoomIdRef.current = room.id;
+        selectedRoomRef.current = room;
         setSelectedRoom(room);
         setMessages([]);
-    };
+        onSelectedRoomIdChange?.(room.id);
+    }, [onSelectedRoomIdChange]);
+
+    useEffect(() => {
+        if (selectedRoomId === undefined) return;
+        if (!selectedRoomId) {
+            if (selectedRoomRef.current) {
+                selectedRoomIdRef.current = null;
+                selectedRoomRef.current = null;
+                setSelectedRoom(null);
+                setMessages([]);
+            }
+            return;
+        }
+
+        if (selectedRoomRef.current?.id === selectedRoomId) return;
+        const matchedRoom = rooms.find((room) => room.id === selectedRoomId);
+        if (matchedRoom) {
+            handleSelectRoom(matchedRoom);
+        }
+    }, [handleSelectRoom, rooms, selectedRoomId]);
 
     const handleSendMessage = async () => {
-        if (!inputValue.trim() || !selectedRoom || isSending) return;
+        const normalizedContent = String(inputValue || '').trim();
+        const attachment = pendingAttachment;
+        const displayText = normalizedContent || (attachment ? `请分析这个附件：${attachment.name}` : '');
+        if (!displayText || !selectedRoom || isSending) return;
 
         const clientMessageId = `msg_${Date.now()}`;
         const userMessage: ChatMessage = {
             id: clientMessageId,
             role: 'user',
-            content: inputValue.trim(),
+            content: displayText,
             timestamp: new Date().toISOString()
         };
 
         setMessages(prev => [...prev, userMessage]);
         setInputValue('');
+        setPendingAttachment(null);
+        setErrorNotice(null);
         setIsSending(true);
+        composerRef.current?.resetHeight();
 
         try {
             const targetRoomId = selectedRoom.id;
-            const result = await window.ipcRenderer.invoke('chatrooms:send', {
-                roomId: targetRoomId,
-                message: userMessage.content,
-                clientMessageId,
-                context: activeFile ? {
+            const contextPayload: Record<string, unknown> = {};
+            if (activeFile) {
+                contextPayload.activeFile = {
                     filePath: activeFile.path,
-                    fileContent: activeFile.content.substring(0, 10000) // 限制上下文长度，避免过长
-                } : undefined
-            }) as { success: boolean; error?: string };
-
-            if (!result?.success) {
-                throw new Error(result?.error || '群聊发送失败');
+                    fileContent: activeFile.content.substring(0, 10000),
+                };
             }
-
-            if (selectedRoomIdRef.current === targetRoomId) {
-                await loadMessages(targetRoomId);
+            if (attachment) {
+                contextPayload.attachment = attachment;
             }
+            window.ipcRenderer.send('chatrooms:send', {
+                roomId: targetRoomId,
+                message: displayText,
+                clientMessageId,
+                context: Object.keys(contextPayload).length > 0 ? contextPayload : undefined,
+                modelConfig: getChatModelConfig(),
+            });
         } catch (e) {
             console.error('Failed to send message:', e);
+            setErrorNotice('发送消息失败');
             setIsSending(false);
         }
     };
@@ -460,6 +917,7 @@ export function CreativeChat({ activeFile }: { activeFile?: { path: string; cont
             const newRoom = await window.ipcRenderer.invoke('chatrooms:create', { name, advisorIds }) as ChatRoom;
             setRooms(prev => [...prev, newRoom]);
             setSelectedRoom(newRoom);
+            onSelectedRoomIdChange?.(newRoom.id);
             setIsCreateModalOpen(false);
         } catch (e) {
             console.error('Failed to create room:', e);
@@ -468,14 +926,15 @@ export function CreativeChat({ activeFile }: { activeFile?: { path: string; cont
 
     const handleDeleteRoom = async () => {
         if (!selectedRoom) return;
-        if (!confirm(`确定要删除聊天室 "${selectedRoom.name}" 吗？所有聊天记录将被清除。`)) return;
 
         try {
             await window.ipcRenderer.invoke('chatrooms:delete', selectedRoom.id);
             setRooms(prev => prev.filter(r => r.id !== selectedRoom.id));
             setSelectedRoom(null);
+            onSelectedRoomIdChange?.(null);
             setMessages([]);
             setIsManageModalOpen(false);
+            setPendingRoomDelete(null);
         } catch (e) {
             console.error('Failed to delete room:', e);
         }
@@ -483,7 +942,6 @@ export function CreativeChat({ activeFile }: { activeFile?: { path: string; cont
 
     const handleClearMessages = async () => {
         if (!selectedRoom) return;
-        if (!confirm(`确定要清空聊天室 "${selectedRoom.name}" 的聊天记录吗？`)) return;
 
         try {
             const res = await window.ipcRenderer.invoke('chatrooms:clear', selectedRoom.id) as { success: boolean };
@@ -491,6 +949,7 @@ export function CreativeChat({ activeFile }: { activeFile?: { path: string; cont
                 setMessages([]);
                 setThinkingState({});
             }
+            setPendingRoomClear(null);
         } catch (e) {
             console.error('Failed to clear messages:', e);
         }
@@ -509,6 +968,7 @@ export function CreativeChat({ activeFile }: { activeFile?: { path: string; cont
             if (result.success && result.room) {
                 setRooms(prev => prev.map(r => r.id === selectedRoom.id ? result.room! : r));
                 setSelectedRoom(result.room);
+                onSelectedRoomIdChange?.(result.room.id);
             }
             setIsManageModalOpen(false);
         } catch (e) {
@@ -601,73 +1061,97 @@ export function CreativeChat({ activeFile }: { activeFile?: { path: string; cont
         );
     };
 
+    const renderComposer = () => (
+        <ChatComposer
+            ref={composerRef}
+            theme="default"
+            variant="main"
+            value={inputValue}
+            onValueChange={setInputValue}
+            onSubmit={() => void handleSendMessage()}
+            placeholder="发送消息..."
+            attachment={pendingAttachment}
+            onPickAttachment={pickAttachment}
+            onClearAttachment={clearPendingAttachment}
+            modelOptions={chatModelOptions}
+            selectedModelKey={selectedChatModelKey}
+            onSelectedModelKeyChange={setSelectedChatModelKey}
+            isBusy={isSending}
+            audioState={isTranscribingAudio ? 'transcribing' : isRecordingAudio ? 'recording' : 'idle'}
+            onAudioAction={handleAudioInput}
+            onCancel={() => void handleCancelSend()}
+            showCancelWhenBusy={true}
+        />
+    );
+
     return (
         <div className="flex h-full">
-            {/* Room List */}
-            <div className="w-72 border-r border-border bg-surface-secondary/30 flex flex-col">
-                <div className="p-4 border-b border-border flex items-center justify-between">
-                    <h2 className="text-sm font-semibold text-text-primary">创意聊天室</h2>
-                    <button
-                        onClick={() => setIsCreateModalOpen(true)}
-                        className="p-1.5 text-text-tertiary hover:text-accent-primary hover:bg-surface-primary rounded transition-colors"
-                    >
-                        <Plus className="w-4 h-4" />
-                    </button>
-                </div>
+            {!hideRoomList && (
+                <div className="w-72 border-r border-border bg-surface-secondary/30 flex flex-col">
+                    <div className="p-4 border-b border-border flex items-center justify-between">
+                        <h2 className="text-sm font-semibold text-text-primary">创意聊天室</h2>
+                        <button
+                            onClick={() => setIsCreateModalOpen(true)}
+                            className="p-1.5 text-text-tertiary hover:text-accent-primary hover:bg-surface-primary rounded transition-colors"
+                        >
+                            <Plus className="w-4 h-4" />
+                        </button>
+                    </div>
 
-                <div className="flex-1 overflow-auto p-2 space-y-2">
-                    {isLoading ? (
-                        <div className="text-center text-text-tertiary text-xs py-8">加载中...</div>
-                    ) : rooms.length === 0 ? (
-                        <div className="text-center text-text-tertiary text-xs py-8">
-                            <MessageSquarePlus className="w-10 h-10 mx-auto mb-3 opacity-30" />
-                            <p>暂无聊天室</p>
-                            <button onClick={() => setIsCreateModalOpen(true)} className="mt-2 text-accent-primary hover:underline">
-                                创建聊天室
-                            </button>
-                        </div>
-                    ) : (
-                        rooms.map((room) => (
-                            <button
-                                key={room.id}
-                                onClick={() => handleSelectRoom(room)}
-                                className={clsx(
-                                    "w-full text-left p-3 rounded-xl transition-all",
-                                    selectedRoom?.id === room.id
-                                        ? "bg-accent-primary/10 border border-accent-primary/30"
-                                        : "hover:bg-surface-primary border border-transparent",
-                                    room.isSystem && "ring-1 ring-amber-300/50"
-                                )}
-                            >
-                                <div className="flex items-center gap-2">
-                                    {room.isSystem && (
-                                        <span className="text-xs px-1.5 py-0.5 bg-amber-100 text-amber-700 rounded-full font-medium">
-                                            🎩
-                                        </span>
+                    <div className="flex-1 overflow-auto p-2 space-y-2">
+                        {isLoading && rooms.length === 0 ? (
+                            <div className="text-center text-text-tertiary text-xs py-8">加载中...</div>
+                        ) : rooms.length === 0 ? (
+                            <div className="text-center text-text-tertiary text-xs py-8">
+                                <MessageSquarePlus className="w-10 h-10 mx-auto mb-3 opacity-30" />
+                                <p>暂无聊天室</p>
+                                <button onClick={() => setIsCreateModalOpen(true)} className="mt-2 text-accent-primary hover:underline">
+                                    创建聊天室
+                                </button>
+                            </div>
+                        ) : (
+                            rooms.map((room) => (
+                                <button
+                                    key={room.id}
+                                    onClick={() => handleSelectRoom(room)}
+                                    className={clsx(
+                                        "w-full text-left p-3 rounded-xl transition-all",
+                                        selectedRoom?.id === room.id
+                                            ? "bg-accent-primary/10 border border-accent-primary/30"
+                                            : "hover:bg-surface-primary border border-transparent",
+                                        room.isSystem && "ring-1 ring-amber-300/50"
                                     )}
-                                    <span className="text-sm font-medium text-text-primary truncate">{room.name}</span>
-                                </div>
-                                <div className="flex items-center gap-1 mt-1.5">
-                                    {getRoomMembers(room).slice(0, 6).map((a) => (
-                                        <div
-                                            key={a.id}
-                                            className={clsx(
-                                                "w-5 h-5 rounded-full flex items-center justify-center overflow-hidden",
-                                                getAdvisorColor(a.id)
-                                            )}
-                                        >
-                                            {renderAvatar(a.avatar || '🤖', 'sm', undefined, a.id)}
-                                        </div>
-                                    ))}
-                                    {getRoomMembers(room).length > 6 && (
-                                        <span className="text-[10px] text-text-tertiary">+{getRoomMembers(room).length - 6}</span>
-                                    )}
-                                </div>
-                            </button>
-                        ))
-                    )}
+                                >
+                                    <div className="flex items-center gap-2">
+                                        {room.isSystem && (
+                                            <span className="text-xs px-1.5 py-0.5 bg-amber-100 text-amber-700 rounded-full font-medium">
+                                                🎩
+                                            </span>
+                                        )}
+                                        <span className="text-sm font-medium text-text-primary truncate">{room.name}</span>
+                                    </div>
+                                    <div className="flex items-center gap-1 mt-1.5">
+                                        {getRoomMembers(room).slice(0, 6).map((a) => (
+                                            <div
+                                                key={a.id}
+                                                className={clsx(
+                                                    "w-5 h-5 rounded-full flex items-center justify-center overflow-hidden",
+                                                    getAdvisorColor(a.id)
+                                                )}
+                                            >
+                                                {renderAvatar(a.avatar || '🤖', 'sm', undefined, a.id)}
+                                            </div>
+                                        ))}
+                                        {getRoomMembers(room).length > 6 && (
+                                            <span className="text-[10px] text-text-tertiary">+{getRoomMembers(room).length - 6}</span>
+                                        )}
+                                    </div>
+                                </button>
+                            ))
+                        )}
+                    </div>
                 </div>
-            </div>
+            )}
 
             {/* Chat Area */}
             <div className="flex-1 flex flex-col min-w-0">
@@ -700,7 +1184,7 @@ export function CreativeChat({ activeFile }: { activeFile?: { path: string; cont
                             </div>
                             <div className="flex items-center gap-2">
                                 <button
-                                    onClick={handleClearMessages}
+                                    onClick={() => setPendingRoomClear(selectedRoom)}
                                     className="p-2 text-text-tertiary hover:text-red-500 hover:bg-surface-secondary rounded-lg transition-colors"
                                     title="清空聊天记录"
                                 >
@@ -709,7 +1193,7 @@ export function CreativeChat({ activeFile }: { activeFile?: { path: string; cont
                                 {/* 六顶思考帽系统群支持直接删除 */}
                                 {isSystemRoom(selectedRoom) && (
                                     <button
-                                        onClick={handleDeleteRoom}
+                                        onClick={() => setPendingRoomDelete(selectedRoom)}
                                         className="p-2 text-text-tertiary hover:text-red-500 hover:bg-surface-secondary rounded-lg transition-colors"
                                         title="删除群聊"
                                     >
@@ -824,14 +1308,20 @@ export function CreativeChat({ activeFile }: { activeFile?: { path: string; cont
                                                 )}
                                             </>
                                         )}
-                                        <div className="text-sm prose prose-sm dark:prose-invert max-w-none prose-p:my-1 prose-headings:my-2 prose-ul:my-1 prose-ol:my-1 prose-li:my-0.5 prose-table:my-2 prose-th:bg-surface-secondary prose-th:px-2 prose-th:py-1 prose-td:px-2 prose-td:py-1 prose-table:border prose-table:border-border prose-th:border prose-th:border-border prose-td:border prose-td:border-border">
-                                            {msg.content ? (
-                                                <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
-                                            ) : (
-                                                msg.isStreaming ? null : <span className="text-text-tertiary">(空回复)</span>
-                                            )}
-                                            {msg.isStreaming && <span className="inline-block w-1.5 h-4 bg-current animate-pulse ml-0.5" />}
-                                        </div>
+                                        {msg.isStreaming ? (
+                                            <div className="text-sm whitespace-pre-wrap break-words">
+                                                {msg.content}
+                                                <span className="inline-block w-1.5 h-4 bg-current animate-pulse ml-0.5" />
+                                            </div>
+                                        ) : (
+                                            <div className="text-sm prose prose-sm dark:prose-invert max-w-none prose-p:my-1 prose-headings:my-2 prose-ul:my-1 prose-ol:my-1 prose-li:my-0.5 prose-table:my-2 prose-th:bg-surface-secondary prose-th:px-2 prose-th:py-1 prose-td:px-2 prose-td:py-1 prose-table:border prose-table:border-border prose-th:border prose-th:border-border prose-td:border prose-td:border-border">
+                                                {msg.content ? (
+                                                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
+                                                ) : (
+                                                    <span className="text-text-tertiary">(空回复)</span>
+                                                )}
+                                            </div>
+                                        )}
                                     </div>
                                 </div>
                             ))}
@@ -839,31 +1329,14 @@ export function CreativeChat({ activeFile }: { activeFile?: { path: string; cont
                         </div>
 
                         {/* Input */}
-                        <div className="p-4 border-t border-border">
-                            <div className="flex items-center gap-3">
-                                <input
-                                    type="text"
-                                    value={inputValue}
-                                    onChange={(e) => setInputValue(e.target.value)}
-                                    onCompositionStart={() => setIsComposing(true)}
-                                    onCompositionEnd={() => setIsComposing(false)}
-                                    onKeyDown={(e) => {
-                                        if (e.key === 'Enter' && !e.shiftKey && !isComposing) {
-                                            e.preventDefault();
-                                            handleSendMessage();
-                                        }
-                                    }}
-                                    placeholder="输入你的问题，智囊团成员将依次发表观点..."
-                                    disabled={isSending}
-                                    className="flex-1 bg-surface-secondary border border-border rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-1 focus:ring-accent-primary disabled:opacity-50"
-                                />
-                                <button
-                                    onClick={handleSendMessage}
-                                    disabled={!inputValue.trim() || isSending}
-                                    className="p-3 bg-accent-primary text-white rounded-xl hover:bg-accent-primary/90 disabled:opacity-50 transition-colors"
-                                >
-                                    {isSending ? <Loader2 className="w-5 h-5 animate-spin" /> : <Send className="w-5 h-5" />}
-                                </button>
+                        <div className="shrink-0 border-t border-border bg-surface-primary px-4 py-4">
+                            {errorNotice && (
+                                <div className="mb-3 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
+                                    {errorNotice}
+                                </div>
+                            )}
+                            <div className="mx-auto w-full">
+                                {renderComposer()}
                             </div>
                         </div>
                     </>
@@ -896,6 +1369,26 @@ export function CreativeChat({ activeFile }: { activeFile?: { path: string; cont
                     onClose={() => setIsManageModalOpen(false)}
                 />
             )}
+
+            <ConfirmDialog
+                open={Boolean(pendingRoomClear)}
+                title="清空聊天记录"
+                description={pendingRoomClear ? `确定要清空聊天室“${pendingRoomClear.name}”的聊天记录吗？` : ''}
+                confirmLabel="清空"
+                tone="danger"
+                onCancel={() => setPendingRoomClear(null)}
+                onConfirm={() => void handleClearMessages()}
+            />
+
+            <ConfirmDialog
+                open={Boolean(pendingRoomDelete)}
+                title="删除聊天室"
+                description={pendingRoomDelete ? `确定要删除聊天室“${pendingRoomDelete.name}”吗？所有聊天记录将被清除。` : ''}
+                confirmLabel="删除"
+                tone="danger"
+                onCancel={() => setPendingRoomDelete(null)}
+                onConfirm={() => void handleDeleteRoom()}
+            />
         </div>
     );
 }
@@ -1054,7 +1547,7 @@ function ManageRoomModal({
 
     const removeMember = (id: string) => {
         if (selectedIds.length <= 1) {
-            alert('群聊至少需要一个成员');
+            void appAlert('群聊至少需要一个成员');
             return;
         }
         setSelectedIds(prev => prev.filter(i => i !== id));

@@ -59,6 +59,7 @@ function copyWorkerScripts() {
 // https://vitejs.dev/config/
 export default defineConfig({
   build: {
+    chunkSizeWarningLimit: 1000,
     rollupOptions: {
       output: {
         manualChunks(id) {
@@ -155,4 +156,17 @@ export default defineConfig({
       renderer: {},
     }),
   ],
+  server: {
+    fs: {
+      allow: [path.resolve(__dirname)],
+    },
+  },
+  resolve: {
+    alias: {
+      '@': path.resolve(__dirname, 'src/vendor/freecut'),
+      '@redbox': path.resolve(__dirname, 'src'),
+      '@tauri-apps/api/core': path.resolve(__dirname, 'src/compat/tauri-core.ts'),
+      '@tauri-apps/api/event': path.resolve(__dirname, 'src/compat/tauri-event.ts'),
+    },
+  },
 })

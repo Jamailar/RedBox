@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import clsx from 'clsx';
+import { appAlert, appConfirm } from '../utils/appDialogs';
+import { uiDebug, uiMeasure } from '../utils/uiDebug';
 import {
     FolderPlus,
     ImagePlus,
@@ -15,7 +17,6 @@ import {
     X,
 } from 'lucide-react';
 import { resolveAssetUrl } from '../utils/pathManager';
-import { usePageRefresh } from '../hooks/usePageRefresh';
 
 interface SubjectCategory {
     id: string;
@@ -71,6 +72,8 @@ interface SubjectDraft {
         scriptText: string;
     };
 }
+
+type CategoryDialogMode = 'create' | 'rename';
 
 const UNCATEGORIZED_FILTER = '__uncategorized__';
 const SUBJECT_VOICE_SAMPLE_TEXT = '君不见黄河之水天上来，奔流到海不复回。';
@@ -150,6 +153,11 @@ export function Subjects({ isActive = true }: { isActive?: boolean }) {
     const [query, setQuery] = useState('');
     const [categoryFilter, setCategoryFilter] = useState<string>('all');
     const [isModalOpen, setIsModalOpen] = useState(false);
+    const [isCategoryDialogOpen, setIsCategoryDialogOpen] = useState(false);
+    const [categoryDialogMode, setCategoryDialogMode] = useState<CategoryDialogMode>('create');
+    const [categoryDialogName, setCategoryDialogName] = useState('');
+    const [categoryDialogTargetId, setCategoryDialogTargetId] = useState<string | null>(null);
+    const [isCategoryDialogSubmitting, setIsCategoryDialogSubmitting] = useState(false);
     const [draft, setDraft] = useState<SubjectDraft>(createEmptyDraft);
     const [initialVoicePresent, setInitialVoicePresent] = useState(false);
     const [recording, setRecording] = useState(false);
@@ -160,38 +168,68 @@ export function Subjects({ isActive = true }: { isActive?: boolean }) {
     const recordingTimeoutRef = useRef<number | null>(null);
     const recordingStreamRef = useRef<MediaStream | null>(null);
     const recorderRef = useRef<MediaRecorder | null>(null);
+    const hasLoadedSnapshotRef = useRef(false);
+    const loadDataRequestRef = useRef(0);
+
+    useEffect(() => {
+        if (!import.meta.env.DEV) return;
+        uiDebug('subjects', isActive ? 'view_activate' : 'view_deactivate', {
+            loading,
+            subjectCount: subjects.length,
+        });
+    }, [isActive, loading, subjects.length]);
+
+    useEffect(() => {
+        if (!import.meta.env.DEV) return;
+        uiDebug('subjects', 'view_mount');
+        return () => {
+            uiDebug('subjects', 'view_unmount');
+        };
+    }, []);
 
     const loadData = useCallback(async () => {
-        setLoading(true);
+        const requestId = loadDataRequestRef.current + 1;
+        loadDataRequestRef.current = requestId;
+        if (!hasLoadedSnapshotRef.current) {
+            setLoading(true);
+        }
         setError('');
         try {
-            const [categoriesResult, subjectsResult] = await Promise.all([
-                window.ipcRenderer.subjects.categories.list(),
-                window.ipcRenderer.subjects.list({ limit: 500 }),
-            ]);
+            const [categoriesResult, subjectsResult] = await uiMeasure('subjects', 'load_data', async () => (
+                Promise.all([
+                    window.ipcRenderer.subjects.categories.list(),
+                    window.ipcRenderer.subjects.list({ limit: 500 }),
+                ])
+            ), { requestId });
             if (!categoriesResult?.success) {
                 throw new Error(categoriesResult?.error || '加载分类失败');
             }
             if (!subjectsResult?.success) {
                 throw new Error(subjectsResult?.error || '加载主体失败');
             }
+            if (requestId !== loadDataRequestRef.current) return;
             setCategories(Array.isArray(categoriesResult.categories) ? categoriesResult.categories : []);
             setSubjects(Array.isArray(subjectsResult.subjects) ? subjectsResult.subjects : []);
+            hasLoadedSnapshotRef.current = true;
         } catch (e) {
+            if (requestId !== loadDataRequestRef.current) return;
             console.error('Failed to load subjects:', e);
             setError(e instanceof Error ? e.message : '加载主体库失败');
-            setCategories([]);
-            setSubjects([]);
+            if (!hasLoadedSnapshotRef.current) {
+                setCategories([]);
+                setSubjects([]);
+            }
         } finally {
-            setLoading(false);
+            if (requestId === loadDataRequestRef.current) {
+                setLoading(false);
+            }
         }
     }, []);
 
-    usePageRefresh({
-        isActive,
-        refresh: loadData,
-        dataScopes: ['subjects'],
-    });
+    useEffect(() => {
+        if (!isActive) return;
+        void loadData();
+    }, [isActive, loadData]);
 
     const categoryNameMap = useMemo(() => new Map(categories.map((item) => [item.id, item.name])), [categories]);
 
@@ -235,6 +273,31 @@ export function Subjects({ isActive = true }: { isActive?: boolean }) {
         setError('');
         setIsModalOpen(true);
     }, []);
+
+    const openCreateCategoryDialog = useCallback(() => {
+        setCategoryDialogMode('create');
+        setCategoryDialogTargetId(null);
+        setCategoryDialogName('');
+        setIsCategoryDialogOpen(true);
+    }, []);
+
+    const openRenameCategoryDialog = useCallback((category: SubjectCategory) => {
+        setCategoryDialogMode('rename');
+        setCategoryDialogTargetId(category.id);
+        setCategoryDialogName(category.name);
+        setIsCategoryDialogOpen(true);
+    }, []);
+
+    const resetCategoryDialog = useCallback(() => {
+        setIsCategoryDialogOpen(false);
+        setCategoryDialogTargetId(null);
+        setCategoryDialogName('');
+    }, []);
+
+    const closeCategoryDialog = useCallback(() => {
+        if (isCategoryDialogSubmitting) return;
+        resetCategoryDialog();
+    }, [isCategoryDialogSubmitting, resetCategoryDialog]);
 
     const clearRecordingTimers = useCallback(() => {
         if (recordingIntervalRef.current) {
@@ -305,7 +368,7 @@ export function Subjects({ isActive = true }: { isActive?: boolean }) {
         const nextFiles = Array.from(files || []);
         if (!nextFiles.length) return;
         if (draft.images.length + nextFiles.length > 5) {
-            alert('主体最多只能保存 5 张图片');
+            void appAlert('主体最多只能保存 5 张图片');
             return;
         }
         const nextImages = await Promise.all(nextFiles.map(async (file) => ({
@@ -443,37 +506,61 @@ export function Subjects({ isActive = true }: { isActive?: boolean }) {
         }
     }, [clearRecordingTimers, recording, saveVoiceDataUrl, stopRecordingSession]);
 
-    const handleCreateCategory = useCallback(async () => {
-        const name = window.prompt('输入分类名称');
-        if (!name) return;
-        const result = await window.ipcRenderer.subjects.categories.create({ name: name.trim() });
-        if (!result?.success) {
-            alert(result?.error || '创建分类失败');
+    const submitCategoryDialog = useCallback(async () => {
+        const trimmedName = categoryDialogName.trim();
+        if (!trimmedName) {
+            void appAlert('分类名称不能为空');
             return;
         }
-        await loadData();
-        if (result.category?.id) {
-            setCategoryFilter(result.category.id);
-            setDraft((current) => ({ ...current, categoryId: result.category?.id || '' }));
-        }
-    }, [loadData]);
 
-    const handleRenameCategory = useCallback(async (category: SubjectCategory) => {
-        const name = window.prompt('重命名分类', category.name);
-        if (!name || name.trim() === category.name) return;
-        const result = await window.ipcRenderer.subjects.categories.update({ id: category.id, name: name.trim() });
-        if (!result?.success) {
-            alert(result?.error || '重命名分类失败');
-            return;
+        setIsCategoryDialogSubmitting(true);
+        try {
+            if (categoryDialogMode === 'create') {
+                const result = await window.ipcRenderer.subjects.categories.create({ name: trimmedName });
+                if (!result?.success) {
+                    void appAlert(result?.error || '创建分类失败');
+                    return;
+                }
+                resetCategoryDialog();
+                await loadData();
+                if (result.category?.id) {
+                    setCategoryFilter(result.category.id);
+                    setDraft((current) => ({ ...current, categoryId: result.category?.id || '' }));
+                }
+                return;
+            }
+
+            if (!categoryDialogTargetId) {
+                void appAlert('未找到要重命名的分类');
+                return;
+            }
+
+            const currentCategory = categories.find((item) => item.id === categoryDialogTargetId);
+            if (currentCategory && trimmedName === currentCategory.name) {
+                resetCategoryDialog();
+                return;
+            }
+
+            const result = await window.ipcRenderer.subjects.categories.update({ id: categoryDialogTargetId, name: trimmedName });
+            if (!result?.success) {
+                void appAlert(result?.error || '重命名分类失败');
+                return;
+            }
+            resetCategoryDialog();
+            await loadData();
+        } catch (e) {
+            console.error('Failed to submit category dialog:', e);
+            void appAlert(categoryDialogMode === 'create' ? '创建分类失败，请重试' : '重命名分类失败，请重试');
+        } finally {
+            setIsCategoryDialogSubmitting(false);
         }
-        await loadData();
-    }, [loadData]);
+    }, [categories, categoryDialogMode, categoryDialogName, categoryDialogTargetId, loadData, resetCategoryDialog]);
 
     const handleDeleteCategory = useCallback(async (category: SubjectCategory) => {
-        if (!window.confirm(`删除分类“${category.name}”？如果仍有主体使用该分类，将会被拒绝。`)) return;
+        if (!(await appConfirm(`删除分类“${category.name}”？如果仍有主体使用该分类，将会被拒绝。`, { title: '删除分类', confirmLabel: '删除', tone: 'danger' }))) return;
         const result = await window.ipcRenderer.subjects.categories.delete({ id: category.id });
         if (!result?.success) {
-            alert(result?.error || '删除分类失败');
+            void appAlert(result?.error || '删除分类失败');
             return;
         }
         if (categoryFilter === category.id) {
@@ -535,7 +622,7 @@ export function Subjects({ isActive = true }: { isActive?: boolean }) {
 
     const handleDeleteSubject = useCallback(async () => {
         if (!draft.id) return;
-        if (!window.confirm(`删除主体“${draft.name || draft.id}”？`)) return;
+        if (!(await appConfirm(`删除主体“${draft.name || draft.id}”？`, { title: '删除主体', confirmLabel: '删除', tone: 'danger' }))) return;
         setWorking(true);
         try {
             const result = await window.ipcRenderer.subjects.delete({ id: draft.id });
@@ -561,7 +648,7 @@ export function Subjects({ isActive = true }: { isActive?: boolean }) {
                     </div>
                     <div className="min-w-0">
                         <h1 className="text-base leading-none font-semibold text-text-primary">主体库画廊</h1>
-                        <div className="text-[11px] mt-0.5 text-text-tertiary truncate">人物、商品、场景统一管理，供 RedClaw 精准检索引用</div>
+                        <div className="text-[11px] mt-0.5 text-text-tertiary truncate">人物、商品、场景统一管理，便于在创作时直接调用参考</div>
                     </div>
 
                     <div className="hidden xl:flex items-center gap-1.5 min-w-0 ml-2">
@@ -636,7 +723,7 @@ export function Subjects({ isActive = true }: { isActive?: boolean }) {
                         );
                     })}
                     <button
-                        onClick={() => void handleCreateCategory()}
+                        onClick={openCreateCategoryDialog}
                         className="ml-auto text-[11px] px-2.5 py-1 rounded-md border border-border bg-surface-primary text-text-secondary hover:bg-surface-secondary"
                     >
                         <span className="inline-flex items-center gap-1">
@@ -654,7 +741,7 @@ export function Subjects({ isActive = true }: { isActive?: boolean }) {
                     </div>
                 )}
 
-                {loading ? (
+                {loading && subjects.length === 0 && categories.length === 0 ? (
                     <div className="text-sm text-text-tertiary">主体库加载中...</div>
                 ) : filteredSubjects.length === 0 ? (
                     <div className="rounded-xl border border-dashed border-border bg-surface-primary/70 px-6 py-10 text-center text-sm text-text-tertiary">
@@ -731,7 +818,7 @@ export function Subjects({ isActive = true }: { isActive?: boolean }) {
                                     {draft.id ? '编辑主体' : '新建主体'}
                                 </div>
                                 <div className="text-xs text-text-tertiary mt-0.5">
-                                    名称必填，图片最多 5 张。保存后会自动注册进 AI 主体索引。
+                                    名称必填，图片最多 5 张。保存后可在创作时直接引用这些主体资料。
                                 </div>
                             </div>
                             <button
@@ -778,7 +865,7 @@ export function Subjects({ isActive = true }: { isActive?: boolean }) {
                                                 </select>
                                                 <button
                                                     type="button"
-                                                    onClick={() => void handleCreateCategory()}
+                                                    onClick={openCreateCategoryDialog}
                                                     className="px-3 py-2 text-sm rounded-md border border-border bg-surface-primary hover:bg-surface-secondary text-text-secondary"
                                                 >
                                                     新建
@@ -788,7 +875,7 @@ export function Subjects({ isActive = true }: { isActive?: boolean }) {
                                                 <div className="mt-2 flex items-center gap-2 text-xs text-text-tertiary">
                                                     <button type="button" onClick={() => {
                                                         const category = categories.find((item) => item.id === draft.categoryId);
-                                                        if (category) void handleRenameCategory(category);
+                                                        if (category) openRenameCategoryDialog(category);
                                                     }} className="hover:text-text-primary">
                                                         重命名当前分类
                                                     </button>
@@ -929,7 +1016,7 @@ export function Subjects({ isActive = true }: { isActive?: boolean }) {
                                     {draft.id && (
                                         <div className="mt-4 rounded-lg bg-surface-secondary/40 px-4 py-3 text-xs text-text-tertiary space-y-1">
                                             <div>ID：{draft.id}</div>
-                                            <div>保存后会自动注册进主体索引，供 AI 识别可读主体名称。</div>
+                                            <div>保存后可在创作时直接通过主体名称引用这些资料。</div>
                                         </div>
                                     )}
 
@@ -1044,6 +1131,66 @@ export function Subjects({ isActive = true }: { isActive?: boolean }) {
                                         {draft.id ? <Pencil className="w-4 h-4" /> : <Save className="w-4 h-4" />}
                                         {working ? '处理中...' : draft.id ? '保存修改' : '创建主体'}
                                     </span>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {isCategoryDialogOpen && (
+                <div
+                    className="fixed inset-0 z-[130] bg-black/35 flex items-center justify-center p-6"
+                    onMouseDown={closeCategoryDialog}
+                >
+                    <div
+                        className="w-full max-w-sm rounded-2xl border border-border bg-surface-primary shadow-2xl"
+                        onMouseDown={(event) => event.stopPropagation()}
+                    >
+                        <div className="px-5 py-4 border-b border-border">
+                            <div className="text-sm font-semibold text-text-primary">
+                                {categoryDialogMode === 'create' ? '新建分类' : '重命名分类'}
+                            </div>
+                            <div className="mt-1 text-xs leading-5 text-text-tertiary">
+                                {categoryDialogMode === 'create'
+                                    ? '输入分类名称后即可在主体库中直接使用。'
+                                    : '更新分类名称后，已关联的主体会自动沿用该分类。'}
+                            </div>
+                        </div>
+                        <div className="px-5 py-4 space-y-3">
+                            <input
+                                autoFocus
+                                value={categoryDialogName}
+                                onChange={(event) => setCategoryDialogName(event.target.value)}
+                                onKeyDown={(event) => {
+                                    if (event.key === 'Enter') {
+                                        event.preventDefault();
+                                        void submitCategoryDialog();
+                                    } else if (event.key === 'Escape') {
+                                        closeCategoryDialog();
+                                    }
+                                }}
+                                placeholder="请输入分类名称"
+                                className="w-full h-10 rounded-md border border-border bg-surface-secondary px-3 text-sm text-text-primary focus:outline-none focus:ring-1 focus:ring-accent-primary"
+                            />
+                            <div className="flex items-center justify-end gap-2">
+                                <button
+                                    type="button"
+                                    onClick={closeCategoryDialog}
+                                    disabled={isCategoryDialogSubmitting}
+                                    className="h-9 px-3 text-sm rounded-md border border-border text-text-secondary hover:text-text-primary hover:bg-surface-secondary disabled:opacity-50"
+                                >
+                                    取消
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        void submitCategoryDialog();
+                                    }}
+                                    disabled={isCategoryDialogSubmitting}
+                                    className="h-9 px-3 text-sm rounded-md bg-accent-primary text-white hover:bg-accent-hover disabled:opacity-50"
+                                >
+                                    {isCategoryDialogSubmitting ? '处理中...' : '确定'}
                                 </button>
                             </div>
                         </div>

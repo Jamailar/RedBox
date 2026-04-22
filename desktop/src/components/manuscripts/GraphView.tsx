@@ -18,7 +18,6 @@ import {
 import '@xyflow/react/dist/style.css';
 import { FileText, Folder, CheckCircle2, Archive, PenTool, Filter } from 'lucide-react';
 import { clsx } from 'clsx';
-import { stripManuscriptExtension } from '../../../shared/manuscriptFiles';
 
 // Types
 interface FileNode {
@@ -207,14 +206,14 @@ function GraphContent({ files, onOpenFile, onCreateFile, onRenameFile }: GraphVi
                         type: 'fileNode',
                         position: pos,
                         data: {
-                            label: stripManuscriptExtension(file.name),
+                            label: file.name.replace(/\.md$/, ''),
                             path: file.path,
                             isDirectory: file.isDirectory,
                             status: file.status || 'writing',
                             isEditing: isEditing,
                             onRename: (newName: string) => {
                                 setEditingNodeId(null);
-                                if (newName !== stripManuscriptExtension(file.name)) {
+                                if (newName !== file.name.replace(/\.md$/, '')) {
                                     onRenameFile(file.path, newName);
                                 }
                             }

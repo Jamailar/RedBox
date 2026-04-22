@@ -1,0 +1,1677 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>RedBox UI Redesign Preview</title>
+  <style>
+    :root {
+      --bg: #f6f1e8;
+      --bg-2: #fbf8f2;
+      --panel: rgba(255, 252, 247, 0.82);
+      --panel-strong: rgba(255, 250, 245, 0.94);
+      --panel-soft: rgba(245, 238, 229, 0.68);
+      --text: #221b16;
+      --text-2: #6f6156;
+      --text-3: #9f9185;
+      --line: rgba(86, 61, 39, 0.12);
+      --line-2: rgba(86, 61, 39, 0.18);
+      --accent: #b8683d;
+      --accent-2: #8d4b26;
+      --accent-soft: rgba(184, 104, 61, 0.12);
+      --green: #2f8f63;
+      --blue: #4f79cc;
+      --gold: #b88921;
+      --red: #bf5656;
+      --radius-xl: 28px;
+      --radius-lg: 22px;
+      --radius-md: 16px;
+      --shadow-xl: 0 30px 90px rgba(48, 29, 12, 0.16);
+      --shadow-lg: 0 18px 40px rgba(48, 29, 12, 0.1);
+      --gap: 18px;
+      --shell-width: 1480px;
+    }
+
+    body[data-theme="ink"] {
+      --bg: #14110f;
+      --bg-2: #1a1512;
+      --panel: rgba(36, 30, 26, 0.76);
+      --panel-strong: rgba(42, 34, 29, 0.92);
+      --panel-soft: rgba(52, 42, 36, 0.7);
+      --text: #f5eee6;
+      --text-2: #c0b1a4;
+      --text-3: #8f8278;
+      --line: rgba(255, 224, 196, 0.12);
+      --line-2: rgba(255, 224, 196, 0.18);
+      --accent: #f0955b;
+      --accent-2: #ffb78a;
+      --accent-soft: rgba(240, 149, 91, 0.14);
+      --green: #5bc88f;
+      --blue: #7fa5ff;
+      --gold: #f0c66a;
+      --red: #ff8f8f;
+      --shadow-xl: 0 36px 110px rgba(0, 0, 0, 0.45);
+      --shadow-lg: 0 20px 52px rgba(0, 0, 0, 0.26);
+    }
+
+    body[data-density="compact"] {
+      --gap: 12px;
+    }
+
+    body[data-shell="focus"] {
+      --shell-width: 1360px;
+    }
+
+    * { box-sizing: border-box; }
+
+    html,
+    body {
+      margin: 0;
+      min-height: 100%;
+      font-family: "SF Pro Display", "PingFang SC", "Segoe UI", sans-serif;
+      color: var(--text);
+      background:
+        radial-gradient(circle at 12% 14%, rgba(214, 150, 110, 0.18), transparent 24%),
+        radial-gradient(circle at 84% 8%, rgba(184, 104, 61, 0.14), transparent 30%),
+        linear-gradient(180deg, #fbf7f0 0%, var(--bg) 54%, #ece0d0 100%);
+    }
+
+    body[data-theme="ink"] {
+      background:
+        radial-gradient(circle at 12% 14%, rgba(255, 161, 108, 0.12), transparent 24%),
+        radial-gradient(circle at 84% 8%, rgba(240, 149, 91, 0.1), transparent 30%),
+        linear-gradient(180deg, #100d0b 0%, var(--bg) 54%, #1d1714 100%);
+    }
+
+    .page {
+      min-height: 100vh;
+      padding: 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    .header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 16px;
+      flex-wrap: wrap;
+      width: min(var(--shell-width), 100%);
+      margin: 0 auto;
+    }
+
+    .brand {
+      display: flex;
+      gap: 14px;
+      align-items: center;
+    }
+
+    .brand-mark {
+      width: 44px;
+      height: 44px;
+      border-radius: 14px;
+      display: grid;
+      place-items: center;
+      color: #fff7f2;
+      font-weight: 700;
+      letter-spacing: 0.05em;
+      background:
+        radial-gradient(circle at 30% 25%, rgba(255,255,255,0.24), transparent 34%),
+        linear-gradient(145deg, #c67045, #8a4521);
+      box-shadow: var(--shadow-lg);
+    }
+
+    .brand-copy h1 {
+      margin: 0;
+      font-size: 28px;
+      font-family: "Iowan Old Style", "Songti SC", serif;
+      font-weight: 700;
+    }
+
+    .brand-copy p {
+      margin: 6px 0 0;
+      font-size: 14px;
+      color: var(--text-2);
+    }
+
+    .header-pills {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    .pill {
+      padding: 9px 12px;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      background: rgba(255,255,255,0.34);
+      font-size: 12px;
+      color: var(--text-2);
+      backdrop-filter: blur(10px);
+    }
+
+    .app {
+      width: min(var(--shell-width), 100%);
+      margin: 0 auto;
+      border-radius: 34px;
+      overflow: hidden;
+      border: 1px solid rgba(255,255,255,0.18);
+      box-shadow: var(--shadow-xl);
+      backdrop-filter: blur(16px);
+      background: linear-gradient(180deg, rgba(255,255,255,0.08), rgba(255,255,255,0.02));
+    }
+
+    .window-bar {
+      height: 42px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 0 18px;
+      border-bottom: 1px solid var(--line);
+      background: rgba(255,255,255,0.1);
+    }
+
+    .dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 999px;
+    }
+
+    .dot.red { background: #ff6259; }
+    .dot.yellow { background: #ffbe2f; }
+    .dot.green { background: #29c840; }
+
+    .window-label {
+      margin-left: 10px;
+      font-size: 12px;
+      color: var(--text-2);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    .shell {
+      min-height: 940px;
+      display: grid;
+      grid-template-columns: 96px 250px minmax(0, 1fr);
+      background:
+        radial-gradient(circle at right top, rgba(184, 104, 61, 0.08), transparent 24%),
+        linear-gradient(180deg, rgba(255,255,255,0.14), rgba(255,255,255,0.04));
+    }
+
+    .rail {
+      border-right: 1px solid var(--line);
+      padding: 16px 14px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 16px;
+      background: linear-gradient(180deg, rgba(255,255,255,0.18), rgba(255,255,255,0.04));
+    }
+
+    .rail-logo {
+      width: 56px;
+      height: 56px;
+      border-radius: 18px;
+      display: grid;
+      place-items: center;
+      background:
+        radial-gradient(circle at 30% 25%, rgba(255,255,255,0.24), transparent 34%),
+        linear-gradient(145deg, #c67045, #8a4521);
+      color: #fff7f2;
+      font-weight: 700;
+      box-shadow: var(--shadow-lg);
+    }
+
+    .rail-nav {
+      width: 100%;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      align-items: center;
+    }
+
+    .icon-btn {
+      width: 58px;
+      height: 58px;
+      border-radius: 18px;
+      border: 1px solid transparent;
+      background: transparent;
+      color: var(--text-2);
+      display: grid;
+      place-items: center;
+      cursor: pointer;
+      transition: 180ms ease;
+    }
+
+    .icon-btn:hover,
+    .icon-btn.is-active {
+      background: rgba(255,255,255,0.3);
+      border-color: var(--line);
+      color: var(--accent-2);
+      transform: translateY(-1px);
+    }
+
+    .rail-foot {
+      margin-top: auto;
+      display: grid;
+      gap: 10px;
+      justify-items: center;
+    }
+
+    .status {
+      width: 11px;
+      height: 11px;
+      border-radius: 999px;
+      background: var(--green);
+      box-shadow: 0 0 0 6px rgba(47, 143, 99, 0.12);
+    }
+
+    .sidebar {
+      border-right: 1px solid var(--line);
+      padding: 18px 16px;
+      display: flex;
+      flex-direction: column;
+      gap: var(--gap);
+      background: linear-gradient(180deg, rgba(255,255,255,0.16), rgba(255,255,255,0.05));
+    }
+
+    .card,
+    .main-panel,
+    .hero,
+    .column-card,
+    .editor-card,
+    .drawer-card,
+    .tweaks {
+      border-radius: var(--radius-lg);
+      border: 1px solid var(--line);
+      background: var(--panel);
+      box-shadow: var(--shadow-lg);
+      backdrop-filter: blur(12px);
+    }
+
+    .sidebar .card {
+      padding: 16px;
+      display: grid;
+      gap: 12px;
+    }
+
+    .label {
+      font-size: 11px;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--text-3);
+    }
+
+    .space-name {
+      margin: 0;
+      font-size: 22px;
+      line-height: 1.15;
+      font-family: "Iowan Old Style", "Songti SC", serif;
+    }
+
+    .space-copy,
+    .muted {
+      font-size: 13px;
+      line-height: 1.58;
+      color: var(--text-2);
+    }
+
+    .side-nav {
+      display: grid;
+      gap: 10px;
+    }
+
+    .side-item {
+      width: 100%;
+      padding: 12px 13px;
+      border-radius: 18px;
+      border: 1px solid transparent;
+      background: transparent;
+      cursor: pointer;
+      color: inherit;
+      text-align: left;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .side-item:hover,
+    .side-item.is-active {
+      background: rgba(255,255,255,0.34);
+      border-color: var(--line);
+    }
+
+    .side-copy {
+      display: grid;
+      gap: 4px;
+    }
+
+    .side-title {
+      font-size: 14px;
+      font-weight: 650;
+    }
+
+    .side-desc {
+      font-size: 12px;
+      color: var(--text-2);
+    }
+
+    .count {
+      min-width: 28px;
+      padding: 5px 8px;
+      border-radius: 999px;
+      background: var(--accent-soft);
+      color: var(--accent-2);
+      font-size: 11px;
+      text-align: center;
+      white-space: nowrap;
+    }
+
+    .stack {
+      display: grid;
+      gap: 10px;
+    }
+
+    .stack-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      font-size: 13px;
+      color: var(--text-2);
+    }
+
+    .stack-row strong {
+      color: var(--text);
+    }
+
+    .main {
+      padding: 18px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      background:
+        radial-gradient(circle at right top, rgba(184, 104, 61, 0.1), transparent 24%),
+        linear-gradient(180deg, rgba(255,255,255,0.16), rgba(255,255,255,0.05));
+    }
+
+    .topbar {
+      display: flex;
+      justify-content: space-between;
+      gap: 14px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+
+    .topbar h2 {
+      margin: 0;
+      font-size: 28px;
+      font-family: "Iowan Old Style", "Songti SC", serif;
+      font-weight: 700;
+    }
+
+    .topbar p {
+      margin: 6px 0 0;
+      font-size: 13px;
+      color: var(--text-2);
+    }
+
+    .toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      justify-content: flex-end;
+    }
+
+    .chip {
+      padding: 9px 12px;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      background: rgba(255,255,255,0.34);
+      font-size: 12px;
+      color: var(--text-2);
+    }
+
+    .chip.primary {
+      background: var(--accent-soft);
+      border-color: rgba(184, 104, 61, 0.22);
+      color: var(--accent-2);
+    }
+
+    .hero {
+      padding: 20px 22px;
+      display: grid;
+      grid-template-columns: minmax(0, 1.2fr) minmax(320px, 0.8fr);
+      gap: 16px;
+      background:
+        radial-gradient(circle at top right, rgba(184, 104, 61, 0.16), transparent 34%),
+        linear-gradient(180deg, rgba(255,255,255,0.5), rgba(255,255,255,0.18));
+    }
+
+    .hero h3 {
+      margin: 0;
+      font-size: 14px;
+      font-weight: 650;
+    }
+
+    .hero-title {
+      margin: 10px 0 12px;
+      font-size: 34px;
+      line-height: 1.08;
+      max-width: 16ch;
+      font-family: "Iowan Old Style", "Songti SC", serif;
+    }
+
+    .hero p {
+      margin: 0;
+      font-size: 14px;
+      line-height: 1.65;
+      color: var(--text-2);
+      max-width: 66ch;
+    }
+
+    .hero-actions {
+      margin-top: 16px;
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    .action {
+      padding: 11px 14px;
+      border-radius: 14px;
+      border: 1px solid var(--line);
+      background: rgba(255,255,255,0.45);
+      font-size: 13px;
+      color: var(--text);
+    }
+
+    .action.primary {
+      background: var(--accent-soft);
+      border-color: rgba(184, 104, 61, 0.24);
+      color: var(--accent-2);
+    }
+
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .stat {
+      padding: 16px;
+      border-radius: 18px;
+      border: 1px solid var(--line);
+      background: rgba(255,255,255,0.34);
+      display: grid;
+      gap: 10px;
+      min-height: 112px;
+    }
+
+    .stat-label {
+      font-size: 12px;
+      color: var(--text-2);
+    }
+
+    .stat-value {
+      font-size: 30px;
+      line-height: 1;
+      font-weight: 700;
+      letter-spacing: -0.03em;
+    }
+
+    .stat-meta {
+      font-size: 12px;
+      color: var(--text-2);
+      line-height: 1.5;
+    }
+
+    .screen {
+      display: none;
+      gap: 16px;
+    }
+
+    .screen.is-active {
+      display: grid;
+    }
+
+    .screen-manuscripts {
+      grid-template-columns: 290px minmax(0, 1fr) 320px;
+    }
+
+    .screen-knowledge {
+      grid-template-columns: minmax(0, 1fr) 360px;
+    }
+
+    .screen-redclaw {
+      grid-template-columns: minmax(0, 1fr) 340px;
+    }
+
+    .screen-media {
+      grid-template-columns: minmax(0, 1fr) 360px;
+    }
+
+    .screen-cover {
+      grid-template-columns: 320px minmax(0, 1fr);
+    }
+
+    .column-card,
+    .main-panel,
+    .drawer-card {
+      padding: 16px;
+      display: grid;
+      gap: 14px;
+      align-content: start;
+    }
+
+    .section-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .section-copy {
+      display: grid;
+      gap: 4px;
+    }
+
+    .section-copy h3 {
+      margin: 0;
+      font-size: 14px;
+      font-weight: 650;
+    }
+
+    .section-copy p {
+      margin: 0;
+      font-size: 12px;
+      color: var(--text-2);
+      line-height: 1.55;
+    }
+
+    .tag {
+      padding: 6px 10px;
+      border-radius: 999px;
+      background: var(--accent-soft);
+      color: var(--accent-2);
+      font-size: 11px;
+      white-space: nowrap;
+    }
+
+    .toolbar-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+    }
+
+    .seg {
+      display: flex;
+      gap: 6px;
+      padding: 6px;
+      border-radius: 16px;
+      border: 1px solid var(--line);
+      background: rgba(255,255,255,0.28);
+      flex-wrap: wrap;
+    }
+
+    .seg-btn {
+      padding: 8px 11px;
+      border-radius: 12px;
+      font-size: 12px;
+      color: var(--text-2);
+      background: transparent;
+      border: none;
+    }
+
+    .seg-btn.is-active {
+      background: rgba(255,255,255,0.8);
+      color: var(--text);
+      box-shadow: 0 2px 10px rgba(0,0,0,0.05);
+    }
+
+    .folder-strip,
+    .chip-strip {
+      display: flex;
+      gap: 10px;
+      overflow: hidden;
+      flex-wrap: wrap;
+    }
+
+    .folder {
+      min-width: 88px;
+      padding: 12px 10px;
+      border-radius: 18px;
+      border: 1px solid var(--line);
+      background: rgba(255,255,255,0.26);
+      display: grid;
+      justify-items: center;
+      gap: 8px;
+      text-align: center;
+      font-size: 11px;
+      color: var(--text-2);
+    }
+
+    .folder strong {
+      color: var(--text);
+      font-size: 11px;
+      font-weight: 650;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .card-mini {
+      padding: 14px;
+      border-radius: 18px;
+      border: 1px solid var(--line);
+      background: rgba(255,255,255,0.28);
+      display: grid;
+      gap: 6px;
+    }
+
+    .card-mini strong {
+      font-size: 14px;
+      font-weight: 650;
+    }
+
+    .card-mini p,
+    .list-item p,
+    .bubble p {
+      margin: 0;
+      font-size: 12px;
+      color: var(--text-2);
+      line-height: 1.6;
+    }
+
+    .card-mini .meta {
+      font-size: 11px;
+      color: var(--text-3);
+    }
+
+    .editor-card {
+      padding: 20px 22px;
+      min-height: 590px;
+      display: grid;
+      gap: 16px;
+      align-content: start;
+      background:
+        linear-gradient(180deg, rgba(255,255,255,0.92), rgba(255,255,255,0.78)),
+        repeating-linear-gradient(
+          180deg,
+          rgba(58, 44, 30, 0.03) 0,
+          rgba(58, 44, 30, 0.03) 1px,
+          transparent 1px,
+          transparent 41px
+        );
+    }
+
+    body[data-theme="ink"] .editor-card {
+      background:
+        linear-gradient(180deg, rgba(35, 29, 26, 0.94), rgba(35, 29, 26, 0.84)),
+        repeating-linear-gradient(
+          180deg,
+          rgba(255, 225, 200, 0.03) 0,
+          rgba(255, 225, 200, 0.03) 1px,
+          transparent 1px,
+          transparent 41px
+        );
+    }
+
+    .editor-title {
+      display: grid;
+      gap: 6px;
+      padding-bottom: 14px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .editor-title h3 {
+      margin: 0;
+      font-size: 34px;
+      line-height: 1.08;
+      font-family: "Iowan Old Style", "Songti SC", serif;
+    }
+
+    .editor-card p {
+      margin: 0;
+      font-size: 15px;
+      line-height: 1.88;
+    }
+
+    .editor-soft {
+      color: var(--text-2);
+    }
+
+    .list {
+      display: grid;
+      gap: 10px;
+    }
+
+    .list-item {
+      padding: 14px;
+      border-radius: 18px;
+      border: 1px solid var(--line);
+      background: rgba(255,255,255,0.28);
+      display: grid;
+      gap: 7px;
+    }
+
+    .list-item.active {
+      background: linear-gradient(180deg, rgba(184, 104, 61, 0.11), rgba(255,255,255,0.26));
+      border-color: rgba(184, 104, 61, 0.24);
+    }
+
+    .item-top {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .item-title {
+      font-size: 14px;
+      font-weight: 650;
+    }
+
+    .badge {
+      padding: 5px 9px;
+      border-radius: 999px;
+      font-size: 11px;
+      white-space: nowrap;
+    }
+
+    .badge.warm {
+      background: var(--accent-soft);
+      color: var(--accent-2);
+    }
+
+    .badge.blue {
+      background: rgba(79, 121, 204, 0.12);
+      color: var(--blue);
+    }
+
+    .badge.green {
+      background: rgba(47, 143, 99, 0.12);
+      color: var(--green);
+    }
+
+    .badge.gold {
+      background: rgba(184, 137, 33, 0.12);
+      color: var(--gold);
+    }
+
+    .bubble {
+      padding: 14px;
+      border-radius: 18px;
+      border: 1px solid var(--line);
+      background: rgba(255,255,255,0.28);
+      display: grid;
+      gap: 7px;
+    }
+
+    .bubble.user {
+      background: linear-gradient(180deg, rgba(184, 104, 61, 0.11), rgba(255,255,255,0.22));
+      border-color: rgba(184, 104, 61, 0.22);
+    }
+
+    .bubble-meta {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--text-3);
+    }
+
+    .matrix {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .drawer-card {
+      min-height: 560px;
+    }
+
+    .template-list {
+      display: grid;
+      gap: 10px;
+    }
+
+    .template {
+      display: grid;
+      grid-template-columns: 44px minmax(0, 1fr);
+      gap: 10px;
+      padding: 12px;
+      border-radius: 16px;
+      border: 1px solid var(--line);
+      background: rgba(255,255,255,0.3);
+      align-items: center;
+    }
+
+    .thumb {
+      width: 44px;
+      height: 58px;
+      border-radius: 12px;
+      background:
+        linear-gradient(145deg, rgba(184, 104, 61, 0.5), rgba(255,255,255,0.8)),
+        linear-gradient(180deg, rgba(255,255,255,0.4), rgba(0,0,0,0.02));
+      border: 1px solid var(--line);
+    }
+
+    .template strong {
+      font-size: 13px;
+    }
+
+    .template span {
+      font-size: 11px;
+      color: var(--text-2);
+      line-height: 1.5;
+    }
+
+    .tweaks {
+      position: fixed;
+      right: 24px;
+      bottom: 24px;
+      width: 320px;
+      padding: 18px;
+      display: grid;
+      gap: 14px;
+      background:
+        linear-gradient(180deg, rgba(255,255,255,0.82), rgba(255,255,255,0.64)),
+        var(--panel);
+      z-index: 20;
+    }
+
+    body[data-theme="ink"] .tweaks {
+      background:
+        linear-gradient(180deg, rgba(38,32,28,0.94), rgba(28,24,21,0.84)),
+        var(--panel);
+    }
+
+    .tweaks h3 {
+      margin: 0;
+      font-size: 14px;
+    }
+
+    .tweak-grid {
+      display: grid;
+      gap: 10px;
+    }
+
+    .tweak-row {
+      display: grid;
+      gap: 6px;
+    }
+
+    .tweak-row label {
+      font-size: 12px;
+      color: var(--text-2);
+    }
+
+    .tweak-row select {
+      height: 40px;
+      border-radius: 12px;
+      border: 1px solid var(--line);
+      background: rgba(255,255,255,0.45);
+      color: var(--text);
+      padding: 0 12px;
+      font: inherit;
+    }
+
+    body[data-theme="ink"] .tweak-row select {
+      background: rgba(255,255,255,0.06);
+    }
+
+    @media (max-width: 1320px) {
+      .hero,
+      .screen-manuscripts,
+      .screen-knowledge,
+      .screen-redclaw,
+      .screen-media,
+      .screen-cover {
+        grid-template-columns: 1fr;
+      }
+
+      .matrix,
+      .grid,
+      .stats {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    @media (max-width: 980px) {
+      .page { padding: 16px; }
+      .app { border-radius: 26px; }
+      .shell { grid-template-columns: 1fr; }
+      .rail {
+        flex-direction: row;
+        justify-content: space-between;
+        padding: 12px 14px;
+      }
+      .rail-nav,
+      .rail-foot {
+        flex-direction: row;
+        width: auto;
+      }
+      .sidebar {
+        border-right: none;
+        border-top: 1px solid var(--line);
+      }
+      .tweaks {
+        position: static;
+        width: auto;
+      }
+    }
+  </style>
+</head>
+<body data-screen="manuscripts" data-theme="sand" data-density="cozy" data-shell="studio">
+  <div class="page">
+    <div class="header">
+      <div class="brand">
+        <div class="brand-mark">RB</div>
+        <div class="brand-copy">
+          <h1>RedBox Redesign Preview</h1>
+          <p>这版严格基于现有前端功能重做预览，不再凭空换皮。当前覆盖稿件、知识库、RedClaw、媒体、封面五个核心表面。</p>
+        </div>
+      </div>
+      <div class="header-pills">
+        <div class="pill">基于现有导航与在线功能</div>
+        <div class="pill">先做 HTML 预览，不改现有 React/Tauri 文件</div>
+        <div class="pill">重点重构信息层级与工作流串联</div>
+      </div>
+    </div>
+
+    <div class="app">
+      <div class="window-bar">
+        <span class="dot red"></span>
+        <span class="dot yellow"></span>
+        <span class="dot green"></span>
+        <span class="window-label">RedBox / Functional Redesign Preview</span>
+      </div>
+
+      <div class="shell">
+        <aside class="rail">
+          <div class="rail-logo">RB</div>
+          <div class="rail-nav">
+            <button class="icon-btn is-active" data-screen-target="manuscripts" title="稿件">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none"><path d="M7 4.5h10a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2v-11a2 2 0 0 1 2-2Z" stroke="currentColor" stroke-width="1.8"/><path d="M9 9h6M9 12h6M9 15h4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+            </button>
+            <button class="icon-btn" data-screen-target="knowledge" title="知识库">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none"><path d="M6 5.5h7.5a2.5 2.5 0 0 1 2.5 2.5v10.5H8.5A2.5 2.5 0 0 1 6 16V5.5Z" stroke="currentColor" stroke-width="1.8"/><path d="M16 8.5h2a2 2 0 0 1 2 2V19l-4-2-4 2" stroke="currentColor" stroke-width="1.8"/></svg>
+            </button>
+            <button class="icon-btn" data-screen-target="redclaw" title="RedClaw">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none"><path d="M6 17c1.2-4.8 4.2-8 9-9l3 3c-1 4.7-4.3 7.9-9 9l-3-3Z" stroke="currentColor" stroke-width="1.8"/><path d="M9 9l6 6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+            </button>
+            <button class="icon-btn" data-screen-target="media" title="媒体">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none"><path d="M4.5 6.5A2 2 0 0 1 6.5 4.5h11a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2h-11a2 2 0 0 1-2-2v-11Z" stroke="currentColor" stroke-width="1.8"/><circle cx="9" cy="9" r="1.3" fill="currentColor"/><path d="m6.8 16 3.2-3 2.3 2 2.8-3 2.1 4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </button>
+            <button class="icon-btn" data-screen-target="cover" title="封面">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none"><rect x="5" y="4.5" width="14" height="15" rx="2" stroke="currentColor" stroke-width="1.8"/><path d="M8 9.5h8M8 13h5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+            </button>
+          </div>
+          <div class="rail-foot">
+            <div class="status"></div>
+            <button class="icon-btn" title="设置">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none"><path d="M9.7 4.3h4.6l.7 2.5 2.2 1.2 2.4-.8 2.3 4-1.8 1.7v2.6l1.8 1.7-2.3 4-2.4-.8-2.2 1.2-.7 2.5H9.7L9 19.9l-2.2-1.2-2.4.8-2.3-4 1.8-1.7v-2.6L2.1 9.5l2.3-4 2.4.8L9 5.1l.7-0.8Z" stroke="currentColor" stroke-width="1.4"/><circle cx="12" cy="12" r="2.5" stroke="currentColor" stroke-width="1.4"/></svg>
+            </button>
+          </div>
+        </aside>
+
+        <aside class="sidebar">
+          <div class="card">
+            <div class="label">Workspace</div>
+            <h2 class="space-name">品牌增长实验室</h2>
+            <div class="space-copy">当前空间同时在做知识采集、稿件生产、封面生成、媒体绑定和 RedClaw 自动化。新设计的目标不是换皮，而是把这些工作流在壳层里重新串起来。</div>
+          </div>
+
+          <div class="side-nav">
+            <button class="side-item is-active" data-screen-target="manuscripts">
+              <span class="side-copy">
+                <span class="side-title">稿件</span>
+                <span class="side-desc">草稿、素材、生成、排版、导出</span>
+              </span>
+              <span class="count">12</span>
+            </button>
+            <button class="side-item" data-screen-target="knowledge">
+              <span class="side-copy">
+                <span class="side-title">知识库</span>
+                <span class="side-desc">小红书、YouTube、文档源、索引</span>
+              </span>
+              <span class="count">28</span>
+            </button>
+            <button class="side-item" data-screen-target="redclaw">
+              <span class="side-copy">
+                <span class="side-title">RedClaw</span>
+                <span class="side-desc">上下文会话、技能、调度、长周期任务</span>
+              </span>
+              <span class="count">6</span>
+            </button>
+            <button class="side-item" data-screen-target="media">
+              <span class="side-copy">
+                <span class="side-title">媒体</span>
+                <span class="side-desc">已生成 / 计划项 / 导入 / 绑定稿件</span>
+              </span>
+              <span class="count">43</span>
+            </button>
+            <button class="side-item" data-screen-target="cover">
+              <span class="side-copy">
+                <span class="side-title">封面</span>
+                <span class="side-desc">模板图、底图、标题模式、任务队列</span>
+              </span>
+              <span class="count">9</span>
+            </button>
+          </div>
+
+          <div class="card">
+            <div class="section-copy">
+              <h3>当前功能密度</h3>
+              <p>现有产品的能力已经很多，问题不是功能少，而是功能关系没有被壳层很好组织出来。</p>
+            </div>
+            <div class="stack">
+              <div class="stack-row"><span>稿件工程</span><strong>长文 / 图文 / 视频 / 音频</strong></div>
+              <div class="stack-row"><span>知识来源</span><strong>小红书 / YouTube / 文档源</strong></div>
+              <div class="stack-row"><span>媒体类型</span><strong>图 / 视频 / 参考图 / 续写</strong></div>
+              <div class="stack-row"><span>调度能力</span><strong>Runner / Heartbeat / Long Cycle</strong></div>
+            </div>
+          </div>
+        </aside>
+
+        <main class="main">
+          <div class="topbar">
+            <div>
+              <h2 id="screen-title">稿件工作台</h2>
+              <p id="screen-subtitle">保留现有稿件页的真实能力，但把“目录、过滤、正文、导出、素材、生成”组织成更清楚的三段工作流。</p>
+            </div>
+            <div class="toolbar">
+              <div class="chip">现有能力映射</div>
+              <div class="chip">不删功能</div>
+              <div class="chip primary">先改层级，再改视觉</div>
+            </div>
+          </div>
+
+          <section class="hero">
+            <div>
+              <h3>Redesign Intent</h3>
+              <div class="hero-title">把现有功能从“散落在不同页面和抽屉里的操作”整理成连续的工作面。</div>
+              <p>这版预览不尝试发明新产品，而是尊重你现有的页面职责。每个核心页面都保留真实能力边界，只重做壳层、信息重心和操作排序，让用户先看见“现在在哪、能做什么、下一步是什么”。</p>
+              <div class="hero-actions">
+                <div class="action primary">不改现有数据结构</div>
+                <div class="action">不删现有功能入口</div>
+                <div class="action">先重做主工作路径</div>
+              </div>
+            </div>
+            <div class="stats">
+              <div class="stat">
+                <div class="stat-label">在线工作流</div>
+                <div class="stat-value">05</div>
+                <div class="stat-meta">稿件、知识、RedClaw、媒体、封面先作为第一批 redesign surface。</div>
+              </div>
+              <div class="stat">
+                <div class="stat-label">保留的真实入口</div>
+                <div class="stat-value">27+</div>
+                <div class="stat-meta">新建、上传、搜索、索引、生成、导出、绑定、调度都保留。</div>
+              </div>
+              <div class="stat">
+                <div class="stat-label">现有弱点</div>
+                <div class="stat-value">03</div>
+                <div class="stat-meta">层级不稳、同类操作分散、跨页协同路径不够清晰。</div>
+              </div>
+              <div class="stat">
+                <div class="stat-label">改造原则</div>
+                <div class="stat-value">1st</div>
+                <div class="stat-meta">先把真实功能读清，再动视觉和布局，不凭空造新系统。</div>
+              </div>
+            </div>
+          </section>
+
+          <section class="screen screen-manuscripts is-active" id="screen-manuscripts">
+            <div class="column-card">
+              <div class="section-head">
+                <div class="section-copy">
+                  <h3>左列: 目录 + 工作范围</h3>
+                  <p>对应现有稿件页的“我的稿件 / 素材库 / 文件夹 / 过滤器”。</p>
+                </div>
+                <span class="tag">真实映射</span>
+              </div>
+              <div class="seg">
+                <button class="seg-btn is-active">我的稿件</button>
+                <button class="seg-btn">素材库</button>
+              </div>
+              <div class="toolbar-row">
+                <div class="chip primary">新建</div>
+                <div class="chip">上传</div>
+                <div class="chip">搜索</div>
+                <div class="chip">生图</div>
+                <div class="chip">生视频</div>
+              </div>
+              <div class="folder-strip">
+                <div class="folder"><strong>返回上级</strong><span>当前在 campaigns/spring</span></div>
+                <div class="folder"><strong>新建文件夹</strong><span>与现有 folder create 一致</span></div>
+                <div class="folder"><strong>发布节奏</strong><span>12 items</span></div>
+                <div class="folder"><strong>视频草稿</strong><span>4 items</span></div>
+              </div>
+              <div class="seg">
+                <button class="seg-btn is-active">稿件</button>
+                <button class="seg-btn">素材</button>
+                <button class="seg-btn">图片</button>
+                <button class="seg-btn">视频</button>
+                <button class="seg-btn">音频</button>
+                <button class="seg-btn">文件夹</button>
+              </div>
+              <div class="list">
+                <div class="list-item active">
+                  <div class="item-top">
+                    <div class="item-title">春季新品长文结构重写</div>
+                    <span class="badge warm">长文</span>
+                  </div>
+                  <p>来自现有 draft card。保留标题、摘要、更新时间、类型，并把它升级成更稳定的队列视图。</p>
+                </div>
+                <div class="list-item">
+                  <div class="item-top">
+                    <div class="item-title">首发图文工程</div>
+                    <span class="badge blue">图文</span>
+                  </div>
+                  <p>现有 richpost 工程在这里能继续保留分页方案、主题、预览和内容正文的关系。</p>
+                </div>
+                <div class="list-item">
+                  <div class="item-top">
+                    <div class="item-title">新品发布视频脚本 V3</div>
+                    <span class="badge gold">视频</span>
+                  </div>
+                  <p>现有视频草稿、脚本确认、Remotion 场景、导出都不删，只是换成更清楚的工作面结构。</p>
+                </div>
+              </div>
+            </div>
+
+            <div class="editor-card">
+              <div class="editor-title">
+                <div class="label">Main Work Surface</div>
+                <h3>稿件页的中心不应该只是“正文”，而应该是“当前草稿的主工作面”。</h3>
+              </div>
+              <p>这意味着当用户打开长文时，中间是正文与 AI 提案；打开图文工程时，中间是内容与分页方案；打开视频稿时，中间是脚本与时间线状态。中心区域保留现有编辑器内核，但把周边控制改成更有秩序的壳层。</p>
+              <p class="editor-soft">对应现有 Manuscripts 页，新的布局会明确三层：第一层是范围与过滤，第二层是当前工程主面，第三层是导出 / 预览 / 绑定 / AI 提案等“推进动作”。不会再让这些动作只散在 modal、二级卡片和按钮群里。</p>
+              <p class="editor-soft">这里还要保留你现在已经有的能力：生成 HTML、生成分页方案、选择图文主题、选择长文版式、接受/拒绝 AI 修改、生成 Remotion 方案、导出视频。</p>
+            </div>
+
+            <div class="drawer-card">
+              <div class="section-head">
+                <div class="section-copy">
+                  <h3>右列: 推进动作</h3>
+                  <p>把现有“生成、导出、绑定、提案”统一成一条推进线。</p>
+                </div>
+                <span class="tag">推进</span>
+              </div>
+              <div class="list">
+                <div class="list-item">
+                  <div class="item-top">
+                    <div class="item-title">AI 写作提案</div>
+                    <span class="badge green">待确认</span>
+                  </div>
+                  <p>保留 accept / reject proposal，但放进更接近正文的固定位置。</p>
+                </div>
+                <div class="list-item">
+                  <div class="item-top">
+                    <div class="item-title">图文分页方案</div>
+                    <span class="badge blue">已生成</span>
+                  </div>
+                  <p>现有 richpost page plan、theme preset、font scale、layout preset 都在这里收拢。</p>
+                </div>
+                <div class="list-item">
+                  <div class="item-top">
+                    <div class="item-title">视频导出</div>
+                    <span class="badge gold">脚本确认后可用</span>
+                  </div>
+                  <p>把导出路径、尺寸、进度和打开成品合并成一个更清晰的面板。</p>
+                </div>
+                <div class="list-item">
+                  <div class="item-top">
+                    <div class="item-title">素材绑定</div>
+                    <span class="badge warm">跨页联动</span>
+                  </div>
+                  <p>让媒体和封面与当前稿件的关系在这里直接可见，而不是跳多个页面再回来看。</p>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <section class="screen screen-knowledge" id="screen-knowledge">
+            <div class="main-panel">
+              <div class="section-head">
+                <div class="section-copy">
+                  <h3>知识库主面</h3>
+                  <p>对应现有类型筛选、搜索、标签、索引状态、瀑布流卡片和详情抽屉。</p>
+                </div>
+                <span class="tag">all / xhs / youtube / docs</span>
+              </div>
+              <div class="toolbar-row">
+                <div class="seg">
+                  <button class="seg-btn is-active">全部</button>
+                  <button class="seg-btn">小红书图文</button>
+                  <button class="seg-btn">小红书视频</button>
+                  <button class="seg-btn">YouTube</button>
+                  <button class="seg-btn">文档</button>
+                </div>
+                <div class="chip">搜索知识库...</div>
+                <div class="chip">重建索引</div>
+                <div class="chip primary">文件</div>
+                <div class="chip primary">文件夹</div>
+              </div>
+              <div class="chip-strip">
+                <div class="chip"># spring-campaign</div>
+                <div class="chip"># 反差开场</div>
+                <div class="chip"># 品牌叙事</div>
+                <div class="chip"># 视频结构</div>
+              </div>
+              <div class="toolbar-row">
+                <div class="chip">已索引 187</div>
+                <div class="chip">待处理 12</div>
+                <div class="chip">最近更新 10:38</div>
+              </div>
+              <div class="matrix">
+                <div class="card-mini">
+                  <strong>YouTube / 新品故事拆解</strong>
+                  <p>保留现有 subtitle / transcript / summary 流程，同时把“它能被谁用”做得更清楚。</p>
+                  <div class="meta">字幕完成 · 待补摘要</div>
+                </div>
+                <div class="card-mini">
+                  <strong>小红书图文 / 爆款封面分析</strong>
+                  <p>保留卡片式浏览，但加入更强的来源标识和去向操作。</p>
+                  <div class="meta">可直接保存为封面模板</div>
+                </div>
+                <div class="card-mini">
+                  <strong>文档源 / 品牌周报目录</strong>
+                  <p>保留文件数、sample files、删除源和打开目录，但视觉上不再像另一套页面。</p>
+                  <div class="meta">54 docs</div>
+                </div>
+                <div class="card-mini">
+                  <strong>网页链接 / 竞品落地页</strong>
+                  <p>新增更明确的“用于选题 / 用于封面 / 用于脚本”的去向标签，但不改现有数据逻辑。</p>
+                  <div class="meta">关联稿件 2</div>
+                </div>
+              </div>
+            </div>
+
+            <div class="drawer-card">
+              <div class="section-head">
+                <div class="section-copy">
+                  <h3>右侧详情与去向</h3>
+                  <p>现有详情区很长，新设计会更强调“读完后下一步去哪”。</p>
+                </div>
+              </div>
+              <div class="list">
+                <div class="list-item">
+                  <div class="item-top">
+                    <div class="item-title">当前选中: YouTube 片段</div>
+                    <span class="badge blue">processing aware</span>
+                  </div>
+                  <p>保留标题、说明、字幕、状态和删除/重试能力。</p>
+                </div>
+                <div class="list-item">
+                  <div class="item-top">
+                    <div class="item-title">去向动作</div>
+                    <span class="badge warm">新增组织</span>
+                  </div>
+                  <p>跳 Chat、跳 RedClaw、保存为封面模板、加入当前稿件引用，这些动作应该更集中。</p>
+                </div>
+                <div class="list-item">
+                  <div class="item-top">
+                    <div class="item-title">索引健康</div>
+                    <span class="badge green">可见</span>
+                  </div>
+                  <p>把 indexed / pending / failed 放在固定位置，减少“看不出知识库是不是健康”的问题。</p>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <section class="screen screen-redclaw" id="screen-redclaw">
+            <div class="main-panel">
+              <div class="section-head">
+                <div class="section-copy">
+                  <h3>RedClaw 中央会话</h3>
+                  <p>保留固定 session chat，但把它从“聊天页”拉成“运营执行台”。</p>
+                </div>
+                <span class="tag">固定上下文会话</span>
+              </div>
+              <div class="bubble user">
+                <div class="bubble-meta">用户</div>
+                <p>这是一个新的自媒体内容目标，请先拆解目标、平台和受众，再给出完整执行方案。</p>
+              </div>
+              <div class="bubble">
+                <div class="bubble-meta">RedClaw</div>
+                <p>当前应先基于已有知识库和稿件库存做目标拆解，再决定是推进文案包、配图包还是复盘流程。这里保留你现有的快捷动作、固定 session、history drawer 和 skill panel。</p>
+              </div>
+              <div class="grid">
+                <div class="card-mini">
+                  <strong>快捷动作</strong>
+                  <p>开始策划、生成文案包、生成配图包、复盘本次发布。</p>
+                </div>
+                <div class="card-mini">
+                  <strong>历史抽屉</strong>
+                  <p>现有 history drawer 保留，但外观和位置更稳定，减少“像临时悬浮层”的感觉。</p>
+                </div>
+                <div class="card-mini">
+                  <strong>Runner / Heartbeat</strong>
+                  <p>这些不是附属功能，而是 RedClaw 的一部分，应该在右侧面板里更清楚地露出状态。</p>
+                </div>
+                <div class="card-mini">
+                  <strong>技能面板</strong>
+                  <p>保留 enable / disable / install skill，但从“能力面板”升级成“工作能力栈”。</p>
+                </div>
+              </div>
+            </div>
+
+            <div class="drawer-card">
+              <div class="section-head">
+                <div class="section-copy">
+                  <h3>右侧能力与调度</h3>
+                  <p>把现有侧栏从单纯技能列表升级成三段结构。</p>
+                </div>
+              </div>
+              <div class="list">
+                <div class="list-item">
+                  <div class="item-top">
+                    <div class="item-title">工作能力栈</div>
+                    <span class="badge green">skills</span>
+                  </div>
+                  <p>安装新技能、启停技能、已启用技能数，全部保留。</p>
+                </div>
+                <div class="list-item">
+                  <div class="item-top">
+                    <div class="item-title">Runner 状态</div>
+                    <span class="badge blue">running</span>
+                  </div>
+                  <p>当前后台配置、run now、max automation per tick 等，不再埋在深层表单里。</p>
+                </div>
+                <div class="list-item">
+                  <div class="item-top">
+                    <div class="item-title">定时与长周期任务</div>
+                    <span class="badge gold">schedule + long cycle</span>
+                  </div>
+                  <p>保留 schedule templates、long templates、删除、启停、run now，只是把信息卡片化。</p>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <section class="screen screen-media" id="screen-media">
+            <div class="main-panel">
+              <div class="section-head">
+                <div class="section-copy">
+                  <h3>媒体库主面</h3>
+                  <p>严格贴合现有 MediaLibrary：已生成 / 计划项 / 导入、生图、生视频、打开目录、刷新、编辑元数据、绑定稿件。</p>
+                </div>
+                <span class="tag">generated / planned / imported</span>
+              </div>
+              <div class="toolbar-row">
+                <div class="chip primary">生图</div>
+                <div class="chip primary">生视频</div>
+                <div class="chip">打开目录</div>
+                <div class="chip">刷新</div>
+                <div class="chip">搜索标题 / 提示词 / 项目ID</div>
+              </div>
+              <div class="seg">
+                <button class="seg-btn is-active">全部来源</button>
+                <button class="seg-btn">已生成</button>
+                <button class="seg-btn">计划项</button>
+                <button class="seg-btn">导入</button>
+              </div>
+              <div class="matrix">
+                <div class="card-mini">
+                  <strong>媒体卡片</strong>
+                  <p>保留缩略图、来源、更新时间、标题、项目ID、提示词、稿件路径。</p>
+                  <div class="meta">打开 / 编辑 / 删除</div>
+                </div>
+                <div class="card-mini">
+                  <strong>展开编辑区</strong>
+                  <p>标题、项目ID、提示词、路径、稿件绑定、保存元数据这些当前功能全部保留。</p>
+                  <div class="meta">bind + save metadata</div>
+                </div>
+                <div class="card-mini">
+                  <strong>图像生成 modal</strong>
+                  <p>保留提示词、参考图、模型、项目ID、标题和最新生成结果，但会让它更像“媒体生产面板”。</p>
+                  <div class="meta">start image generation</div>
+                </div>
+                <div class="card-mini">
+                  <strong>视频生成 modal</strong>
+                  <p>文生视频、参考图视频、首尾帧、续写、音频驱动，全部保留。</p>
+                  <div class="meta">video generation types</div>
+                </div>
+              </div>
+            </div>
+
+            <div class="drawer-card">
+              <div class="section-head">
+                <div class="section-copy">
+                  <h3>媒体与稿件关系</h3>
+                  <p>这是当前 app 最应该被视觉强化的一层关系。</p>
+                </div>
+              </div>
+              <div class="list">
+                <div class="list-item">
+                  <div class="item-top">
+                    <div class="item-title">未绑定资产</div>
+                    <span class="badge warm">11</span>
+                  </div>
+                  <p>让“哪些媒体还没绑定到稿件”更清楚，不需要逐个打开卡片才知道。</p>
+                </div>
+                <div class="list-item">
+                  <div class="item-top">
+                    <div class="item-title">计划项</div>
+                    <span class="badge blue">待生成</span>
+                  </div>
+                  <p>计划素材不该和已完成素材长得一模一样，应该在信息气质上明显区分。</p>
+                </div>
+                <div class="list-item">
+                  <div class="item-top">
+                    <div class="item-title">跨页入口</div>
+                    <span class="badge green">建议强化</span>
+                  </div>
+                  <p>从媒体回稿件、从稿件来媒体、从封面借模板，这条链路会在 redesign 里更显式。</p>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <section class="screen screen-cover" id="screen-cover">
+            <div class="drawer-card">
+              <div class="section-head">
+                <div class="section-copy">
+                  <h3>左列: 模板与当前选择</h3>
+                  <p>对应现有模板列表与当前模板区域。</p>
+                </div>
+                <span class="tag">templates</span>
+              </div>
+              <div class="template-list">
+                <div class="template">
+                  <div class="thumb"></div>
+                  <div>
+                    <strong>高反差经验分享</strong>
+                    <span>保留模板图与当前选择关系。</span>
+                  </div>
+                </div>
+                <div class="template">
+                  <div class="thumb"></div>
+                  <div>
+                    <strong>真人口播风</strong>
+                    <span>支持删除、切换和当前模板定位。</span>
+                  </div>
+                </div>
+                <div class="template">
+                  <div class="thumb"></div>
+                  <div>
+                    <strong>数据截图风</strong>
+                    <span>与最近生成任务关联可见。</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="main-panel">
+              <div class="section-head">
+                <div class="section-copy">
+                  <h3>封面生成主面</h3>
+                  <p>严格对应现有 CoverStudio：模板图、底图、提示词开关、标题模式 / 提示词模式、质量、张数、保存模板、生成封面、任务队列。</p>
+                </div>
+                <span class="tag">title mode / prompt mode</span>
+              </div>
+              <div class="grid">
+                <div class="card-mini">
+                  <strong>模板图</strong>
+                  <p>保留上传 / 替换 / 读取中状态，不改底层能力。</p>
+                </div>
+                <div class="card-mini">
+                  <strong>底图</strong>
+                  <p>与模板图并列呈现，但在视觉上更清楚地区分角色。</p>
+                </div>
+              </div>
+              <div class="seg">
+                <button class="seg-btn is-active">标题模式</button>
+                <button class="seg-btn">提示词模式</button>
+              </div>
+              <div class="chip-strip">
+                <div class="chip">学习字体样式</div>
+                <div class="chip">学习颜色氛围</div>
+                <div class="chip">美颜</div>
+                <div class="chip">换背景</div>
+              </div>
+              <div class="list">
+                <div class="list-item">
+                  <div class="item-top">
+                    <div class="item-title">标题输入</div>
+                    <span class="badge blue">主标题 / 副标题 / 角标 / 标签词</span>
+                  </div>
+                  <p>保留现有 title entries，可继续新增、删除和切换类型。</p>
+                </div>
+                <div class="list-item">
+                  <div class="item-top">
+                    <div class="item-title">生成参数</div>
+                    <span class="badge gold">3:4 / quality / count</span>
+                  </div>
+                  <p>这些参数现在已经有，不应该隐藏，但也不该抢主视觉。</p>
+                </div>
+                <div class="list-item">
+                  <div class="item-top">
+                    <div class="item-title">任务队列</div>
+                    <span class="badge green">pending / success / error</span>
+                  </div>
+                  <p>生成任务应被做成更清晰的队列视图，尤其是批量生成时。</p>
+                </div>
+              </div>
+            </div>
+          </section>
+        </main>
+      </div>
+    </div>
+
+    <div class="tweaks">
+      <h3>Tweaks</h3>
+      <div class="tweak-grid">
+        <div class="tweak-row">
+          <label for="screen-select">页面</label>
+          <select id="screen-select">
+            <option value="manuscripts">稿件</option>
+            <option value="knowledge">知识库</option>
+            <option value="redclaw">RedClaw</option>
+            <option value="media">媒体</option>
+            <option value="cover">封面</option>
+          </select>
+        </div>
+        <div class="tweak-row">
+          <label for="theme-select">主题</label>
+          <select id="theme-select">
+            <option value="sand">Sand</option>
+            <option value="ink">Ink</option>
+          </select>
+        </div>
+        <div class="tweak-row">
+          <label for="density-select">密度</label>
+          <select id="density-select">
+            <option value="cozy">Cozy</option>
+            <option value="compact">Compact</option>
+          </select>
+        </div>
+        <div class="tweak-row">
+          <label for="shell-select">壳层宽度</label>
+          <select id="shell-select">
+            <option value="studio">Studio</option>
+            <option value="focus">Focus</option>
+          </select>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const screenMeta = {
+      manuscripts: {
+        title: '稿件工作台',
+        subtitle: '保留现有稿件页的真实能力，但把目录、过滤、正文、导出、素材和生成组织成更清楚的三段工作流。',
+      },
+      knowledge: {
+        title: '知识库',
+        subtitle: '基于现有来源类型、索引状态、标签和卡片详情，重做更强的“读完后去哪”结构。',
+      },
+      redclaw: {
+        title: 'RedClaw 执行台',
+        subtitle: '保留固定上下文会话、技能、调度和历史，但把它从聊天页提升成运营执行台。',
+      },
+      media: {
+        title: '媒体库',
+        subtitle: '保留已生成 / 计划项 / 导入与绑定稿件能力，重点强化媒体与稿件关系的可见性。',
+      },
+      cover: {
+        title: '封面',
+        subtitle: '保留模板图、底图、标题模式、提示词模式和任务队列，只重构工作流与视觉层级。',
+      },
+    };
+
+    const body = document.body;
+    const titleEl = document.getElementById('screen-title');
+    const subtitleEl = document.getElementById('screen-subtitle');
+    const screenSelect = document.getElementById('screen-select');
+    const themeSelect = document.getElementById('theme-select');
+    const densitySelect = document.getElementById('density-select');
+    const shellSelect = document.getElementById('shell-select');
+
+    function setScreen(next) {
+      body.dataset.screen = next;
+      document.querySelectorAll('.screen').forEach((node) => {
+        node.classList.toggle('is-active', node.id === `screen-${next}`);
+      });
+      document.querySelectorAll('[data-screen-target]').forEach((node) => {
+        node.classList.toggle('is-active', node.getAttribute('data-screen-target') === next);
+      });
+      titleEl.textContent = screenMeta[next].title;
+      subtitleEl.textContent = screenMeta[next].subtitle;
+      screenSelect.value = next;
+      localStorage.setItem('redbox-redesign-preview:screen', next);
+    }
+
+    function bindSelect(select, key, datasetKey) {
+      const saved = localStorage.getItem(`redbox-redesign-preview:${key}`);
+      if (saved) {
+        body.dataset[datasetKey] = saved;
+        select.value = saved;
+      }
+      select.addEventListener('change', () => {
+        body.dataset[datasetKey] = select.value;
+        localStorage.setItem(`redbox-redesign-preview:${key}`, select.value);
+      });
+    }
+
+    document.querySelectorAll('[data-screen-target]').forEach((node) => {
+      node.addEventListener('click', () => setScreen(node.getAttribute('data-screen-target')));
+    });
+
+    screenSelect.addEventListener('change', () => setScreen(screenSelect.value));
+    bindSelect(themeSelect, 'theme', 'theme');
+    bindSelect(densitySelect, 'density', 'density');
+    bindSelect(shellSelect, 'shell', 'shell');
+    setScreen(localStorage.getItem('redbox-redesign-preview:screen') || 'manuscripts');
+  </script>
+</body>
+</html>

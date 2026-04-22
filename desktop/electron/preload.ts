@@ -1,335 +1,45 @@
-import { ipcRenderer, contextBridge } from 'electron'
+import { contextBridge, ipcRenderer } from 'electron';
 
-// Track active listeners per channel for proper cleanup
-const listeners: { [channel: string]: ((...args: unknown[]) => void)[] } = {};
+type RawListener = (...args: unknown[]) => void;
 
-// --------- Expose some API to the Renderer process ---------
-contextBridge.exposeInMainWorld('ipcRenderer', {
-  on(channel: string, listener: (...args: unknown[]) => void) {
-    // Create wrapper that forwards events
-    const wrapper = (_event: Electron.IpcRendererEvent, ...args: unknown[]) => listener(_event, ...args);
-    // Store for cleanup
-    if (!listeners[channel]) listeners[channel] = [];
-    (listener as unknown as { _wrapper: typeof wrapper })._wrapper = wrapper;
-    listeners[channel].push(listener);
+const listeners = new Map<string, Map<RawListener, (...args: unknown[]) => void>>();
+
+const electronIpcTransport = {
+  on(channel: string, listener: RawListener) {
+    const wrapper = ((_event: Electron.IpcRendererEvent, ...args: unknown[]) => {
+      listener(...args);
+    }) as (...args: unknown[]) => void;
+
+    if (!listeners.has(channel)) {
+      listeners.set(channel, new Map());
+    }
+    listeners.get(channel)!.set(listener, wrapper);
     ipcRenderer.on(channel, wrapper);
   },
-  off(channel: string, listener: (...args: unknown[]) => void) {
-    const wrapper = (listener as unknown as { _wrapper: (...args: unknown[]) => void })._wrapper;
-    if (wrapper) {
-      ipcRenderer.off(channel, wrapper as Parameters<typeof ipcRenderer.off>[1]);
-    }
-    if (listeners[channel]) {
-      listeners[channel] = listeners[channel].filter(l => l !== listener);
+  off(channel: string, listener: RawListener) {
+    const channelListeners = listeners.get(channel);
+    const wrapper = channelListeners?.get(listener);
+    if (!wrapper) return;
+    ipcRenderer.off(channel, wrapper);
+    channelListeners?.delete(listener);
+    if (channelListeners && channelListeners.size === 0) {
+      listeners.delete(channel);
     }
   },
   removeAllListeners(channel: string) {
-    ipcRenderer.removeAllListeners(channel);
-    delete listeners[channel];
+    const channelListeners = listeners.get(channel);
+    if (!channelListeners) return;
+    for (const wrapper of channelListeners.values()) {
+      ipcRenderer.off(channel, wrapper);
+    }
+    listeners.delete(channel);
   },
-  send(...args: Parameters<typeof ipcRenderer.send>) {
-    const [channel, ...omit] = args
-    return ipcRenderer.send(channel, ...omit)
+  send(channel: string, payload?: unknown) {
+    ipcRenderer.send(channel, payload);
   },
-  invoke(...args: Parameters<typeof ipcRenderer.invoke>) {
-    const [channel, ...omit] = args
-    return ipcRenderer.invoke(channel, ...omit)
+  invoke(channel: string, payload?: unknown) {
+    return ipcRenderer.invoke(channel, payload);
   },
+};
 
-  // Database / Settings
-  saveSettings: (settings: unknown) => ipcRenderer.invoke('db:save-settings', settings),
-  getSettings: () => ipcRenderer.invoke('db:get-settings'),
-  debug: {
-    getStatus: () => ipcRenderer.invoke('debug:get-status'),
-    getRecent: (limit?: number) => ipcRenderer.invoke('debug:get-recent', { limit }),
-    openLogDir: () => ipcRenderer.invoke('debug:open-log-dir'),
-  },
-  sessions: {
-    list: () => ipcRenderer.invoke('sessions:list'),
-    get: (sessionId: string) => ipcRenderer.invoke('sessions:get', { sessionId }),
-    resume: (sessionId: string) => ipcRenderer.invoke('sessions:resume', { sessionId }),
-    fork: (sessionId: string) => ipcRenderer.invoke('sessions:fork', { sessionId }),
-    getTranscript: (sessionId: string, limit?: number) => ipcRenderer.invoke('sessions:get-transcript', { sessionId, limit }),
-    getToolResults: (sessionId: string, limit?: number) => ipcRenderer.invoke('sessions:get-tool-results', { sessionId, limit }),
-  },
-  sessionBridge: {
-    getStatus: () => ipcRenderer.invoke('session-bridge:status'),
-    listSessions: () => ipcRenderer.invoke('session-bridge:list-sessions'),
-    getSession: (sessionId: string) => ipcRenderer.invoke('session-bridge:get-session', { sessionId }),
-    listPermissions: (payload?: { sessionId?: string }) => ipcRenderer.invoke('session-bridge:list-permissions', payload || {}),
-    createSession: (payload?: {
-      title?: string;
-      contextType?: string;
-      runtimeMode?: string;
-      metadata?: Record<string, unknown>;
-    }) => ipcRenderer.invoke('session-bridge:create-session', payload || {}),
-    sendMessage: (payload: { sessionId: string; message: string }) => ipcRenderer.invoke('session-bridge:send-message', payload),
-    resolvePermission: (payload: { requestId: string; outcome: 'proceed_once' | 'proceed_always' | 'cancel' }) => ipcRenderer.invoke('session-bridge:resolve-permission', payload),
-  },
-  runtime: {
-    query: (payload: { sessionId?: string; message: string; modelConfig?: unknown }) => ipcRenderer.invoke('runtime:query', payload),
-    resume: (payload: { sessionId: string }) => ipcRenderer.invoke('runtime:resume', payload),
-    forkSession: (payload: { sessionId: string }) => ipcRenderer.invoke('runtime:fork-session', payload),
-    getTrace: (payload: { sessionId: string; limit?: number }) => ipcRenderer.invoke('runtime:get-trace', payload),
-    getCheckpoints: (payload: { sessionId: string; limit?: number }) => ipcRenderer.invoke('runtime:get-checkpoints', payload),
-    getToolResults: (payload: { sessionId: string; limit?: number }) => ipcRenderer.invoke('runtime:get-tool-results', payload),
-  },
-  toolHooks: {
-    list: () => ipcRenderer.invoke('tools:hooks:list'),
-    register: (hook: unknown) => ipcRenderer.invoke('tools:hooks:register', hook),
-    remove: (hookId: string) => ipcRenderer.invoke('tools:hooks:remove', { hookId }),
-  },
-  backgroundTasks: {
-    list: () => ipcRenderer.invoke('background-tasks:list'),
-    get: (taskId: string) => ipcRenderer.invoke('background-tasks:get', { taskId }),
-    cancel: (taskId: string) => ipcRenderer.invoke('background-tasks:cancel', { taskId }),
-  },
-  backgroundWorkers: {
-    getPoolState: () => ipcRenderer.invoke('background-workers:get-pool-state'),
-  },
-  tasks: {
-    create: (payload?: { runtimeMode?: string; sessionId?: string; userInput?: string; metadata?: Record<string, unknown> }) => ipcRenderer.invoke('tasks:create', payload || {}),
-    list: (payload?: { status?: string; ownerSessionId?: string; limit?: number }) => ipcRenderer.invoke('tasks:list', payload || {}),
-    get: (payload: { taskId: string }) => ipcRenderer.invoke('tasks:get', payload),
-    resume: (payload: { taskId: string }) => ipcRenderer.invoke('tasks:resume', payload),
-    cancel: (payload: { taskId: string }) => ipcRenderer.invoke('tasks:cancel', payload),
-    trace: (payload: { taskId: string; limit?: number }) => ipcRenderer.invoke('tasks:trace', payload),
-  },
-  work: {
-    list: (payload?: { status?: string; type?: string; limit?: number; tag?: string }) => ipcRenderer.invoke('work:list', payload || {}),
-    get: (payload: { id: string }) => ipcRenderer.invoke('work:get', payload),
-    ready: (payload?: { limit?: number }) => ipcRenderer.invoke('work:ready', payload || {}),
-    update: (payload: {
-      id: string;
-      title?: string;
-      description?: string | null;
-      status?: 'pending' | 'active' | 'waiting' | 'done' | 'cancelled';
-      priority?: number;
-      summary?: string | null;
-    }) => ipcRenderer.invoke('work:update', payload),
-  },
-  subjects: {
-    list: (payload?: { limit?: number }) => ipcRenderer.invoke('subjects:list', payload || {}),
-    get: (payload: { id: string }) => ipcRenderer.invoke('subjects:get', payload),
-    create: (payload: unknown) => ipcRenderer.invoke('subjects:create', payload),
-    update: (payload: unknown) => ipcRenderer.invoke('subjects:update', payload),
-    delete: (payload: { id: string }) => ipcRenderer.invoke('subjects:delete', payload),
-    search: (payload?: { query?: string; categoryId?: string; limit?: number }) => ipcRenderer.invoke('subjects:search', payload || {}),
-    categories: {
-      list: () => ipcRenderer.invoke('subjects:categories:list'),
-      create: (payload: { name: string }) => ipcRenderer.invoke('subjects:categories:create', payload),
-      update: (payload: { id: string; name: string }) => ipcRenderer.invoke('subjects:categories:update', payload),
-      delete: (payload: { id: string }) => ipcRenderer.invoke('subjects:categories:delete', payload),
-    },
-  },
-  getAppVersion: () => ipcRenderer.invoke('app:get-version'),
-  checkAppUpdate: (force = false) => ipcRenderer.invoke('app:check-update', { force }),
-  openAppReleasePage: (url?: string) => ipcRenderer.invoke('app:open-release-page', { url }),
-  browserPlugin: {
-    getStatus: () => ipcRenderer.invoke('plugin:browser-extension-status'),
-    prepare: () => ipcRenderer.invoke('plugin:prepare-browser-extension'),
-    openDir: () => ipcRenderer.invoke('plugin:open-browser-extension-dir'),
-  },
-
-  // AI (Legacy)
-  fetchModels: (config: { apiKey: string, baseURL: string, presetId?: string, protocol?: 'openai' | 'anthropic' | 'gemini', purpose?: 'chat' | 'image' }) => ipcRenderer.invoke('ai:fetch-models', config),
-  aiRoles: {
-    list: () => ipcRenderer.invoke('ai:roles:list'),
-  },
-  detectAiProtocol: (config: { baseURL: string, presetId?: string, protocol?: string }) => ipcRenderer.invoke('ai:detect-protocol', config),
-  testAiConnection: (config: { apiKey: string, baseURL: string, presetId?: string, protocol?: 'openai' | 'anthropic' | 'gemini' }) => ipcRenderer.invoke('ai:test-connection', config),
-  startChat: (message: string, modelConfig?: unknown) => ipcRenderer.send('ai:start-chat', message, modelConfig),
-  cancelChat: () => ipcRenderer.send('ai:cancel'),
-  confirmTool: (callId: string, confirmed: boolean) => ipcRenderer.send('ai:confirm-tool', callId, confirmed),
-  // New Chat Service (Gemini CLI features)
-  chat: {
-    send: (data: { sessionId?: string; message: string; displayContent?: string; attachment?: unknown; modelConfig?: unknown }) => ipcRenderer.send('chat:send-message', data),
-    pickAttachment: (payload?: { sessionId?: string }) => ipcRenderer.invoke('chat:pick-attachment', payload || {}),
-    transcribeAudio: (payload: { audioBase64: string; mimeType?: string; fileName?: string }) => ipcRenderer.invoke('chat:transcribe-audio', payload),
-    cancel: (data?: { sessionId?: string } | string) => ipcRenderer.send('chat:cancel', data),
-    confirmTool: (callId: string, confirmed: boolean) => ipcRenderer.send('chat:confirm-tool', { callId, confirmed }),
-    getSessions: () => ipcRenderer.invoke('chat:get-sessions'),
-    createSession: (title?: string) => ipcRenderer.invoke('chat:create-session', title),
-    getOrCreateContextSession: (params: { contextId: string; contextType: string; title: string; initialContext: string }) => ipcRenderer.invoke('chat:getOrCreateContextSession', params),
-    deleteSession: (sessionId: string) => ipcRenderer.invoke('chat:delete-session', sessionId),
-    getMessages: (sessionId: string) => ipcRenderer.invoke('chat:get-messages', sessionId),
-    clearMessages: (sessionId: string) => ipcRenderer.invoke('chat:clear-messages', sessionId),
-    compactContext: (sessionId: string) => ipcRenderer.invoke('chat:compact-context', sessionId),
-    getContextUsage: (sessionId: string) => ipcRenderer.invoke('chat:get-context-usage', sessionId),
-    getRuntimeState: (sessionId: string) => ipcRenderer.invoke('chat:get-runtime-state', sessionId),
-  },
-
-  redclawRunner: {
-    getStatus: () => ipcRenderer.invoke('redclaw:runner-status'),
-    start: (payload?: {
-      intervalMinutes?: number;
-      keepAliveWhenNoWindow?: boolean;
-      maxProjectsPerTick?: number;
-      maxAutomationPerTick?: number;
-      heartbeatEnabled?: boolean;
-      heartbeatIntervalMinutes?: number;
-    }) => ipcRenderer.invoke('redclaw:runner-start', payload || {}),
-    stop: () => ipcRenderer.invoke('redclaw:runner-stop'),
-    runNow: (payload?: { projectId?: string }) => ipcRenderer.invoke('redclaw:runner-run-now', payload || {}),
-    setProject: (payload: { projectId: string; enabled: boolean; prompt?: string }) => ipcRenderer.invoke('redclaw:runner-set-project', payload),
-    setConfig: (payload: {
-      intervalMinutes?: number;
-      keepAliveWhenNoWindow?: boolean;
-      maxProjectsPerTick?: number;
-      maxAutomationPerTick?: number;
-      heartbeatEnabled?: boolean;
-      heartbeatIntervalMinutes?: number;
-      heartbeatSuppressEmptyReport?: boolean;
-      heartbeatReportToMainSession?: boolean;
-      heartbeatPrompt?: string;
-    }) => ipcRenderer.invoke('redclaw:runner-set-config', payload || {}),
-    listScheduled: () => ipcRenderer.invoke('redclaw:runner-list-scheduled'),
-    addScheduled: (payload: {
-      name: string;
-      mode: 'interval' | 'daily' | 'weekly' | 'once';
-      prompt: string;
-      projectId?: string;
-      intervalMinutes?: number;
-      time?: string;
-      weekdays?: number[];
-      runAt?: string;
-      enabled?: boolean;
-    }) => ipcRenderer.invoke('redclaw:runner-add-scheduled', payload),
-    removeScheduled: (payload: { taskId: string }) => ipcRenderer.invoke('redclaw:runner-remove-scheduled', payload),
-    setScheduledEnabled: (payload: { taskId: string; enabled: boolean }) => ipcRenderer.invoke('redclaw:runner-set-scheduled-enabled', payload),
-    runScheduledNow: (payload: { taskId: string }) => ipcRenderer.invoke('redclaw:runner-run-scheduled-now', payload),
-    listLongCycle: () => ipcRenderer.invoke('redclaw:runner-list-long-cycle'),
-    addLongCycle: (payload: {
-      name: string;
-      objective: string;
-      stepPrompt: string;
-      projectId?: string;
-      intervalMinutes?: number;
-      totalRounds?: number;
-      enabled?: boolean;
-    }) => ipcRenderer.invoke('redclaw:runner-add-long-cycle', payload),
-    removeLongCycle: (payload: { taskId: string }) => ipcRenderer.invoke('redclaw:runner-remove-long-cycle', payload),
-    setLongCycleEnabled: (payload: { taskId: string; enabled: boolean }) => ipcRenderer.invoke('redclaw:runner-set-long-cycle-enabled', payload),
-    runLongCycleNow: (payload: { taskId: string }) => ipcRenderer.invoke('redclaw:runner-run-long-cycle-now', payload),
-  },
-
-  assistantDaemon: {
-    getStatus: () => ipcRenderer.invoke('assistant:daemon-status'),
-    start: (payload?: {
-      autoStart?: boolean;
-      keepAliveWhenNoWindow?: boolean;
-      host?: string;
-      port?: number;
-      feishu?: {
-        enabled?: boolean;
-        receiveMode?: 'webhook' | 'websocket';
-        endpointPath?: string;
-        verificationToken?: string;
-        encryptKey?: string;
-        appId?: string;
-        appSecret?: string;
-        replyUsingChatId?: boolean;
-      };
-      relay?: {
-        enabled?: boolean;
-        endpointPath?: string;
-        authToken?: string;
-      };
-      weixin?: {
-        enabled?: boolean;
-        endpointPath?: string;
-        authToken?: string;
-        accountId?: string;
-        autoStartSidecar?: boolean;
-        cursorFile?: string;
-        sidecarCommand?: string;
-        sidecarArgs?: string[];
-        sidecarCwd?: string;
-        sidecarEnv?: Record<string, string>;
-      };
-    }) => ipcRenderer.invoke('assistant:daemon-start', payload || {}),
-    stop: () => ipcRenderer.invoke('assistant:daemon-stop'),
-    setConfig: (payload?: {
-      enabled?: boolean;
-      autoStart?: boolean;
-      keepAliveWhenNoWindow?: boolean;
-      host?: string;
-      port?: number;
-      feishu?: {
-        enabled?: boolean;
-        receiveMode?: 'webhook' | 'websocket';
-        endpointPath?: string;
-        verificationToken?: string;
-        encryptKey?: string;
-        appId?: string;
-        appSecret?: string;
-        replyUsingChatId?: boolean;
-      };
-      relay?: {
-        enabled?: boolean;
-        endpointPath?: string;
-        authToken?: string;
-      };
-      weixin?: {
-        enabled?: boolean;
-        endpointPath?: string;
-        authToken?: string;
-        accountId?: string;
-        autoStartSidecar?: boolean;
-        cursorFile?: string;
-        sidecarCommand?: string;
-        sidecarArgs?: string[];
-        sidecarCwd?: string;
-        sidecarEnv?: Record<string, string>;
-      };
-    }) => ipcRenderer.invoke('assistant:daemon-set-config', payload || {}),
-    startWeixinLogin: (payload?: { accountId?: string; force?: boolean }) => ipcRenderer.invoke('assistant:daemon-weixin-login-start', payload || {}),
-    waitForWeixinLogin: (payload?: { sessionKey?: string; timeoutMs?: number }) => ipcRenderer.invoke('assistant:daemon-weixin-login-wait', payload || {}),
-  },
-  wechatOfficial: {
-    getStatus: () => ipcRenderer.invoke('wechat-official:get-status'),
-    bind: (payload: { name?: string; appId: string; secret: string; setActive?: boolean }) => ipcRenderer.invoke('wechat-official:bind', payload),
-    unbind: (payload?: { bindingId?: string }) => ipcRenderer.invoke('wechat-official:unbind', payload || {}),
-    createDraft: (payload: {
-      bindingId?: string;
-      title?: string;
-      content: string;
-      metadata?: Record<string, unknown>;
-      sourcePath?: string;
-    }) => ipcRenderer.invoke('wechat-official:create-draft', payload),
-  },
-
-  // Skills
-  listSkills: () => ipcRenderer.invoke('skills:list'),
-  toolDiagnostics: {
-    list: () => ipcRenderer.invoke('tools:diagnostics:list'),
-    runDirect: (toolName: string) => ipcRenderer.invoke('tools:diagnostics:run-direct', { toolName }),
-    runAi: (toolName: string) => ipcRenderer.invoke('tools:diagnostics:run-ai', { toolName }),
-  },
-  mcp: {
-    list: () => ipcRenderer.invoke('mcp:list'),
-    save: (servers: unknown[]) => ipcRenderer.invoke('mcp:save', { servers }),
-    test: (server: unknown) => ipcRenderer.invoke('mcp:test', { server }),
-    discoverLocal: () => ipcRenderer.invoke('mcp:discover-local'),
-    importLocal: () => ipcRenderer.invoke('mcp:import-local'),
-    oauthStatus: (serverId: string) => ipcRenderer.invoke('mcp:oauth-status', { serverId }),
-  },
-
-  // YouTube Import
-  checkYtdlp: () => ipcRenderer.invoke('youtube:check-ytdlp'),
-  installYtdlp: () => ipcRenderer.invoke('youtube:install'),
-  updateYtdlp: () => ipcRenderer.invoke('youtube:update'),
-  fetchYoutubeInfo: (channelUrl: string) => ipcRenderer.invoke('advisors:fetch-youtube-info', { channelUrl }),
-  downloadYoutubeSubtitles: (params: { channelUrl: string; videoCount: number; advisorId: string }) => ipcRenderer.invoke('advisors:download-youtube-subtitles', params),
-  readYoutubeSubtitle: (videoId: string) => ipcRenderer.invoke('knowledge:read-youtube-subtitle', videoId),
-
-  // Video Management
-  refreshVideos: (advisorId: string, limit?: number) => ipcRenderer.invoke('advisors:refresh-videos', { advisorId, limit }),
-  getVideos: (advisorId: string) => ipcRenderer.invoke('advisors:get-videos', { advisorId }),
-  downloadVideo: (advisorId: string, videoId: string) => ipcRenderer.invoke('advisors:download-video', { advisorId, videoId }),
-  retryFailedVideos: (advisorId: string) => ipcRenderer.invoke('advisors:retry-failed', { advisorId }),
-  updateAdvisorYoutubeSettings: (advisorId: string, settings: unknown) => ipcRenderer.invoke('advisors:update-youtube-settings', { advisorId, settings }),
-  getAdvisorYoutubeRunnerStatus: () => ipcRenderer.invoke('advisors:youtube-runner-status'),
-  runAdvisorYoutubeNow: (advisorId?: string) => ipcRenderer.invoke('advisors:youtube-runner-run-now', { advisorId }),
-
-})
+contextBridge.exposeInMainWorld('__RED_ELECTRON_IPC__', electronIpcTransport);

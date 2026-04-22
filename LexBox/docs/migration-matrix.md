@@ -1,13 +1,13 @@
-# LexBox Migration Matrix
+# RedBox Migration Matrix
 
-`desktop/` is a read-only reference. `LexBox/` is the active Tauri v2 + Rust host target.
+`desktop/` is a read-only reference. `RedBox/` is the active Tauri v2 + Rust host target.
 
 ## Namespace Status
 
 | Namespace | Status | Notes |
 | --- | --- | --- |
 | `app:*` | migrated | Version, release page, update check response |
-| `db:*` | migrated | LexBox-local settings store |
+| `db:*` | migrated | RedBox-local settings store |
 | `spaces:*` | migrated | Local spaces and active space switching |
 | `subjects:*` | migrated | Categories, search, CRUD |
 | `manuscripts:*` | migrated | File tree, read/write, rename/delete, layout, WeChat formatting |

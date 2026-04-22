@@ -1,7 +1,6 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ComponentType, type SetStateAction } from 'react';
-import { Save, RefreshCw, AlertCircle, FolderOpen, Wrench, Download, LayoutGrid, Cpu, Database, Trash2, Eye, EyeOff, FlaskConical, Info, Brain, Plus, Star, ChevronDown, Check } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ComponentType, type SetStateAction } from 'react';
+import { Save, RefreshCw, AlertCircle, FolderOpen, Wrench, Download, LayoutGrid, Cpu, Trash2, Eye, EyeOff, Info, Plus, Star, ChevronDown, Check } from 'lucide-react';
 import clsx from 'clsx';
-import { useFeatureFlags } from '../hooks/useFeatureFlags';
 import {
   AI_SOURCE_PRESETS,
   type AiSourcePreset,
@@ -10,6 +9,7 @@ import {
   findAiPresetById,
   inferPresetIdByEndpoint
 } from '../config/aiSources';
+import { appAlert } from '../utils/appDialogs';
 import {
   type AgentTaskSnapshot,
   type AgentTaskTrace,
@@ -20,13 +20,11 @@ import {
   type BackgroundWorkerPoolState,
   type CreateAiSourceDraft,
   type LocalAiGuide,
-  type MemoryHistoryEntry,
-  type MemoryMaintenanceStatus,
-  type MemorySearchResult,
+  type McpServerRuntimeItem,
   type McpServerConfig,
+  type McpSessionState,
   type ToolDiagnosticDescriptor,
   type ToolDiagnosticRunResult,
-  type UserMemory,
   AiPresetLogo,
   AiPresetSelect,
   AiModelSelect,
@@ -65,46 +63,25 @@ import {
   REDBOX_OFFICIAL_VIDEO_MODELS,
 } from '../../shared/redboxVideo';
 import { hasOfficialAiPanel, loadOfficialAiPanelModule, type OfficialAiPanelProps } from '../features/official';
-import { SettingsSaveBar } from './settings/SettingsSaveBar';
-import type { WorkspaceSpace } from './settings/ProjectSettingsSection';
-
-const GeneralSettingsSection = lazy(async () => {
-  const module = await import('./settings/SettingsSections');
-  return { default: module.GeneralSettingsSection };
-});
-
-const MemorySettingsSection = lazy(async () => {
-  const module = await import('./settings/SettingsSections');
-  return { default: module.MemorySettingsSection };
-});
-
-const KnowledgeSettingsSection = lazy(async () => {
-  const module = await import('./settings/SettingsSections');
-  return { default: module.KnowledgeSettingsSection };
-});
-
-const ToolsSettingsSection = lazy(async () => {
-  const module = await import('./settings/SettingsSections');
-  return { default: module.ToolsSettingsSection };
-});
-
-const ExperimentalSettingsSection = lazy(async () => {
-  const module = await import('./settings/SettingsSections');
-  return { default: module.ExperimentalSettingsSection };
-});
-
-const ProjectSettingsSection = lazy(async () => {
-  const module = await import('./settings/ProjectSettingsSection');
-  return { default: module.ProjectSettingsSection };
-});
+import {
+  GeneralSettingsSection,
+  SettingsSaveBar,
+  ToolsSettingsSection,
+} from './settings/SettingsSections';
 
 const MIN_CHAT_MAX_TOKENS = 1024;
 const DEFAULT_CHAT_MAX_TOKENS = 262144;
 const DEFAULT_CHAT_MAX_TOKENS_DEEPSEEK = 131072;
 const DEVELOPER_MODE_UNLOCK_TAP_COUNT = 7;
 const DEVELOPER_MODE_TTL_MS = 24 * 60 * 60 * 1000;
+const SETTINGS_ACTIVATION_DEBOUNCE_MS = 80;
+const SETTINGS_TAB_POLL_DELAY_MS = 300;
+
+type SettingsTab = 'general' | 'ai' | 'tools' | 'remote';
 
 type AssistantDaemonStatus = Awaited<ReturnType<typeof window.ipcRenderer.assistantDaemon.getStatus>>;
+type RuntimeDiagnosticsSummary = Awaited<ReturnType<typeof window.ipcRenderer.debug.getRuntimeSummary>>;
+type OfficialAuthStateSnapshot = Awaited<ReturnType<typeof window.ipcRenderer.auth.getState>>;
 
 type AssistantDaemonDraft = {
   enabled: boolean;
@@ -153,7 +130,7 @@ type AssistantDaemonWeixinLoginState = {
 };
 
 const createDefaultAssistantDaemonDraft = (): AssistantDaemonDraft => ({
-  enabled: false,
+  enabled: true,
   autoStart: true,
   keepAliveWhenNoWindow: true,
   host: '127.0.0.1',
@@ -227,6 +204,12 @@ const assistantDaemonStatusToDraft = (status?: AssistantDaemonStatus | null): As
 
 type RuntimeSessionListItem = {
   id: string;
+  runtimeMode?: string;
+  contextBinding?: {
+    contextType?: string;
+    contextId?: string;
+    isContextBound?: boolean;
+  } | null;
   transcriptCount: number;
   checkpointCount: number;
   chatSession?: {
@@ -281,9 +264,6 @@ type RuntimeHookDefinition = {
   enabled?: boolean;
 };
 
-type SettingsTab = 'general' | 'ai' | 'knowledge' | 'tools' | 'memory' | 'experimental' | 'project';
-type ProjectDialogMode = 'create' | 'rename';
-
 const sanitizeChatMaxTokensInput = (value: string, fallback: number): string => {
   const parsed = Number(value);
   if (!Number.isFinite(parsed) || parsed < MIN_CHAT_MAX_TOKENS) {
@@ -293,8 +273,7 @@ const sanitizeChatMaxTokensInput = (value: string, fallback: number): string => 
 };
 
 export function Settings({ isActive = true }: { isActive?: boolean }) {
-  const [activeTab, setActiveTab] = useState<SettingsTab>('ai');
-  const { flags, updateFlag } = useFeatureFlags();
+  const [activeTab, setActiveTab] = useState<SettingsTab>('general');
   const [formData, setFormData] = useState({
     api_endpoint: '',
     api_key: '',
@@ -321,9 +300,6 @@ export function Settings({ isActive = true }: { isActive?: boolean }) {
     model_name_chatroom: '',
     model_name_knowledge: '',
     model_name_redclaw: '',
-    search_provider: 'duckduckgo',
-    search_endpoint: '',
-    search_api_key: '',
     proxy_enabled: false,
     proxy_url: '',
     proxy_bypass: 'localhost,127.0.0.1,::1',
@@ -363,6 +339,7 @@ export function Settings({ isActive = true }: { isActive?: boolean }) {
   const [toolDiagnosticRunning, setToolDiagnosticRunning] = useState<Record<string, 'direct' | 'ai' | undefined>>({});
   const [runtimeTasks, setRuntimeTasks] = useState<AgentTaskSnapshot[]>([]);
   const [runtimeRoles, setRuntimeRoles] = useState<RoleSpec[]>([]);
+  const [runtimeDiagnosticsSummary, setRuntimeDiagnosticsSummary] = useState<RuntimeDiagnosticsSummary | null>(null);
   const [runtimeSessions, setRuntimeSessions] = useState<RuntimeSessionListItem[]>([]);
   const [selectedRuntimeTaskId, setSelectedRuntimeTaskId] = useState('');
   const [selectedRuntimeSessionId, setSelectedRuntimeSessionId] = useState('');
@@ -375,7 +352,7 @@ export function Settings({ isActive = true }: { isActive?: boolean }) {
   const [backgroundWorkerPool, setBackgroundWorkerPool] = useState<BackgroundWorkerPoolState>({ json: [], runtime: [] });
   const [selectedBackgroundTaskId, setSelectedBackgroundTaskId] = useState('');
   const [runtimeDraftInput, setRuntimeDraftInput] = useState('');
-  const [runtimeDraftMode, setRuntimeDraftMode] = useState<'redclaw' | 'knowledge' | 'chatroom' | 'advisor-discussion' | 'background-maintenance'>('redclaw');
+  const [runtimeDraftMode, setRuntimeDraftMode] = useState<'redclaw' | 'knowledge' | 'chatroom' | 'advisor-discussion' | 'background-maintenance' | 'diagnostics'>('redclaw');
   const [isRuntimeLoading, setIsRuntimeLoading] = useState(false);
   const [isRuntimeTraceLoading, setIsRuntimeTraceLoading] = useState(false);
   const [isRuntimeSessionLoading, setIsRuntimeSessionLoading] = useState(false);
@@ -393,15 +370,10 @@ export function Settings({ isActive = true }: { isActive?: boolean }) {
   const [assistantDaemonWeixinLogin, setAssistantDaemonWeixinLogin] = useState<AssistantDaemonWeixinLoginState | null>(null);
   const [showScopedModelOverrides, setShowScopedModelOverrides] = useState(false);
   const [developerVersionTapCount, setDeveloperVersionTapCount] = useState(0);
-  const [spaces, setSpaces] = useState<WorkspaceSpace[]>([]);
-  const [activeSpaceId, setActiveSpaceId] = useState('');
-  const [isSpacesLoading, setIsSpacesLoading] = useState(false);
-  const [isSwitchingSpace, setIsSwitchingSpace] = useState(false);
-  const [isProjectDialogOpen, setIsProjectDialogOpen] = useState(false);
-  const [projectDialogMode, setProjectDialogMode] = useState<ProjectDialogMode>('create');
-  const [projectDialogName, setProjectDialogName] = useState('');
-  const [projectDialogTargetId, setProjectDialogTargetId] = useState<string | null>(null);
-  const [isProjectDialogSubmitting, setIsProjectDialogSubmitting] = useState(false);
+  const hasSelectedRuntimeSession = useMemo(
+    () => Boolean(selectedRuntimeSessionId && runtimeSessions.some((session) => session.id === selectedRuntimeSessionId)),
+    [runtimeSessions, selectedRuntimeSessionId],
+  );
 
   const buildWeixinQrImageUrl = useCallback(async (rawUrl?: string): Promise<string | undefined> => {
     const text = String(rawUrl || '').trim();
@@ -420,125 +392,39 @@ export function Settings({ isActive = true }: { isActive?: boolean }) {
   }, []);
   const fetchModelsRequestRef = useRef(0);
   const fetchImageModelsRequestRef = useRef(0);
+  const settingsLoadRequestRef = useRef(0);
+  const debugLogsLoadRequestRef = useRef(0);
+  const runtimeTasksLoadRequestRef = useRef(0);
+  const runtimeSummaryLoadRequestRef = useRef(0);
+  const runtimeSessionsLoadRequestRef = useRef(0);
+  const runtimeTaskTracesLoadRequestRef = useRef(0);
+  const runtimeSessionDetailsLoadRequestRef = useRef(0);
+  const runtimeObservabilityRefreshTimerRef = useRef<number | null>(null);
+  const backgroundTasksLoadRequestRef = useRef(0);
+  const backgroundWorkerPoolLoadRequestRef = useRef(0);
   const assistantDaemonLogBufferRef = useRef<string[]>([]);
   const assistantDaemonLogFlushTimerRef = useRef<number | null>(null);
-
-  const loadSpaces = useCallback(async () => {
-    setIsSpacesLoading(true);
-    try {
-      const result = await window.ipcRenderer.invoke('spaces:list') as { spaces?: WorkspaceSpace[]; activeSpaceId?: string } | null;
-      setSpaces(result?.spaces || []);
-      setActiveSpaceId(result?.activeSpaceId || '');
-    } catch (error) {
-      console.error('Failed to load project spaces:', error);
-      setSpaces([]);
-      setActiveSpaceId('');
-    } finally {
-      setIsSpacesLoading(false);
-    }
-  }, []);
-
-  const handleSwitchSpace = useCallback(async (nextSpaceId: string) => {
-    if (!nextSpaceId || nextSpaceId === activeSpaceId || isSwitchingSpace) return;
-    setIsSwitchingSpace(true);
-    try {
-      const result = await window.ipcRenderer.invoke('spaces:switch', nextSpaceId) as { success?: boolean; error?: string } | null;
-      if (!result?.success) {
-        alert(result?.error || '切换项目失败');
-        return;
-      }
-      window.location.reload();
-    } catch (error) {
-      console.error('Failed to switch project space:', error);
-      alert('切换项目失败，请重试');
-    } finally {
-      setIsSwitchingSpace(false);
-    }
-  }, [activeSpaceId, isSwitchingSpace]);
-
-  const openCreateProjectDialog = useCallback(() => {
-    setProjectDialogMode('create');
-    setProjectDialogTargetId(null);
-    setProjectDialogName('');
-    setIsProjectDialogOpen(true);
-  }, []);
-
-  const openRenameProjectDialog = useCallback((space: WorkspaceSpace) => {
-    setProjectDialogMode('rename');
-    setProjectDialogTargetId(space.id);
-    setProjectDialogName(space.name);
-    setIsProjectDialogOpen(true);
-  }, []);
-
-  const closeProjectDialog = useCallback(() => {
-    if (isProjectDialogSubmitting) return;
-    setIsProjectDialogOpen(false);
-    setProjectDialogName('');
-    setProjectDialogTargetId(null);
-  }, [isProjectDialogSubmitting]);
-
-  const submitProjectDialog = useCallback(async () => {
-    const trimmedName = projectDialogName.trim();
-    if (!trimmedName) {
-      alert('项目名称不能为空');
-      return;
-    }
-
-    setIsProjectDialogSubmitting(true);
-    try {
-      if (projectDialogMode === 'create') {
-        const result = await window.ipcRenderer.invoke('spaces:create', trimmedName) as { success?: boolean; space?: WorkspaceSpace; error?: string } | null;
-        if (!result?.success || !result.space) {
-          alert(result?.error || '创建项目失败');
-          return;
-        }
-        setIsProjectDialogOpen(false);
-        setProjectDialogName('');
-        setProjectDialogTargetId(null);
-        await loadSpaces();
-        await handleSwitchSpace(result.space.id);
-        return;
-      }
-
-      if (!projectDialogTargetId) {
-        alert('未找到要重命名的项目');
-        return;
-      }
-
-      const result = await window.ipcRenderer.invoke('spaces:rename', { id: projectDialogTargetId, name: trimmedName }) as { success?: boolean; error?: string } | null;
-      if (!result?.success) {
-        alert(result?.error || '重命名项目失败');
-        return;
-      }
-      setIsProjectDialogOpen(false);
-      setProjectDialogName('');
-      setProjectDialogTargetId(null);
-      await loadSpaces();
-    } catch (error) {
-      console.error('Failed to submit project dialog:', error);
-      alert(projectDialogMode === 'create' ? '创建项目失败，请重试' : '重命名项目失败，请重试');
-    } finally {
-      setIsProjectDialogSubmitting(false);
-    }
-  }, [handleSwitchSpace, loadSpaces, projectDialogMode, projectDialogName, projectDialogTargetId]);
+  const remoteTabWarmTimerRef = useRef<number | null>(null);
+  const settingsActivationTimerRef = useRef<number | null>(null);
+  const baseSettingsLoadedRef = useRef(false);
+  const baseSettingsInFlightRef = useRef(false);
+  const tabWarmRef = useRef<Record<SettingsTab, boolean>>({
+    general: false,
+    ai: false,
+    tools: false,
+    remote: false,
+  });
+  const tabInFlightRef = useRef<Record<SettingsTab, boolean>>({
+    general: false,
+    ai: false,
+    tools: false,
+    remote: false,
+  });
 
   const defaultAiSource = useMemo(() => {
     if (!aiSources.length) return null;
     return aiSources.find((source) => source.id === defaultAiSourceId) || aiSources[0];
   }, [aiSources, defaultAiSourceId]);
-
-  useEffect(() => {
-    void loadSpaces();
-
-    const handleSpaceChanged = () => {
-      void loadSpaces();
-    };
-
-    window.ipcRenderer.on('space:changed', handleSpaceChanged);
-    return () => {
-      window.ipcRenderer.off('space:changed', handleSpaceChanged);
-    };
-  }, [loadSpaces]);
 
   const activeAiSource = useMemo(() => {
     if (!aiSources.length) return null;
@@ -658,7 +544,10 @@ export function Settings({ isActive = true }: { isActive?: boolean }) {
     if (presetId.includes('dashscope') || presetId.includes('qwen')) {
       return { provider: 'dashscope', template: 'dashscope-wan-native' };
     }
-    if (presetId.includes('ark') || presetId.includes('jimeng')) {
+    if (presetId.includes('jimeng')) {
+      return { provider: 'jimeng', template: 'jimeng-openai-wrapper' };
+    }
+    if (presetId.includes('ark')) {
       return { provider: 'ark-seedream', template: 'ark-seedream-native' };
     }
     if (presetId.includes('gemini')) {
@@ -711,11 +600,6 @@ export function Settings({ isActive = true }: { isActive?: boolean }) {
       };
     });
   }, [getAiSourceById, inferImageRoutingFromSource, pickBestModelForSource]);
-
-  const defaultSourceModels = useMemo(() => {
-    if (!defaultAiSource) return [];
-    return filterAiModelsByCapability(getSourceModelList(defaultAiSource), 'chat');
-  }, [defaultAiSource, getSourceModelList]);
 
   const selectedTranscriptionSource = useMemo(() => {
     return getAiSourceById(transcriptionSourceId);
@@ -795,6 +679,7 @@ export function Settings({ isActive = true }: { isActive?: boolean }) {
     success: boolean;
     bundled: boolean;
     exportPath: string;
+    pluginPath?: string;
     exported: boolean;
     bundledPath?: string;
     error?: string;
@@ -805,28 +690,17 @@ export function Settings({ isActive = true }: { isActive?: boolean }) {
   const [isSyncingMcp, setIsSyncingMcp] = useState(false);
   const [mcpTestingId, setMcpTestingId] = useState('');
   const [mcpOauthState, setMcpOauthState] = useState<Record<string, { connected: boolean; tokenPath?: string }>>({});
-
-  // Knowledge State
-  const [vectorStats, setVectorStats] = useState<{ vectors: number; documents: number } | null>(null);
-  const [isRebuilding, setIsRebuilding] = useState(false);
+  const [mcpLiveSessions, setMcpLiveSessions] = useState<McpSessionState[]>([]);
+  const [mcpRuntimeItems, setMcpRuntimeItems] = useState<McpServerRuntimeItem[]>([]);
+  const [mcpInspectingId, setMcpInspectingId] = useState('');
 
   // Update State
   const [appVersion, setAppVersion] = useState('');
 
-  // Memory State
-  const [memories, setMemories] = useState<UserMemory[]>([]);
-  const [archivedMemories, setArchivedMemories] = useState<UserMemory[]>([]);
-  const [memoryHistory, setMemoryHistory] = useState<MemoryHistoryEntry[]>([]);
-  const [memoryMaintenanceStatus, setMemoryMaintenanceStatus] = useState<MemoryMaintenanceStatus | null>(null);
-  const [memorySearchQuery, setMemorySearchQuery] = useState('');
-  const [includeArchivedInSearch, setIncludeArchivedInSearch] = useState(false);
-  const [memorySearchResults, setMemorySearchResults] = useState<MemorySearchResult[]>([]);
-  const [newMemoryContent, setNewMemoryContent] = useState('');
-  const [newMemoryType, setNewMemoryType] = useState<'general' | 'preference' | 'fact'>('general');
-  const [isMemoryLoading, setIsMemoryLoading] = useState(false);
-  const [isMemorySearching, setIsMemorySearching] = useState(false);
   const [aiModelSubTab, setAiModelSubTab] = useState<'custom' | 'login'>('custom');
+  const [officialAiPanelEnabled, setOfficialAiPanelEnabled] = useState(false);
   const [OfficialAiPanelComponent, setOfficialAiPanelComponent] = useState<ComponentType<OfficialAiPanelProps> | null>(null);
+  const [officialAuthState, setOfficialAuthState] = useState<OfficialAuthStateSnapshot | null>(null);
 
   const isDeprecatedEmptyOpenAiSource = useCallback((source?: AiSourceConfig | null): boolean => {
     if (!source) return false;
@@ -848,16 +722,17 @@ export function Settings({ isActive = true }: { isActive?: boolean }) {
 
   useEffect(() => {
     if (!hasOfficialAiPanel) {
+      setOfficialAiPanelEnabled(false);
       setOfficialAiPanelComponent(null);
       setAiModelSubTab('custom');
       return;
     }
-    if (activeTab !== 'ai' || aiModelSubTab !== 'login') {
-      return;
-    }
-    if (OfficialAiPanelComponent) {
-      return;
-    }
+    setOfficialAiPanelEnabled(true);
+  }, []);
+
+  useEffect(() => {
+    if (!hasOfficialAiPanel || !officialAiPanelEnabled) return;
+    if (activeTab !== 'ai' || aiModelSubTab !== 'login' || OfficialAiPanelComponent) return;
     let canceled = false;
     void loadOfficialAiPanelModule().then((module) => {
       if (canceled) return;
@@ -870,7 +745,43 @@ export function Settings({ isActive = true }: { isActive?: boolean }) {
     return () => {
       canceled = true;
     };
-  }, [OfficialAiPanelComponent, activeTab, aiModelSubTab]);
+  }, [OfficialAiPanelComponent, activeTab, aiModelSubTab, officialAiPanelEnabled]);
+
+  useEffect(() => {
+    let mounted = true;
+
+    const applyOfficialAuthState = (snapshot: OfficialAuthStateSnapshot | null | undefined) => {
+      if (!mounted) return;
+      setOfficialAuthState(snapshot || null);
+    };
+
+    const handleOfficialAuthStateChanged = (
+      event:
+        | { payload?: OfficialAuthStateSnapshot | null }
+        | OfficialAuthStateSnapshot
+        | null
+        | undefined,
+    ) => {
+      const payload = (event && typeof event === 'object' && 'payload' in event)
+        ? (event as { payload?: OfficialAuthStateSnapshot | null }).payload
+        : (event as OfficialAuthStateSnapshot | null | undefined);
+      applyOfficialAuthState(payload);
+    };
+
+    void window.ipcRenderer.auth.getState()
+      .then((snapshot) => {
+        applyOfficialAuthState(snapshot);
+      })
+      .catch(() => {
+        applyOfficialAuthState(null);
+      });
+
+    window.ipcRenderer.auth.onStateChanged(handleOfficialAuthStateChanged);
+    return () => {
+      mounted = false;
+      window.ipcRenderer.auth.offStateChanged(handleOfficialAuthStateChanged);
+    };
+  }, []);
 
   const isDashscopeImageTemplate = useMemo(() => {
     const template = inferImageTemplateByProvider(formData.image_provider, formData.image_provider_template);
@@ -910,7 +821,7 @@ export function Settings({ isActive = true }: { isActive?: boolean }) {
   );
 
   const displayedAiSources = useMemo<AiSourceConfig[]>(() => {
-    if (!hasOfficialAiPanel || hasOfficialManagedSource) {
+    if (!officialAiPanelEnabled || hasOfficialManagedSource) {
       return aiSources;
     }
     return [
@@ -927,7 +838,31 @@ export function Settings({ isActive = true }: { isActive?: boolean }) {
       },
       ...aiSources,
     ];
-  }, [aiSources, hasOfficialManagedSource]);
+  }, [aiSources, hasOfficialManagedSource, officialAiPanelEnabled]);
+
+  const officialAuthStatus = String((officialAuthState as { status?: string } | null)?.status || '').trim();
+  const officialAuthKnown = officialAuthState !== null;
+  const officialAuthPending = !officialAuthKnown
+    || officialAuthStatus === 'restoring'
+    || officialAuthStatus === 'refreshing';
+  const officialAuthLoggedIn = officialAuthKnown
+    && !officialAuthPending
+    && officialAuthStatus !== 'anonymous'
+    && officialAuthStatus !== 'reauthRequired'
+    && Boolean((officialAuthState as { loggedIn?: boolean } | null)?.loggedIn);
+  const officialAuthNeedsLogin = officialAuthKnown && !officialAuthPending && !officialAuthLoggedIn;
+
+  const defaultSourceModels = useMemo(() => {
+    if (!defaultAiSource) return [];
+    if (isOfficialManagedSource(defaultAiSource) && !officialAuthLoggedIn) {
+      return [];
+    }
+    return filterAiModelsByCapability(getSourceModelList(defaultAiSource), 'chat');
+  }, [defaultAiSource, getSourceModelList, isOfficialManagedSource, officialAuthLoggedIn]);
+
+  const defaultOfficialSourceUnavailable = Boolean(
+    defaultAiSource && isOfficialManagedSource(defaultAiSource) && !officialAuthLoggedIn
+  );
 
   const getLocalGuideForSource = useCallback((source?: AiSourceConfig | null): LocalAiGuide | null => {
     if (!source) return null;
@@ -978,25 +913,10 @@ export function Settings({ isActive = true }: { isActive?: boolean }) {
   }, []);
 
   useEffect(() => {
-    loadSettings();
-    checkTools();
-    loadBrowserPluginStatus();
-    loadAssistantDaemonStatus();
-    loadVectorStats();
-    loadAppVersion();
-
-    const handleProgress = (_: unknown, progress: number) => {
-      setInstallProgress(progress);
-    };
-    window.ipcRenderer.on('youtube:install-progress', handleProgress);
-    return () => {
-      window.ipcRenderer.off('youtube:install-progress', handleProgress);
-    };
-  }, []);
-
-
-  useEffect(() => {
-    if (activeTab !== 'general') {
+    if (!isActive) {
+      return;
+    }
+    if (activeTab !== 'remote') {
       return;
     }
 
@@ -1038,47 +958,10 @@ export function Settings({ isActive = true }: { isActive?: boolean }) {
       }
       assistantDaemonLogBufferRef.current = [];
     };
-  }, [activeTab, assistantDaemonBusy, assistantDaemonDraftDirty]);
+  }, [activeTab, assistantDaemonBusy, assistantDaemonDraftDirty, isActive]);
 
   useEffect(() => {
-    let memoryPollTimer: number | null = null;
-    let runtimePollTimer: number | null = null;
-    let backgroundTaskPollTimer: number | null = null;
-    if (activeTab === 'memory') {
-      void loadMemories();
-      memoryPollTimer = window.setInterval(() => {
-        void loadMemories();
-      }, 15000);
-    }
-    if (activeTab === 'general') {
-      void loadRecentDebugLogs();
-    }
-    if (activeTab === 'tools' && formData.developer_mode_enabled) {
-      void loadToolDiagnostics();
-      void loadRuntimeDeveloperData();
-      runtimePollTimer = window.setInterval(() => {
-        void loadRuntimeTasks();
-        void loadRuntimeSessions();
-      }, 8000);
-      backgroundTaskPollTimer = window.setInterval(() => {
-        void loadBackgroundTasks();
-      }, 5000);
-    }
-
-    return () => {
-      if (memoryPollTimer) {
-        window.clearInterval(memoryPollTimer);
-      }
-      if (runtimePollTimer) {
-        window.clearInterval(runtimePollTimer);
-      }
-      if (backgroundTaskPollTimer) {
-        window.clearInterval(backgroundTaskPollTimer);
-      }
-    };
-  }, [activeTab, formData.developer_mode_enabled]);
-
-  useEffect(() => {
+    if (!isActive) return;
     if (activeTab !== 'tools' || !formData.developer_mode_enabled) return;
     const onBackgroundTaskUpdated = (_event: unknown, task: BackgroundTaskItem) => {
       if (!task?.id) return;
@@ -1098,17 +981,19 @@ export function Settings({ isActive = true }: { isActive?: boolean }) {
     return () => {
       window.ipcRenderer.off('background:task-updated', onBackgroundTaskUpdated);
     };
-  }, [activeTab, formData.developer_mode_enabled]);
+  }, [activeTab, formData.developer_mode_enabled, isActive]);
 
   useEffect(() => {
     if (activeTab !== 'tools' || !formData.developer_mode_enabled) return;
+    if (!selectedRuntimeTaskId || !runtimeTasks.some((task) => task.id === selectedRuntimeTaskId)) return;
     void loadRuntimeTaskTraces(selectedRuntimeTaskId);
-  }, [activeTab, formData.developer_mode_enabled, selectedRuntimeTaskId]);
+  }, [activeTab, formData.developer_mode_enabled, runtimeTasks, selectedRuntimeTaskId]);
 
   useEffect(() => {
     if (activeTab !== 'tools' || !formData.developer_mode_enabled) return;
+    if (!selectedRuntimeSessionId || !hasSelectedRuntimeSession) return;
     void loadRuntimeSessionDetails(selectedRuntimeSessionId);
-  }, [activeTab, formData.developer_mode_enabled, selectedRuntimeSessionId]);
+  }, [activeTab, formData.developer_mode_enabled, hasSelectedRuntimeSession, selectedRuntimeSessionId]);
 
   useEffect(() => {
     setTestStatus('idle');
@@ -1124,35 +1009,27 @@ export function Settings({ isActive = true }: { isActive?: boolean }) {
 
   useEffect(() => {
     if (activeTab !== 'tools') return;
+    void loadMcpRuntimeData();
     for (const server of mcpServers) {
       void handleRefreshMcpOAuth(server);
     }
   }, [activeTab, mcpServers]);
 
+  const loadMcpRuntimeData = useCallback(async () => {
+    try {
+      const result = await window.ipcRenderer.mcp.list();
+      if (!result?.success) return;
+      setMcpLiveSessions(Array.isArray(result.sessions) ? (result.sessions as McpSessionState[]) : []);
+      setMcpRuntimeItems(Array.isArray(result.items) ? (result.items as McpServerRuntimeItem[]) : []);
+    } catch (error) {
+      console.error('Failed to load MCP runtime state:', error);
+    }
+  }, []);
+
   useEffect(() => {
     if (!activeAiSource) return;
-    let cancelled = false;
-    const detect = async () => {
-      try {
-        const result = await window.ipcRenderer.detectAiProtocol({
-          baseURL: activeAiSource.baseURL,
-          presetId: activeAiSource.presetId,
-          protocol: activeAiSource.protocol,
-        });
-        if (cancelled || !result?.success || !result.protocol) return;
-        setDetectedAiProtocol(result.protocol);
-        if (activeAiSource.protocol !== result.protocol) {
-          updateAiSource(activeAiSource.id, (source) => ({ ...source, protocol: result.protocol }));
-        }
-      } catch {
-        // ignore detect failures for live typing
-      }
-    };
-    void detect();
-    return () => {
-      cancelled = true;
-    };
-  }, [activeAiSource?.id, activeAiSource?.baseURL, activeAiSource?.presetId]);
+    setDetectedAiProtocol((activeAiSource?.protocol || 'openai') as AiProtocol);
+  }, [activeAiSource?.id, activeAiSource?.baseURL, activeAiSource?.presetId, activeTab]);
 
   useEffect(() => {
     return undefined;
@@ -1316,9 +1193,6 @@ export function Settings({ isActive = true }: { isActive?: boolean }) {
       ...prev,
       [source.id]: prev[source.id] || 'chat',
     }));
-    if (!(modelsBySource[source.id] || []).length) {
-      void fetchModelsForSource(source, { manual: true });
-    }
   };
 
   const fetchModelsForSource = useCallback(async (
@@ -1373,8 +1247,8 @@ export function Settings({ isActive = true }: { isActive?: boolean }) {
       if (requestId !== fetchModelsRequestRef.current) return;
 
       const deduped = Array.from(new Map(
-        (models || [])
-          .map((item) => toAiModelDescriptor(item))
+        ((models || []) as unknown[])
+          .map((item) => toAiModelDescriptor(item as Record<string, unknown>))
           .filter((item): item is AiModelDescriptor => Boolean(item))
           .map((item) => [item.id, item]),
       ).values());
@@ -1437,15 +1311,9 @@ export function Settings({ isActive = true }: { isActive?: boolean }) {
       setModelsBySource((prev) => ({ ...prev, [activeAiSource.id]: [] }));
       setTestStatus('idle');
       setTestMsg('');
-      return;
     }
-
-    const timer = window.setTimeout(() => {
-      void fetchModelsForSource(activeAiSource, { manual: false });
-    }, 650);
-
-    return () => window.clearTimeout(timer);
   }, [
+    activeTab,
     activeAiSource?.id,
     activeAiSource?.baseURL,
     activeAiSource?.apiKey,
@@ -1529,7 +1397,11 @@ export function Settings({ isActive = true }: { isActive?: boolean }) {
         purpose: 'image',
       });
       if (requestId !== fetchImageModelsRequestRef.current) return;
-      const remoteIds = Array.from(new Set((models || []).map((item) => String(item.id || '').trim()).filter(Boolean)));
+      const remoteIds = Array.from(new Set(
+        ((models || []) as Array<{ id?: string }>)
+          .map((item) => String(item.id || '').trim())
+          .filter(Boolean)
+      ));
       const summary = remoteIds.length > 0 ? `已拉取远端模型 ${remoteIds.length} 个` : '远端未返回可用生图模型';
       applyModelOptions(remoteIds, summary);
     } catch (error) {
@@ -1557,14 +1429,12 @@ export function Settings({ isActive = true }: { isActive?: boolean }) {
       if (current === DASHSCOPE_LOCKED_IMAGE_MODEL) return prev;
       return { ...prev, image_model: DASHSCOPE_LOCKED_IMAGE_MODEL };
     });
-  }, [isDashscopeImageTemplate]);
+  }, [activeTab, isDashscopeImageTemplate]);
 
   useEffect(() => {
-    const timer = window.setTimeout(() => {
-      void fetchImageModels({ manual: false });
-    }, 450);
-    return () => window.clearTimeout(timer);
+    return;
   }, [
+    activeTab,
     formData.api_endpoint,
     formData.api_key,
     formData.image_api_key,
@@ -1574,64 +1444,7 @@ export function Settings({ isActive = true }: { isActive?: boolean }) {
     fetchImageModels,
   ]);
 
-  useEffect(() => {
-    const nextSourceId = resolveLinkedSourceId({
-      endpoint: formData.transcription_endpoint || formData.api_endpoint,
-      apiKey: formData.transcription_key || formData.api_key,
-      model: formData.transcription_model,
-      fallbackId: defaultAiSourceId,
-    });
-    setTranscriptionSourceId((prev) => prev === nextSourceId ? prev : nextSourceId);
-  }, [
-    aiSources,
-    defaultAiSourceId,
-    formData.api_endpoint,
-    formData.api_key,
-    formData.transcription_endpoint,
-    formData.transcription_key,
-    formData.transcription_model,
-    resolveLinkedSourceId,
-  ]);
-
-  useEffect(() => {
-    const nextSourceId = resolveLinkedSourceId({
-      endpoint: formData.embedding_endpoint || formData.api_endpoint,
-      apiKey: formData.embedding_key || formData.api_key,
-      model: formData.embedding_model,
-      fallbackId: defaultAiSourceId,
-    });
-    setEmbeddingSourceId((prev) => prev === nextSourceId ? prev : nextSourceId);
-  }, [
-    aiSources,
-    defaultAiSourceId,
-    formData.api_endpoint,
-    formData.api_key,
-    formData.embedding_endpoint,
-    formData.embedding_key,
-    formData.embedding_model,
-    resolveLinkedSourceId,
-  ]);
-
-  useEffect(() => {
-    const nextSourceId = resolveLinkedSourceId({
-      endpoint: formData.image_endpoint || formData.api_endpoint,
-      apiKey: formData.image_api_key || formData.api_key,
-      model: formData.image_model,
-      fallbackId: defaultAiSourceId,
-    });
-    setImageSourceId((prev) => prev === nextSourceId ? prev : nextSourceId);
-  }, [
-    aiSources,
-    defaultAiSourceId,
-    formData.api_endpoint,
-    formData.api_key,
-    formData.image_endpoint,
-    formData.image_api_key,
-    formData.image_model,
-    resolveLinkedSourceId,
-  ]);
-
-  const persistMcpServers = async (nextServers: McpServerConfig[], tip?: string) => {
+  const persistMcpServers = useCallback(async (nextServers: McpServerConfig[], tip?: string) => {
     setIsSyncingMcp(true);
     try {
       const result = await window.ipcRenderer.mcp.save(nextServers);
@@ -1640,6 +1453,7 @@ export function Settings({ isActive = true }: { isActive?: boolean }) {
         return false;
       }
       setMcpServers((result.servers || nextServers) as McpServerConfig[]);
+      await loadMcpRuntimeData();
       if (tip) setMcpStatusMessage(tip);
       return true;
     } catch (error) {
@@ -1649,7 +1463,7 @@ export function Settings({ isActive = true }: { isActive?: boolean }) {
     } finally {
       setIsSyncingMcp(false);
     }
-  };
+  }, [loadMcpRuntimeData]);
 
   const handleAddMcpServer = async () => {
     const next = [...mcpServers, createDefaultMcpServer()];
@@ -1669,7 +1483,7 @@ export function Settings({ isActive = true }: { isActive?: boolean }) {
     await persistMcpServers(mcpServers, 'MCP 配置已保存');
   };
 
-  const handleDiscoverAndImportMcp = async () => {
+  const handleDiscoverAndImportMcp = useCallback(async () => {
     setIsSyncingMcp(true);
     try {
       const result = await window.ipcRenderer.mcp.importLocal();
@@ -1678,6 +1492,7 @@ export function Settings({ isActive = true }: { isActive?: boolean }) {
         return;
       }
       setMcpServers((result.servers || []) as McpServerConfig[]);
+      await loadMcpRuntimeData();
       setMcpStatusMessage(`已导入 ${result.imported || 0} 个 MCP Server（共 ${result.total || 0} 个）`);
     } catch (error) {
       console.error('Failed to import local MCP configs:', error);
@@ -1685,20 +1500,55 @@ export function Settings({ isActive = true }: { isActive?: boolean }) {
     } finally {
       setIsSyncingMcp(false);
     }
-  };
+  }, [loadMcpRuntimeData]);
 
-  const handleTestMcpServer = async (server: McpServerConfig) => {
+  const handleTestMcpServer = useCallback(async (server: McpServerConfig) => {
     setMcpTestingId(server.id);
     try {
       const result = await window.ipcRenderer.mcp.test(server);
       setMcpStatusMessage(`${server.name}：${result.message}`);
+      await loadMcpRuntimeData();
     } catch (error) {
       console.error('Failed to test MCP server:', error);
       setMcpStatusMessage(`${server.name}：测试失败`);
     } finally {
       setMcpTestingId('');
     }
-  };
+  }, [loadMcpRuntimeData]);
+
+  const handleDisconnectMcpServer = useCallback(async (server: McpServerConfig) => {
+    setMcpInspectingId(server.id);
+    try {
+      const result = await window.ipcRenderer.mcp.disconnect(server);
+      if (result?.success) {
+        setMcpLiveSessions(Array.isArray(result.sessions) ? (result.sessions as McpSessionState[]) : []);
+        await loadMcpRuntimeData();
+        setMcpStatusMessage(`${server.name}：连接已断开`);
+      }
+    } catch (error) {
+      console.error('Failed to disconnect MCP server:', error);
+      setMcpStatusMessage(`${server.name}：断开连接失败`);
+    } finally {
+      setMcpInspectingId('');
+    }
+  }, [loadMcpRuntimeData]);
+
+  const handleDisconnectAllMcpSessions = useCallback(async () => {
+    setMcpInspectingId('__all__');
+    try {
+      const result = await window.ipcRenderer.mcp.disconnectAll();
+      if (result?.success) {
+        setMcpLiveSessions(Array.isArray(result.sessions) ? (result.sessions as McpSessionState[]) : []);
+        await loadMcpRuntimeData();
+        setMcpStatusMessage('已断开全部 MCP 会话');
+      }
+    } catch (error) {
+      console.error('Failed to disconnect all MCP sessions:', error);
+      setMcpStatusMessage('断开全部 MCP 会话失败');
+    } finally {
+      setMcpInspectingId('');
+    }
+  }, [loadMcpRuntimeData]);
 
   const handleRefreshMcpOAuth = async (server: McpServerConfig) => {
     try {
@@ -1716,136 +1566,73 @@ export function Settings({ isActive = true }: { isActive?: boolean }) {
     }
   };
 
-  const loadMemories = async () => {
-    setIsMemoryLoading(true);
-    try {
-      const [data, archived, history, maintenanceStatus] = await Promise.all([
-        window.ipcRenderer.invoke('memory:list') as Promise<UserMemory[]>,
-        window.ipcRenderer.invoke('memory:archived') as Promise<UserMemory[]>,
-        window.ipcRenderer.invoke('memory:history') as Promise<MemoryHistoryEntry[]>,
-        window.ipcRenderer.invoke('memory:maintenance-status') as Promise<MemoryMaintenanceStatus>,
-      ]);
-      setMemories(data);
-      setArchivedMemories(archived);
-      setMemoryHistory(history);
-      setMemoryMaintenanceStatus(maintenanceStatus);
-    } catch (e) {
-      console.error("Failed to load memories", e);
-    } finally {
-      setIsMemoryLoading(false);
-    }
-  };
-
-  const handleRunMemoryMaintenance = async () => {
-    try {
-      const status = await window.ipcRenderer.invoke('memory:maintenance-run') as MemoryMaintenanceStatus;
-      setMemoryMaintenanceStatus(status);
-      await loadMemories();
-    } catch (e) {
-      console.error('Failed to run memory maintenance', e);
-    }
-  };
-
-  const handleSearchMemories = async () => {
-    const query = memorySearchQuery.trim();
-    if (!query) {
-      setMemorySearchResults([]);
-      return;
-    }
-    setIsMemorySearching(true);
-    try {
-      const results = await window.ipcRenderer.invoke('memory:search', {
-        query,
-        includeArchived: includeArchivedInSearch,
-        limit: 20,
-      }) as MemorySearchResult[];
-      setMemorySearchResults(results);
-    } catch (e) {
-      console.error('Failed to search memories', e);
-    } finally {
-      setIsMemorySearching(false);
-    }
-  };
-
-  const handleAddMemory = async () => {
-    if (!newMemoryContent.trim()) return;
-
-    try {
-      await window.ipcRenderer.invoke('memory:add', {
-        content: newMemoryContent,
-        type: newMemoryType,
-        tags: []
-      });
-      setNewMemoryContent('');
-      loadMemories();
-    } catch (e) {
-      console.error("Failed to add memory", e);
-    }
-  };
-
-  const handleDeleteMemory = async (id: string) => {
-    if (!confirm('确定要删除这条记忆吗？')) return;
-    try {
-      await window.ipcRenderer.invoke('memory:delete', id);
-      loadMemories();
-    } catch (e) {
-      console.error("Failed to delete memory", e);
-    }
-  };
-
-  const loadAppVersion = async () => {
+  const loadAppVersion = useCallback(async () => {
     try {
       const version = await window.ipcRenderer.getAppVersion();
       setAppVersion(version || '');
     } catch (e) {
       console.error('Failed to load app version:', e);
     }
-  };
+  }, []);
 
-  const loadRecentDebugLogs = async () => {
+  const loadRecentDebugLogs = useCallback(async () => {
+    const requestId = ++debugLogsLoadRequestRef.current;
     setIsDebugLogsLoading(true);
     try {
       const result = await window.ipcRenderer.debug.getRecent(120);
+      if (requestId !== debugLogsLoadRequestRef.current) return;
       setRecentDebugLogs(Array.isArray(result?.lines) ? result.lines : []);
     } catch (e) {
       console.error('Failed to load debug logs', e);
-      setRecentDebugLogs([]);
     } finally {
-      setIsDebugLogsLoading(false);
+      if (requestId === debugLogsLoadRequestRef.current) {
+        setIsDebugLogsLoading(false);
+      }
     }
-  };
+  }, []);
 
   const openDebugLogDirectory = async () => {
     const result = await window.ipcRenderer.debug.openLogDir();
     if (!result?.success && result?.error) {
-      alert(`打开日志目录失败：${result.error}`);
+      void appAlert(`打开日志目录失败：${result.error}`);
     }
   };
 
-  const loadToolDiagnostics = async () => {
+  const loadToolDiagnostics = useCallback(async () => {
     try {
       const result = await window.ipcRenderer.toolDiagnostics.list();
       setToolDiagnostics(Array.isArray(result) ? result : []);
     } catch (e) {
       console.error('Failed to load tool diagnostics', e);
-      setToolDiagnostics([]);
     }
-  };
+  }, []);
 
-  const loadRuntimeRoles = async () => {
+  const loadRuntimeRoles = useCallback(async () => {
     try {
       const result = await window.ipcRenderer.aiRoles.list();
       setRuntimeRoles(Array.isArray(result) ? result : []);
     } catch (e) {
       console.error('Failed to load runtime roles', e);
-      setRuntimeRoles([]);
     }
-  };
+  }, []);
 
-  const loadRuntimeTasks = async (preserveSelection = true) => {
+  const loadRuntimeSummary = useCallback(async () => {
+    const requestId = ++runtimeSummaryLoadRequestRef.current;
+    try {
+      const result = await window.ipcRenderer.debug.getRuntimeSummary();
+      if (requestId !== runtimeSummaryLoadRequestRef.current) return;
+      setRuntimeDiagnosticsSummary(result || null);
+    } catch (e) {
+      console.error('Failed to load runtime diagnostics summary', e);
+    }
+  }, []);
+
+  const loadRuntimeTasks = useCallback(async (preserveSelection = true) => {
+    const requestId = ++runtimeTasksLoadRequestRef.current;
     setIsRuntimeLoading(true);
     try {
       const result = await window.ipcRenderer.tasks.list({ limit: 40 });
+      if (requestId !== runtimeTasksLoadRequestRef.current) return;
       const taskList = Array.isArray(result) ? result : [];
       setRuntimeTasks(taskList);
       setSelectedRuntimeTaskId((prev) => {
@@ -1856,18 +1643,21 @@ export function Settings({ isActive = true }: { isActive?: boolean }) {
       });
     } catch (e) {
       console.error('Failed to load runtime tasks', e);
-      setRuntimeTasks([]);
       if (!preserveSelection) {
         setSelectedRuntimeTaskId('');
       }
     } finally {
-      setIsRuntimeLoading(false);
+      if (requestId === runtimeTasksLoadRequestRef.current) {
+        setIsRuntimeLoading(false);
+      }
     }
-  };
+  }, []);
 
-  const loadRuntimeSessions = async (preserveSelection = true) => {
+  const loadRuntimeSessions = useCallback(async (preserveSelection = true) => {
+    const requestId = ++runtimeSessionsLoadRequestRef.current;
     try {
       const result = await window.ipcRenderer.sessions.list();
+      if (requestId !== runtimeSessionsLoadRequestRef.current) return;
       const sessionList = Array.isArray(result) ? result as RuntimeSessionListItem[] : [];
       setRuntimeSessions(sessionList);
       setSelectedRuntimeSessionId((prev) => {
@@ -1878,32 +1668,34 @@ export function Settings({ isActive = true }: { isActive?: boolean }) {
       });
     } catch (e) {
       console.error('Failed to load runtime sessions', e);
-      setRuntimeSessions([]);
       if (!preserveSelection) {
         setSelectedRuntimeSessionId('');
       }
     }
-  };
+  }, []);
 
-  const loadRuntimeTaskTraces = async (taskId: string) => {
+  const loadRuntimeTaskTraces = useCallback(async (taskId: string) => {
     const normalizedTaskId = String(taskId || '').trim();
     if (!normalizedTaskId) {
       setRuntimeTaskTraces([]);
       return;
     }
+    const requestId = ++runtimeTaskTracesLoadRequestRef.current;
     setIsRuntimeTraceLoading(true);
     try {
       const result = await window.ipcRenderer.tasks.trace({ taskId: normalizedTaskId, limit: 120 });
+      if (requestId !== runtimeTaskTracesLoadRequestRef.current) return;
       setRuntimeTaskTraces(Array.isArray(result) ? result : []);
     } catch (e) {
       console.error('Failed to load runtime task traces', e);
-      setRuntimeTaskTraces([]);
     } finally {
-      setIsRuntimeTraceLoading(false);
+      if (requestId === runtimeTaskTracesLoadRequestRef.current) {
+        setIsRuntimeTraceLoading(false);
+      }
     }
-  };
+  }, []);
 
-  const loadRuntimeSessionDetails = async (sessionId: string) => {
+  const loadRuntimeSessionDetails = useCallback(async (sessionId: string, options?: { background?: boolean }) => {
     const normalizedSessionId = String(sessionId || '').trim();
     if (!normalizedSessionId) {
       setRuntimeSessionTranscript([]);
@@ -1911,40 +1703,73 @@ export function Settings({ isActive = true }: { isActive?: boolean }) {
       setRuntimeSessionToolResults([]);
       return;
     }
-    setIsRuntimeSessionLoading(true);
+    const requestId = ++runtimeSessionDetailsLoadRequestRef.current;
+    if (!options?.background) {
+      setIsRuntimeSessionLoading(true);
+    }
     try {
       const [transcript, checkpoints, toolResults] = await Promise.all([
         window.ipcRenderer.sessions.getTranscript(normalizedSessionId, 120),
         window.ipcRenderer.runtime.getCheckpoints({ sessionId: normalizedSessionId, limit: 80 }),
         window.ipcRenderer.runtime.getToolResults({ sessionId: normalizedSessionId, limit: 120 }),
       ]);
+      if (requestId !== runtimeSessionDetailsLoadRequestRef.current) return;
       setRuntimeSessionTranscript(Array.isArray(transcript) ? transcript as RuntimeSessionTranscriptItem[] : []);
       setRuntimeSessionCheckpoints(Array.isArray(checkpoints) ? checkpoints as RuntimeSessionCheckpointItem[] : []);
       setRuntimeSessionToolResults(Array.isArray(toolResults) ? toolResults as RuntimeSessionToolResultItem[] : []);
     } catch (e) {
       console.error('Failed to load runtime session details', e);
-      setRuntimeSessionTranscript([]);
-      setRuntimeSessionCheckpoints([]);
-      setRuntimeSessionToolResults([]);
     } finally {
-      setIsRuntimeSessionLoading(false);
+      if (!options?.background && requestId === runtimeSessionDetailsLoadRequestRef.current) {
+        setIsRuntimeSessionLoading(false);
+      }
     }
-  };
+  }, []);
 
-  const loadRuntimeHooks = async () => {
+  useEffect(() => {
+    if (!isActive) return;
+    if (activeTab !== 'tools' || !formData.developer_mode_enabled) return;
+    const scheduleRefresh = () => {
+      if (runtimeObservabilityRefreshTimerRef.current != null) {
+        window.clearTimeout(runtimeObservabilityRefreshTimerRef.current);
+      }
+      runtimeObservabilityRefreshTimerRef.current = window.setTimeout(() => {
+        runtimeObservabilityRefreshTimerRef.current = null;
+        void loadRuntimeSessions();
+        if (selectedRuntimeSessionId) {
+          void loadRuntimeSessionDetails(selectedRuntimeSessionId, { background: true });
+        }
+      }, 450);
+    };
+    const onRuntimeEvent = () => scheduleRefresh();
+    const onWanderProgress = () => scheduleRefresh();
+    window.ipcRenderer.on('runtime:event', onRuntimeEvent as (...args: unknown[]) => void);
+    window.ipcRenderer.on('wander:progress', onWanderProgress as (...args: unknown[]) => void);
+    return () => {
+      window.ipcRenderer.off('runtime:event', onRuntimeEvent as (...args: unknown[]) => void);
+      window.ipcRenderer.off('wander:progress', onWanderProgress as (...args: unknown[]) => void);
+      if (runtimeObservabilityRefreshTimerRef.current != null) {
+        window.clearTimeout(runtimeObservabilityRefreshTimerRef.current);
+        runtimeObservabilityRefreshTimerRef.current = null;
+      }
+    };
+  }, [activeTab, formData.developer_mode_enabled, isActive, loadRuntimeSessionDetails, loadRuntimeSessions, selectedRuntimeSessionId]);
+
+  const loadRuntimeHooks = useCallback(async () => {
     try {
       const result = await window.ipcRenderer.toolHooks.list();
       setRuntimeHooks(Array.isArray(result) ? result as RuntimeHookDefinition[] : []);
     } catch (e) {
       console.error('Failed to load runtime hooks', e);
-      setRuntimeHooks([]);
     }
-  };
+  }, []);
 
-  const loadBackgroundTasks = async (preserveSelection = true) => {
+  const loadBackgroundTasks = useCallback(async (preserveSelection = true) => {
+    const requestId = ++backgroundTasksLoadRequestRef.current;
     setIsBackgroundTasksLoading(true);
     try {
       const result = await window.ipcRenderer.backgroundTasks.list();
+      if (requestId !== backgroundTasksLoadRequestRef.current) return;
       const taskList = Array.isArray(result) ? result as BackgroundTaskItem[] : [];
       setBackgroundTasks(taskList);
       setSelectedBackgroundTaskId((prev) => {
@@ -1955,38 +1780,55 @@ export function Settings({ isActive = true }: { isActive?: boolean }) {
       });
     } catch (e) {
       console.error('Failed to load background tasks', e);
-      setBackgroundTasks([]);
       if (!preserveSelection) {
         setSelectedBackgroundTaskId('');
       }
     } finally {
-      setIsBackgroundTasksLoading(false);
+      if (requestId === backgroundTasksLoadRequestRef.current) {
+        setIsBackgroundTasksLoading(false);
+      }
     }
-  };
+  }, []);
 
-  const loadBackgroundWorkerPool = async () => {
+  const loadBackgroundWorkerPool = useCallback(async () => {
+    const requestId = ++backgroundWorkerPoolLoadRequestRef.current;
     try {
       const result = await window.ipcRenderer.backgroundWorkers.getPoolState();
+      if (requestId !== backgroundWorkerPoolLoadRequestRef.current) return;
       setBackgroundWorkerPool({
         json: Array.isArray(result?.json) ? result.json : [],
         runtime: Array.isArray(result?.runtime) ? result.runtime : [],
       });
     } catch (e) {
       console.error('Failed to load background worker pool', e);
-      setBackgroundWorkerPool({ json: [], runtime: [] });
     }
-  };
+  }, []);
 
-  const loadRuntimeDeveloperData = async () => {
+  const loadRuntimeDeveloperData = useCallback(async () => {
     await Promise.all([
       loadRuntimeRoles(),
+      loadRuntimeSummary(),
+      loadToolDiagnostics(),
+    ]);
+    await Promise.all([
       loadRuntimeTasks(),
       loadRuntimeSessions(),
       loadRuntimeHooks(),
+    ]);
+    await Promise.all([
       loadBackgroundTasks(),
       loadBackgroundWorkerPool(),
     ]);
-  };
+  }, [
+    loadBackgroundTasks,
+    loadBackgroundWorkerPool,
+    loadRuntimeHooks,
+    loadRuntimeRoles,
+    loadRuntimeSummary,
+    loadRuntimeSessions,
+    loadRuntimeTasks,
+    loadToolDiagnostics,
+  ]);
 
   const handleCreateRuntimeTask = async () => {
     setIsRuntimeCreating(true);
@@ -2123,15 +1965,55 @@ export function Settings({ isActive = true }: { isActive?: boolean }) {
         void loadToolDiagnostics();
         void loadRuntimeDeveloperData();
       }
-      window.alert('开发者模式已开启（24 小时内有效）');
+      void appAlert('开发者模式已开启（24 小时内有效）');
       return 0;
     });
   }, [activeTab, persistDeveloperModeState]);
 
-  const loadSettings = async () => {
+  const loadSettings = useCallback(async (options?: { preserveViewState?: boolean; preserveRemoteModels?: boolean }) => {
+    const preserveViewState = Boolean(options?.preserveViewState);
+    const preserveRemoteModels = options?.preserveRemoteModels ?? preserveViewState;
+    const requestId = ++settingsLoadRequestRef.current;
     try {
       const settings = await window.ipcRenderer.getSettings();
+      if (requestId !== settingsLoadRequestRef.current) return;
       if (settings) {
+        const resolveLinkedSourceIdFromList = (params: {
+          endpoint?: string;
+          apiKey?: string;
+          model?: string;
+          fallbackId?: string;
+        }): string => {
+          const normalizedEndpoint = String(params.endpoint || '').trim();
+          const normalizedApiKey = String(params.apiKey || '').trim();
+          const normalizedModel = String(params.model || '').trim();
+          let bestSourceId = '';
+          let bestScore = -1;
+
+          for (const source of sourceList) {
+            let score = 0;
+            const sourceEndpoint = String(source.baseURL || '').trim();
+            const sourceApiKey = String(source.apiKey || '').trim();
+            const sourceModels = [
+              ...(source.models || []),
+              source.model,
+              ...(source.modelsMeta || []).map((item) => String(item?.id || '').trim()),
+            ].filter(Boolean);
+            if (normalizedEndpoint && sourceEndpoint === normalizedEndpoint) score += 4;
+            if (normalizedApiKey && sourceApiKey && sourceApiKey === normalizedApiKey) score += 2;
+            if (normalizedModel && sourceModels.includes(normalizedModel)) score += 1;
+            if (score > bestScore) {
+              bestScore = score;
+              bestSourceId = source.id;
+            }
+          }
+
+          if (bestScore > 0 && bestSourceId) return bestSourceId;
+          const fallbackId = String(params.fallbackId || '').trim();
+          if (fallbackId && sourceList.some((source) => source.id === fallbackId)) return fallbackId;
+          return normalizedDefaultId;
+        };
+
         const requestedDefaultSourceId = String(settings.default_ai_source_id || '').trim();
         const prefersOfficialDefault = requestedDefaultSourceId.toLowerCase() === 'redbox_official_auto';
         let sourceList = parseAiSources(settings.ai_sources_json).filter((source) => !isDeprecatedEmptyOpenAiSource(source));
@@ -2155,6 +2037,24 @@ export function Settings({ isActive = true }: { isActive?: boolean }) {
           ? loadedDefaultId
           : (loadedDefaultId === 'redbox_official_auto' ? 'redbox_official_auto' : (sourceList[0]?.id || 'redbox_official_auto'));
         const resolvedDefaultSource = sourceList.find((source) => source.id === normalizedDefaultId) || sourceList[0] || null;
+        const resolvedTranscriptionSourceId = resolveLinkedSourceIdFromList({
+          endpoint: String(settings.transcription_endpoint || settings.api_endpoint || '').trim(),
+          apiKey: String(settings.transcription_key || settings.api_key || '').trim(),
+          model: String(settings.transcription_model || '').trim(),
+          fallbackId: normalizedDefaultId,
+        });
+        const resolvedEmbeddingSourceId = resolveLinkedSourceIdFromList({
+          endpoint: String(settings.embedding_endpoint || settings.api_endpoint || '').trim(),
+          apiKey: String(settings.embedding_key || settings.api_key || '').trim(),
+          model: String(settings.embedding_model || '').trim(),
+          fallbackId: normalizedDefaultId,
+        });
+        const resolvedImageSourceId = resolveLinkedSourceIdFromList({
+          endpoint: String(settings.image_endpoint || settings.api_endpoint || '').trim(),
+          apiKey: String(settings.image_api_key || settings.api_key || '').trim(),
+          model: String(settings.image_model || '').trim(),
+          fallbackId: normalizedDefaultId,
+        });
         const unlockedAt = String(settings.developer_mode_unlocked_at || '').trim();
         const unlockedAtMs = unlockedAt ? Date.parse(unlockedAt) : NaN;
         const developerModeEnabled = Boolean(settings.developer_mode_enabled)
@@ -2163,10 +2063,40 @@ export function Settings({ isActive = true }: { isActive?: boolean }) {
 
         setAiSources(sourceList);
         setDefaultAiSourceId(normalizedDefaultId);
-        setActiveAiSourceId(normalizedDefaultId);
-        setModelsBySource({});
+        setActiveAiSourceId((prevActiveId) => {
+          if (!preserveViewState) {
+            return normalizedDefaultId;
+          }
+          const currentActiveId = String(prevActiveId || '').trim();
+          if (currentActiveId === 'redbox_official_auto') {
+            return currentActiveId;
+          }
+          if (currentActiveId && sourceList.some((source) => source.id === currentActiveId)) {
+            return currentActiveId;
+          }
+          return normalizedDefaultId;
+        });
+        setModelsBySource((prev) => {
+          if (!preserveRemoteModels) {
+            return {};
+          }
+          const validSourceIds = new Set(sourceList.map((source) => source.id));
+          return Object.fromEntries(
+            Object.entries(prev).filter(([sourceId]) => sourceId === 'redbox_official_auto' || validSourceIds.has(sourceId))
+          );
+        });
         setDetectedAiProtocol((resolvedDefaultSource?.protocol || findAiPresetById(resolvedDefaultSource?.presetId || '')?.protocol || 'openai') as AiProtocol);
         setMcpServers(parseMcpServers(settings.mcp_servers_json));
+        setTranscriptionSourceId(resolvedTranscriptionSourceId);
+        setEmbeddingSourceId(resolvedEmbeddingSourceId);
+        setImageSourceId(resolvedImageSourceId);
+        console.log('[settings][ai] loadSettings-applied', {
+          sourceCount: sourceList.length,
+          defaultAiSourceId: normalizedDefaultId,
+          transcriptionSourceId: resolvedTranscriptionSourceId,
+          embeddingSourceId: resolvedEmbeddingSourceId,
+          imageSourceId: resolvedImageSourceId,
+        });
 
         setFormData({
           api_endpoint: resolvedDefaultSource?.baseURL || '',
@@ -2210,9 +2140,6 @@ export function Settings({ isActive = true }: { isActive?: boolean }) {
           model_name_chatroom: settings.model_name_chatroom || '',
           model_name_knowledge: settings.model_name_knowledge || '',
           model_name_redclaw: settings.model_name_redclaw || '',
-          search_provider: settings.search_provider || 'duckduckgo',
-          search_endpoint: settings.search_endpoint || '',
-          search_api_key: settings.search_api_key || '',
           proxy_enabled: Boolean(settings.proxy_enabled),
           proxy_url: settings.proxy_url || '',
           proxy_bypass: settings.proxy_bypass || 'localhost,127.0.0.1,::1',
@@ -2229,21 +2156,33 @@ export function Settings({ isActive = true }: { isActive?: boolean }) {
           void persistDeveloperModeState(false, null);
         }
       } else {
+        if (requestId !== settingsLoadRequestRef.current) return;
         setAiSources([]);
         setDefaultAiSourceId('redbox_official_auto');
-        setActiveAiSourceId('redbox_official_auto');
-        setModelsBySource({});
+        setActiveAiSourceId((prevActiveId) => {
+          if (preserveViewState && String(prevActiveId || '').trim() === 'redbox_official_auto') {
+            return prevActiveId;
+          }
+          return 'redbox_official_auto';
+        });
+        setModelsBySource((prev) => (preserveRemoteModels ? prev : {}));
         setDetectedAiProtocol('openai');
         setMcpServers([]);
       }
     } catch (e) {
+      if (requestId !== settingsLoadRequestRef.current) return;
       console.error("Failed to load settings", e);
     }
-  };
+  }, [isDeprecatedEmptyOpenAiSource, persistDeveloperModeState]);
 
-  const reloadCustomAiSettings = useCallback(async () => {
-    await loadSettings();
-  }, []);
+  const reloadCustomAiSettings = useCallback(async (options?: { preserveViewState?: boolean; preserveRemoteModels?: boolean }) => {
+    await loadSettings({
+      preserveViewState: true,
+      preserveRemoteModels: true,
+      ...options,
+    });
+  }, [loadSettings]);
+
 
   useEffect(() => {
     if (!formData.developer_mode_enabled || !formData.developer_mode_unlocked_at) {
@@ -2265,16 +2204,16 @@ export function Settings({ isActive = true }: { isActive?: boolean }) {
     return () => window.clearTimeout(timer);
   }, [expireDeveloperMode, formData.developer_mode_enabled, formData.developer_mode_unlocked_at]);
 
-  const checkTools = async () => {
+  const checkTools = useCallback(async () => {
     try {
       const status = await window.ipcRenderer.checkYtdlp();
       setYtdlpStatus(status);
     } catch (e) {
       console.error(e);
     }
-  };
+  }, []);
 
-  const loadBrowserPluginStatus = async () => {
+  const loadBrowserPluginStatus = useCallback(async () => {
     try {
       const status = await window.ipcRenderer.browserPlugin.getStatus();
       setBrowserPluginStatus(status);
@@ -2284,22 +2223,60 @@ export function Settings({ isActive = true }: { isActive?: boolean }) {
         success: false,
         bundled: false,
         exportPath: '',
+        pluginPath: '',
         exported: false,
         bundledPath: '',
         error: String(error),
       });
     }
-  };
+  }, []);
 
-  const loadAssistantDaemonStatus = useCallback(async () => {
+  const withTimeout = useCallback(<T,>(task: Promise<T>, timeoutMs: number, label: string): Promise<T> => {
+    return new Promise<T>((resolve, reject) => {
+      const timer = window.setTimeout(() => {
+        reject(new Error(label));
+      }, timeoutMs);
+      task.then((value) => {
+        window.clearTimeout(timer);
+        resolve(value);
+      }).catch((error) => {
+        window.clearTimeout(timer);
+        reject(error);
+      });
+    });
+  }, []);
+
+  const loadAssistantDaemonStatus = useCallback(async (options?: {
+    timeoutMs?: number;
+    suppressAlert?: boolean;
+  }) => {
     try {
-      const status = await window.ipcRenderer.assistantDaemon.getStatus();
+      const request = window.ipcRenderer.assistantDaemon.getStatus() as Promise<AssistantDaemonStatus>;
+      const status = typeof options?.timeoutMs === 'number' && options.timeoutMs > 0
+        ? await withTimeout(request, options.timeoutMs, '远程连接状态加载超时')
+        : await request;
       setAssistantDaemonStatus(status);
       replaceAssistantDaemonDraft(assistantDaemonStatusToDraft(status));
     } catch (error) {
       console.error('Failed to load assistant daemon status', error);
+      if (!options?.suppressAlert) {
+        void appAlert(`加载远程连接状态失败：${String(error)}`);
+      }
     }
-  }, [replaceAssistantDaemonDraft]);
+  }, [replaceAssistantDaemonDraft, withTimeout]);
+
+  const scheduleRemoteTabWarmup = useCallback(() => {
+    if (remoteTabWarmTimerRef.current != null) {
+      window.clearTimeout(remoteTabWarmTimerRef.current);
+    }
+    remoteTabWarmTimerRef.current = window.setTimeout(() => {
+      remoteTabWarmTimerRef.current = null;
+      void loadAssistantDaemonStatus({
+        timeoutMs: 1500,
+        suppressAlert: true,
+      });
+    }, 0);
+  }, [loadAssistantDaemonStatus]);
 
   const buildAssistantDaemonPayload = useCallback(() => ({
     enabled: assistantDaemonDraft.enabled,
@@ -2346,7 +2323,7 @@ export function Settings({ isActive = true }: { isActive?: boolean }) {
       replaceAssistantDaemonDraft(assistantDaemonStatusToDraft(status));
     } catch (error) {
       console.error('Failed to save assistant daemon config', error);
-      window.alert(`保存后台通信配置失败：${String(error)}`);
+      void appAlert(`保存后台通信配置失败：${String(error)}`);
     } finally {
       setAssistantDaemonBusy(false);
     }
@@ -2360,7 +2337,7 @@ export function Settings({ isActive = true }: { isActive?: boolean }) {
       replaceAssistantDaemonDraft(assistantDaemonStatusToDraft(status));
     } catch (error) {
       console.error('Failed to start assistant daemon', error);
-      window.alert(`启动后台值守失败：${String(error)}`);
+      void appAlert(`启动后台值守失败：${String(error)}`);
     } finally {
       setAssistantDaemonBusy(false);
     }
@@ -2374,7 +2351,7 @@ export function Settings({ isActive = true }: { isActive?: boolean }) {
       replaceAssistantDaemonDraft(assistantDaemonStatusToDraft(status));
     } catch (error) {
       console.error('Failed to stop assistant daemon', error);
-      window.alert(`停止后台值守失败：${String(error)}`);
+      void appAlert(`停止后台值守失败：${String(error)}`);
     } finally {
       setAssistantDaemonBusy(false);
     }
@@ -2397,7 +2374,7 @@ export function Settings({ isActive = true }: { isActive?: boolean }) {
           connected: false,
           stateDir: result.stateDir,
         });
-        window.alert(result.message || '启动微信扫码失败。');
+        void appAlert(result.message || '启动微信扫码失败。');
         return;
       }
       setAssistantDaemonWeixinLogin({
@@ -2410,7 +2387,7 @@ export function Settings({ isActive = true }: { isActive?: boolean }) {
       });
     } catch (error) {
       console.error('Failed to start Weixin login', error);
-      window.alert(`启动微信扫码失败：${String(error)}`);
+      void appAlert(`启动微信扫码失败：${String(error)}`);
     } finally {
       setAssistantDaemonWeixinLoginBusy(false);
     }
@@ -2419,7 +2396,7 @@ export function Settings({ isActive = true }: { isActive?: boolean }) {
   const handleCheckAssistantDaemonWeixinLogin = useCallback(async () => {
     const sessionKey = String(assistantDaemonWeixinLogin?.sessionKey || '').trim();
     if (!sessionKey) {
-      window.alert('请先点击“开始扫码”，生成微信二维码。');
+      void appAlert('请先点击“开始扫码”，生成微信二维码。');
       return;
     }
     setAssistantDaemonWeixinLoginBusy(true);
@@ -2452,7 +2429,7 @@ export function Settings({ isActive = true }: { isActive?: boolean }) {
       }
     } catch (error) {
       console.error('Failed to wait for Weixin login', error);
-      window.alert(`检查微信登录状态失败：${String(error)}`);
+      void appAlert(`检查微信登录状态失败：${String(error)}`);
     } finally {
       setAssistantDaemonWeixinLoginBusy(false);
     }
@@ -2462,31 +2439,192 @@ export function Settings({ isActive = true }: { isActive?: boolean }) {
     setAssistantDaemonWeixinLogin(null);
   }, []);
 
-  const loadVectorStats = async () => {
+  const ensureBaseSettingsLoaded = useCallback(async (force = false) => {
+    if (baseSettingsInFlightRef.current) return;
+    if (!force && baseSettingsLoadedRef.current) return;
+    baseSettingsInFlightRef.current = true;
     try {
-      const stats = await window.ipcRenderer.invoke('indexing:get-stats') as { totalStats: { vectors: number; documents: number } } | null;
-      if (stats && stats.totalStats) {
-        setVectorStats(stats.totalStats);
-      }
-    } catch (e) {
-      console.error("Failed to load vector stats", e);
-    }
-  };
-
-  const handleRebuildIndex = async () => {
-    if (!confirm('确定要重建所有索引吗？这可能需要一些时间，且会暂时清空现有向量数据。')) return;
-
-    setIsRebuilding(true);
-    try {
-      await window.ipcRenderer.invoke('indexing:rebuild-all');
-      alert('已触发后台索引重建任务。您可以在侧边栏查看进度。');
-      loadVectorStats();
-    } catch (e) {
-      alert('重建失败: ' + String(e));
+      await loadSettings({
+        preserveViewState: true,
+        preserveRemoteModels: true,
+      });
+      baseSettingsLoadedRef.current = true;
+      tabWarmRef.current.ai = true;
     } finally {
-      setIsRebuilding(false);
+      baseSettingsInFlightRef.current = false;
     }
-  };
+  }, [loadSettings]);
+
+  const ensureTabResourcesLoaded = useCallback(async (tab: SettingsTab, force = false) => {
+    if (!isActive) return;
+    if (tabInFlightRef.current[tab]) return;
+    if (!force && tabWarmRef.current[tab]) return;
+    tabInFlightRef.current[tab] = true;
+    try {
+      if (tab === 'general') {
+        await Promise.all([
+          loadAppVersion(),
+          loadRecentDebugLogs(),
+        ]);
+      } else if (tab === 'tools') {
+        await Promise.all([
+          checkTools(),
+          loadBrowserPluginStatus(),
+          loadMcpRuntimeData(),
+        ]);
+        if (formData.developer_mode_enabled) {
+          await Promise.all([
+            loadToolDiagnostics(),
+            loadRuntimeRoles(),
+          ]);
+        }
+      } else if (tab === 'ai' && aiModelSubTab === 'login' && officialAiPanelEnabled && !OfficialAiPanelComponent) {
+        const module = await loadOfficialAiPanelModule();
+        const nextComponent = module?.default || null;
+        setOfficialAiPanelComponent(() => nextComponent);
+        if (!nextComponent) {
+          setAiModelSubTab('custom');
+        }
+      }
+      tabWarmRef.current[tab] = true;
+    } finally {
+      tabInFlightRef.current[tab] = false;
+    }
+  }, [
+    OfficialAiPanelComponent,
+    aiModelSubTab,
+    checkTools,
+    formData.developer_mode_enabled,
+    isActive,
+    loadAppVersion,
+    loadBackgroundTasks,
+    loadBackgroundWorkerPool,
+    loadBrowserPluginStatus,
+    loadMcpRuntimeData,
+    loadRecentDebugLogs,
+    loadRuntimeHooks,
+    loadRuntimeRoles,
+    loadRuntimeSessions,
+    loadRuntimeTasks,
+    loadToolDiagnostics,
+    officialAiPanelEnabled,
+  ]);
+
+  useEffect(() => {
+    const handleProgress = (_: unknown, progress: number) => {
+      setInstallProgress(progress);
+    };
+    window.ipcRenderer.on('youtube:install-progress', handleProgress);
+    return () => {
+      window.ipcRenderer.off('youtube:install-progress', handleProgress);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (settingsActivationTimerRef.current != null) {
+      window.clearTimeout(settingsActivationTimerRef.current);
+    }
+
+    settingsActivationTimerRef.current = window.setTimeout(() => {
+      void ensureBaseSettingsLoaded();
+      settingsActivationTimerRef.current = null;
+    }, SETTINGS_ACTIVATION_DEBOUNCE_MS);
+
+    return () => {
+      if (settingsActivationTimerRef.current != null) {
+        window.clearTimeout(settingsActivationTimerRef.current);
+        settingsActivationTimerRef.current = null;
+      }
+    };
+  }, [ensureBaseSettingsLoaded]);
+
+  useEffect(() => {
+    if (!isActive) return;
+    const handleSettingsUpdated = () => {
+      // Preserve local edits on form-driven tabs; otherwise external auth sync can
+      // reload persisted settings and wipe unsaved AI source/model changes.
+      const preserveLocalFormState = activeTab === 'general' || activeTab === 'ai';
+      if (!preserveLocalFormState) {
+        void ensureBaseSettingsLoaded(true);
+      }
+      if (activeTab === 'remote') {
+        scheduleRemoteTabWarmup();
+      }
+      if (activeTab === 'general' || activeTab === 'tools') {
+        tabWarmRef.current[activeTab] = false;
+        void ensureTabResourcesLoaded(activeTab, true);
+      }
+    };
+    window.ipcRenderer.on('settings:updated', handleSettingsUpdated);
+    return () => {
+      window.ipcRenderer.off('settings:updated', handleSettingsUpdated);
+    };
+  }, [activeTab, ensureBaseSettingsLoaded, ensureTabResourcesLoaded, isActive, scheduleRemoteTabWarmup]);
+
+  useEffect(() => {
+    if (!isActive) {
+      return;
+    }
+    if (!baseSettingsLoadedRef.current) {
+      return;
+    }
+    let runtimePollTimer: number | null = null;
+    let backgroundTaskPollTimer: number | null = null;
+    if (activeTab === 'remote') {
+      scheduleRemoteTabWarmup();
+    }
+    if (activeTab === 'tools') {
+      void ensureTabResourcesLoaded('tools');
+      if (
+        formData.developer_mode_enabled
+        && (runtimeTasks.length > 0 || runtimeSessions.length > 0)
+      ) {
+        runtimePollTimer = window.setInterval(() => {
+          void Promise.all([
+            loadRuntimeTasks(),
+            loadRuntimeSessions(),
+          ]);
+        }, Math.max(8000, SETTINGS_TAB_POLL_DELAY_MS));
+      }
+      if (
+        formData.developer_mode_enabled
+        && backgroundTasks.length > 0
+      ) {
+        backgroundTaskPollTimer = window.setInterval(() => {
+          void Promise.all([
+            loadBackgroundTasks(),
+            loadBackgroundWorkerPool(),
+          ]);
+        }, Math.max(5000, SETTINGS_TAB_POLL_DELAY_MS));
+      }
+    }
+
+    return () => {
+      if (runtimePollTimer) {
+        window.clearInterval(runtimePollTimer);
+      }
+      if (backgroundTaskPollTimer) {
+        window.clearInterval(backgroundTaskPollTimer);
+      }
+      if (remoteTabWarmTimerRef.current != null) {
+        window.clearTimeout(remoteTabWarmTimerRef.current);
+        remoteTabWarmTimerRef.current = null;
+      }
+    };
+  }, [
+    activeTab,
+    backgroundTasks.length,
+    ensureTabResourcesLoaded,
+    formData.developer_mode_enabled,
+    isActive,
+    loadBackgroundTasks,
+    loadBackgroundWorkerPool,
+    loadRuntimeSessions,
+    loadRuntimeTasks,
+    runtimeSessions.length,
+    runtimeTasks.length,
+    scheduleRemoteTabWarmup,
+  ]);
 
   const handleInstallYtdlp = async () => {
     setIsInstallingTool(true);
@@ -2495,12 +2633,12 @@ export function Settings({ isActive = true }: { isActive?: boolean }) {
       const res = await window.ipcRenderer.installYtdlp();
       if (res.success) {
         await checkTools();
-        alert('安装成功！');
+        void appAlert('安装成功！');
       } else {
-        alert('安装失败: ' + res.error);
+        void appAlert('安装失败: ' + res.error);
       }
     } catch (e) {
-      alert('安装出错');
+      void appAlert('安装出错');
     } finally {
       setIsInstallingTool(false);
     }
@@ -2512,12 +2650,12 @@ export function Settings({ isActive = true }: { isActive?: boolean }) {
       const res = await window.ipcRenderer.updateYtdlp();
       if (res.success) {
         await checkTools();
-        alert('更新成功！');
+        void appAlert('更新成功！');
       } else {
-        alert('更新失败: ' + res.error);
+        void appAlert('更新失败: ' + res.error);
       }
     } catch (e) {
-      alert('更新出错');
+      void appAlert('更新出错');
     } finally {
       setIsInstallingTool(false);
     }
@@ -2528,14 +2666,14 @@ export function Settings({ isActive = true }: { isActive?: boolean }) {
     try {
       const result = await window.ipcRenderer.browserPlugin.prepare();
       if (!result.success) {
-        window.alert(`插件准备失败：${result.error || '未知错误'}`);
+        void appAlert(`插件准备失败：${result.error || '未知错误'}`);
         return;
       }
       await loadBrowserPluginStatus();
-      window.alert(`插件已准备完成。\n\n目录：${result.path}\n\n下一步请打开 Chrome / Edge 扩展管理页，开启开发者模式后，选择“加载已解压的扩展程序”，并指向该目录。`);
+      void appAlert(`插件已准备完成。\n\n外层目录：${result.path}\n插件目录：${result.pluginPath || '未返回'}\n\n下一步请打开 Chrome / Edge 扩展管理页，开启开发者模式后，将里面的“RedBox Browser Extension”文件夹拖进浏览器，或在“加载已解压的扩展程序”里选择该插件文件夹。`);
     } catch (error) {
       console.error('Failed to prepare browser plugin', error);
-      window.alert(`插件准备失败：${String(error)}`);
+      void appAlert(`插件准备失败：${String(error)}`);
     } finally {
       setIsPreparingBrowserPlugin(false);
     }
@@ -2545,15 +2683,53 @@ export function Settings({ isActive = true }: { isActive?: boolean }) {
     try {
       const result = await window.ipcRenderer.browserPlugin.openDir();
       if (!result.success) {
-        window.alert(`打开插件目录失败：${result.error || '未知错误'}`);
+        void appAlert(`打开插件目录失败：${result.error || '未知错误'}`);
         return;
       }
       await loadBrowserPluginStatus();
     } catch (error) {
       console.error('Failed to open browser plugin dir', error);
-      window.alert(`打开插件目录失败：${String(error)}`);
+      void appAlert(`打开插件目录失败：${String(error)}`);
     }
   };
+
+  const handleOpenKnowledgeApiGuide = async () => {
+    try {
+      const result = await window.ipcRenderer.openKnowledgeApiGuide();
+      if (!result.success) {
+        void appAlert(`打开知识导入 API 文档失败：${result.error || '未知错误'}`);
+      }
+    } catch (error) {
+      console.error('Failed to open knowledge api guide', error);
+      void appAlert(`打开知识导入 API 文档失败：${String(error)}`);
+    }
+  };
+
+  const handlePickWorkspaceDir = useCallback(async () => {
+    try {
+      const result = await window.ipcRenderer.pickWorkspaceDir();
+      if (!result?.success || !String(result.path || '').trim()) {
+        if (!result?.canceled && result?.error) {
+          void appAlert(`选择工作区目录失败：${String(result.error)}`);
+        }
+        return;
+      }
+      setFormData((prev) => ({
+        ...prev,
+        workspace_dir: String(result.path || '').trim(),
+      }));
+    } catch (error) {
+      console.error('Failed to pick workspace dir', error);
+      void appAlert(`选择工作区目录失败：${String(error)}`);
+    }
+  }, []);
+
+  const handleResetWorkspaceDir = useCallback(() => {
+    setFormData((prev) => ({
+      ...prev,
+      workspace_dir: '',
+    }));
+  }, []);
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -2680,18 +2856,8 @@ export function Settings({ isActive = true }: { isActive?: boolean }) {
   const tabs = [
     { id: 'ai', label: 'AI 模型', icon: Cpu },
     { id: 'general', label: '常规设置', icon: LayoutGrid },
-    { id: 'project', label: '项目', icon: FolderOpen },
-    { id: 'memory', label: '用户记忆', icon: Brain },
-    { id: 'knowledge', label: '知识库索引', icon: Database },
     { id: 'tools', label: '工具管理', icon: Wrench },
-    { id: 'experimental', label: '实验性功能', icon: FlaskConical },
   ] as const;
-
-  const sectionFallback = (
-    <div className="rounded-xl border border-border bg-surface-secondary/20 p-4 text-sm text-text-tertiary">
-      正在加载设置面板...
-    </div>
-  );
 
   return (
     <div className="flex h-full bg-background text-text-primary">
@@ -2701,7 +2867,9 @@ export function Settings({ isActive = true }: { isActive?: boolean }) {
         {tabs.map(tab => (
           <button
             key={tab.id}
-            onClick={() => setActiveTab(tab.id)}
+            onClick={() => {
+              setActiveTab(tab.id);
+            }}
             className={clsx(
               "flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors",
               activeTab === tab.id ? "bg-surface-secondary text-text-primary" : "text-text-secondary hover:bg-surface-secondary/50 hover:text-text-primary"
@@ -2720,52 +2888,19 @@ export function Settings({ isActive = true }: { isActive?: boolean }) {
 
             {/* General Tab */}
             {activeTab === 'general' && (
-              <Suspense fallback={sectionFallback}>
-                <GeneralSettingsSection
-                  appVersion={appVersion}
-                  formData={formData}
-                  setFormData={setFormData}
-                  recentDebugLogs={recentDebugLogs}
-                  isDebugLogsLoading={isDebugLogsLoading}
-                  handleRefreshDebugLogs={loadRecentDebugLogs}
-                  handleOpenDebugLogDir={openDebugLogDirectory}
-                  handleVersionTap={handleVersionTap}
-                  assistantDaemonStatus={assistantDaemonStatus}
-                  assistantDaemonDraft={assistantDaemonDraft}
-                  setAssistantDaemonDraft={setAssistantDaemonDraft}
-                  assistantDaemonLogs={assistantDaemonLogs}
-                  assistantDaemonBusy={assistantDaemonBusy}
-                  assistantDaemonWeixinLogin={assistantDaemonWeixinLogin}
-                  assistantDaemonWeixinLoginBusy={assistantDaemonWeixinLoginBusy}
-                  handleReloadAssistantDaemonStatus={loadAssistantDaemonStatus}
-                  handleSaveAssistantDaemonConfig={handleSaveAssistantDaemonConfig}
-                  handleStartAssistantDaemon={handleStartAssistantDaemon}
-                  handleStopAssistantDaemon={handleStopAssistantDaemon}
-                  handleStartAssistantDaemonWeixinLogin={handleStartAssistantDaemonWeixinLogin}
-                  handleCheckAssistantDaemonWeixinLogin={handleCheckAssistantDaemonWeixinLogin}
-                  handleClearAssistantDaemonWeixinLogin={handleClearAssistantDaemonWeixinLogin}
-                />
-              </Suspense>
-            )}
-
-            {activeTab === 'project' && (
-              <Suspense fallback={sectionFallback}>
-                <ProjectSettingsSection
-                  spaces={spaces}
-                  activeSpaceId={activeSpaceId}
-                  workspaceRoot={formData.workspace_dir}
-                  isLoading={isSpacesLoading}
-                  isSwitching={isSwitchingSpace}
-                  onRefresh={() => {
-                    void loadSpaces();
-                  }}
-                  onCreate={openCreateProjectDialog}
-                  onRename={openRenameProjectDialog}
-                  onSwitch={(spaceId) => {
-                    void handleSwitchSpace(spaceId);
-                  }}
-                />
-              </Suspense>
+              <GeneralSettingsSection
+                appVersion={appVersion}
+                formData={formData}
+                setFormData={setFormData}
+                handlePickWorkspaceDir={handlePickWorkspaceDir}
+                handleResetWorkspaceDir={handleResetWorkspaceDir}
+                handleOpenKnowledgeApiGuide={handleOpenKnowledgeApiGuide}
+                recentDebugLogs={recentDebugLogs}
+                isDebugLogsLoading={isDebugLogsLoading}
+                handleRefreshDebugLogs={loadRecentDebugLogs}
+                handleOpenDebugLogDir={openDebugLogDirectory}
+                handleVersionTap={handleVersionTap}
+              />
             )}
 
             {/* AI Tab */}
@@ -2789,7 +2924,7 @@ export function Settings({ isActive = true }: { isActive?: boolean }) {
                       >
                         自定义
                       </button>
-                      {hasOfficialAiPanel && (
+                      {officialAiPanelEnabled && (
                         <button
                           type="button"
                           onClick={() => setAiModelSubTab('login')}
@@ -2806,6 +2941,7 @@ export function Settings({ isActive = true }: { isActive?: boolean }) {
                     </div>
                   </div>
 
+                  <>
                   {aiModelSubTab === 'custom' && (
                   <>
                   <div className="space-y-4">
@@ -2875,8 +3011,13 @@ export function Settings({ isActive = true }: { isActive?: boolean }) {
                         </div>
                       </div>
 
-                      <p className="text-[11px] text-text-tertiary">
-                        当前生效：{defaultAiSource?.name || '未设置'} / {defaultAiSource?.model || '未设置'}
+                      <p className={clsx(
+                        'text-[11px]',
+                        defaultOfficialSourceUnavailable ? 'text-amber-600' : 'text-text-tertiary'
+                      )}>
+                        {defaultOfficialSourceUnavailable
+                          ? '当前官方源未登录，请重新登录或切换到其他默认聊天源。'
+                          : `当前生效：${defaultAiSource?.name || '未设置'} / ${defaultAiSource?.model || '未设置'}`}
                       </p>
                     </div>
 
@@ -2962,6 +3103,10 @@ export function Settings({ isActive = true }: { isActive?: boolean }) {
                         const isOfficialPlaceholder = isOfficialSource && !hasOfficialManagedSource;
                         const isModelListExpanded = aiSourceModelExpandState[source.id] ?? false;
                         const sourceModels = getAddedSourceModelList(source);
+                        const isOfficialSourcePending = isOfficialSource && officialAuthPending;
+                        const isOfficialSourceLoggedIn = isOfficialSource && officialAuthLoggedIn;
+                        const isOfficialSourceUnavailable = isOfficialSource && !officialAuthLoggedIn;
+                        const sourceModelsForDisplay = isOfficialSourceLoggedIn ? sourceModels : [];
                         const localGuide = getLocalGuideForSource(source);
                         const allowEmptyKey = isLocalAiSource(source);
 
@@ -2980,7 +3125,7 @@ export function Settings({ isActive = true }: { isActive?: boolean }) {
                                 <div className="flex items-center gap-2 min-w-0">
                                   <AiSourceLogo source={source} />
                                   <span className="text-sm font-medium text-text-primary truncate">{source.name || '未命名模型源'}</span>
-                                  {isDefaultSource && !isOfficialPlaceholder && (
+                                  {isDefaultSource && !isOfficialPlaceholder && !isOfficialSourceUnavailable && (
                                     <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] bg-amber-500/10 text-amber-600">
                                       <Star className="w-2.5 h-2.5" />
                                       默认源
@@ -2988,20 +3133,23 @@ export function Settings({ isActive = true }: { isActive?: boolean }) {
                                   )}
                                 </div>
                                 <p className="text-[11px] text-text-tertiary mt-0.5 truncate">
-                                  {isOfficialPlaceholder
-                                    ? '官方托管模型源 · 当前未登录，登录后自动同步官方模型与凭据'
-                                    : isOfficialSource
-                                    ? `已托管登录态 · 默认模型：${source.model || '(未设置)'} · 已添加 ${sourceModels.length} 个模型`
+                                  {isOfficialSource
+                                    ? isOfficialSourcePending
+                                      ? '官方托管模型源 · 正在检查登录状态'
+                                      : isOfficialSourceUnavailable
+                                      ? '官方托管模型源 · 当前未登录，登录后自动同步官方模型与凭据'
+                                      : `已托管登录态 · 默认模型：${source.model || '(未设置)'} · 已添加 ${sourceModelsForDisplay.length} 个模型`
                                     : `${preset?.label || 'Custom'} · 默认模型：${source.model || '(未设置)'} · 已添加 ${sourceModels.length} 个模型`}
                                 </p>
                               </div>
-                              {isOfficialPlaceholder ? (
+                              {isOfficialSourceUnavailable ? (
                                 <button
                                   type="button"
                                   onClick={() => setAiModelSubTab('login')}
                                   className="px-2 py-1 text-[11px] border rounded transition-colors border-border text-text-secondary hover:text-text-primary hover:bg-surface-secondary"
+                                  disabled={isOfficialSourcePending}
                                 >
-                                  去登录
+                                  {isOfficialSourcePending ? '检查中' : '去登录'}
                                 </button>
                               ) : (
                                 <>
@@ -3020,37 +3168,57 @@ export function Settings({ isActive = true }: { isActive?: boolean }) {
                                   >
                                     设为默认
                                   </button>
-                                  <button
-                                    type="button"
-                                    onClick={() => handleDeleteAiSource(source.id)}
-                                    className="p-1.5 text-text-tertiary hover:text-red-500 hover:bg-red-500/10 rounded transition-colors"
-                                    title="删除模型源"
-                                  >
-                                    <Trash2 className="w-3.5 h-3.5" />
-                                  </button>
+                                  {!isOfficialSource && (
+                                    <button
+                                      type="button"
+                                      onClick={() => handleDeleteAiSource(source.id)}
+                                      className="p-1.5 text-text-tertiary hover:text-red-500 hover:bg-red-500/10 rounded transition-colors"
+                                      title="删除模型源"
+                                    >
+                                      <Trash2 className="w-3.5 h-3.5" />
+                                    </button>
+                                  )}
                                 </>
                               )}
                             </div>
 
                             {isExpanded && (
                               <div className="p-3 space-y-3">
-                                {isOfficialPlaceholder ? (
-                                  <div className="rounded border border-border bg-surface-secondary/30 px-3 py-3 text-[11px] text-text-secondary space-y-2">
-                                    <div className="font-medium text-text-primary">RedBox 官方托管模型源</div>
+                                {isOfficialSourceUnavailable ? (
+                                  <div className={clsx(
+                                    'rounded border px-3 py-3 text-[11px] space-y-2',
+                                    isOfficialSourcePending
+                                      ? 'border-border bg-surface-secondary/30 text-text-secondary'
+                                      : 'border-amber-500/25 bg-amber-500/5 text-text-secondary'
+                                  )}>
+                                    <div className={clsx(
+                                      'font-medium',
+                                      isOfficialSourcePending ? 'text-text-primary' : 'text-amber-600'
+                                    )}>
+                                      {isOfficialSourcePending
+                                        ? '正在检查登录状态'
+                                        : officialAuthNeedsLogin
+                                        ? '当前账号登录已失效'
+                                        : '当前账号未登录'}
+                                    </div>
                                     <p>
-                                      即使当前未登录，这个官方源也会固定显示在这里。登录后会自动同步官方聊天模型、图片模型、视频能力与托管凭据。
+                                      {isOfficialSourcePending
+                                        ? '正在和宿主同步官方账号状态，完成后会自动刷新这里的模型与凭据。'
+                                        : '官方源仍会固定显示在这里，但当前不会再使用旧模型和旧凭据。重新登录后会自动恢复同步。'}
                                     </p>
-                                    <button
-                                      type="button"
-                                      onClick={() => setAiModelSubTab('login')}
-                                      className="px-3 py-1.5 border border-border rounded text-xs hover:bg-surface-secondary transition-colors"
-                                    >
-                                      前往登录
-                                    </button>
+                                    {!isOfficialSourcePending && (
+                                      <button
+                                        type="button"
+                                        onClick={() => setAiModelSubTab('login')}
+                                        className="px-3 py-1.5 border border-border rounded text-xs hover:bg-surface-secondary transition-colors"
+                                      >
+                                        前往登录
+                                      </button>
+                                    )}
                                   </div>
                                 ) : isOfficialSource ? (
                                   <div className="rounded border border-emerald-500/20 bg-emerald-500/5 px-3 py-2 text-[11px] text-text-secondary">
-                                    <div className="font-medium text-emerald-600">已登陆</div>
+                                    <div className="font-medium text-emerald-600">已登录</div>
                                   </div>
                                 ) : (
                                   <>
@@ -3130,43 +3298,50 @@ export function Settings({ isActive = true }: { isActive?: boolean }) {
                                   </>
                                 )}
 
-                                <div className="rounded border border-border bg-surface-secondary/20 p-2.5 space-y-2">
-                                  <div className="flex items-center justify-between">
-                                    <button
-                                      type="button"
-                                      onClick={() => handleToggleAiSourceModelExpand(source.id)}
-                                      className="flex items-center gap-2 text-xs font-medium text-text-primary"
-                                    >
-                                      <ChevronDown className={clsx('w-3.5 h-3.5 transition-transform', !isModelListExpanded && '-rotate-90')} />
-                                      已添加模型
-                                    </button>
-                                    <div className="flex items-center gap-2">
-                                      <button
-                                        type="button"
-                                        onClick={() => openAddModelModal(source)}
-                                        className="px-2 py-1 text-[11px] border border-border rounded hover:bg-surface-secondary transition-colors"
-                                      >
-                                        添加模型
-                                      </button>
-                                      <button
-                                        type="button"
-                                        onClick={() => {
-                                          setActiveAiSourceId(source.id);
-                                          void fetchModelsForSource(source, { manual: true });
-                                        }}
-                                        disabled={isTesting}
-                                        className="flex items-center gap-1 px-2 py-1 text-[11px] border border-border rounded hover:bg-surface-secondary transition-colors disabled:opacity-50"
-                                      >
-                                        <RefreshCw className={clsx('w-3 h-3', isTesting && activeAiSourceId === source.id && 'animate-spin')} />
-                                        拉取候选
-                                      </button>
-                                    </div>
+                                {(isOfficialSource && !isOfficialSourceLoggedIn) ? (
+                                  <div className="rounded border border-dashed border-border px-2.5 py-2 text-[11px] text-text-tertiary">
+                                    {isOfficialSourcePending
+                                      ? '正在等待官方账号状态检查完成。'
+                                      : '请先重新登录，登录后会自动同步官方模型列表。'}
                                   </div>
+                                ) : (
+                                  <div className="rounded border border-border bg-surface-secondary/20 p-2.5 space-y-2">
+                                    <div className="flex items-center justify-between">
+                                      <button
+                                        type="button"
+                                        onClick={() => handleToggleAiSourceModelExpand(source.id)}
+                                        className="flex items-center gap-2 text-xs font-medium text-text-primary"
+                                      >
+                                        <ChevronDown className={clsx('w-3.5 h-3.5 transition-transform', !isModelListExpanded && '-rotate-90')} />
+                                        已添加模型
+                                      </button>
+                                      <div className="flex items-center gap-2">
+                                        <button
+                                          type="button"
+                                          onClick={() => openAddModelModal(source)}
+                                          className="px-2 py-1 text-[11px] border border-border rounded hover:bg-surface-secondary transition-colors"
+                                        >
+                                          添加模型
+                                        </button>
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            setActiveAiSourceId(source.id);
+                                            void fetchModelsForSource(source, { manual: true });
+                                          }}
+                                          disabled={isTesting}
+                                          className="flex items-center gap-1 px-2 py-1 text-[11px] border border-border rounded hover:bg-surface-secondary transition-colors disabled:opacity-50"
+                                        >
+                                          <RefreshCw className={clsx('w-3 h-3', isTesting && activeAiSourceId === source.id && 'animate-spin')} />
+                                          拉取候选
+                                        </button>
+                                      </div>
+                                    </div>
 
-                                  {isModelListExpanded && (
-                                    sourceModels.length ? (
+                                    {isModelListExpanded && (
+                                      sourceModelsForDisplay.length ? (
                                       <div className="space-y-1">
-                                        {sourceModels.map((model) => {
+                                        {sourceModelsForDisplay.map((model) => {
                                           const isDefaultModel = source.model === model.id;
                                           return (
                                             <div key={model.id} className="flex items-center justify-between gap-2 rounded border border-border bg-surface-primary px-2.5 py-1.5">
@@ -3226,9 +3401,10 @@ export function Settings({ isActive = true }: { isActive?: boolean }) {
                                       <div className="text-[11px] text-text-tertiary rounded border border-dashed border-border px-2.5 py-2">
                                         暂无已添加模型，请先点击“添加模型”。
                                       </div>
-                                    )
-                                  )}
-                                </div>
+                                      )
+                                    )}
+                                  </div>
+                                )}
 
                                 {activeAiSourceId === source.id && (
                                   <div className="flex items-center justify-between gap-2">
@@ -3492,23 +3668,19 @@ export function Settings({ isActive = true }: { isActive?: boolean }) {
                         <button
                           type="button"
                           onClick={() => setFormData((d) => ({ ...d, wander_deep_think_enabled: !d.wander_deep_think_enabled }))}
-                          className="ui-switch-track w-11 h-6 shrink-0 mt-0.5"
+                          className="ui-switch-track shrink-0 mt-0.5"
+                          data-size="md"
                           data-state={formData.wander_deep_think_enabled ? 'on' : 'off'}
                         >
-                          <div
-                            className={clsx(
-                              'ui-switch-thumb top-1 w-4 h-4',
-                              formData.wander_deep_think_enabled ? 'translate-x-6' : 'translate-x-1'
-                            )}
-                          />
+                          <div className="ui-switch-thumb" />
                         </button>
                       </div>
                     </div>
                   </div>
                   </>
                   )}
-                  {aiModelSubTab === 'login' && hasOfficialAiPanel && (
-                    <div className="space-y-4">
+                  {officialAiPanelEnabled && (
+                    <div className={aiModelSubTab === 'login' ? 'space-y-4' : 'hidden'} aria-hidden={aiModelSubTab !== 'login'}>
                       {OfficialAiPanelComponent ? (
                         <OfficialAiPanelComponent onReloadSettings={reloadCustomAiSettings} />
                       ) : (
@@ -3518,52 +3690,14 @@ export function Settings({ isActive = true }: { isActive?: boolean }) {
                       )}
                     </div>
                   )}
+                  </>
 
                 </section>
               </div>
             )}
 
-            {/* Memory Tab */}
-            {activeTab === 'memory' && (
-              <Suspense fallback={sectionFallback}>
-                <MemorySettingsSection
-                  newMemoryType={newMemoryType}
-                  setNewMemoryType={setNewMemoryType}
-                  newMemoryContent={newMemoryContent}
-                  setNewMemoryContent={setNewMemoryContent}
-                  handleAddMemory={handleAddMemory}
-                  isMemoryLoading={isMemoryLoading}
-                  memories={memories}
-                  archivedMemories={archivedMemories}
-                  memoryHistory={memoryHistory}
-                  maintenanceStatus={memoryMaintenanceStatus}
-                  onRunMaintenance={handleRunMemoryMaintenance}
-                  memorySearchQuery={memorySearchQuery}
-                  setMemorySearchQuery={setMemorySearchQuery}
-                  includeArchivedInSearch={includeArchivedInSearch}
-                  setIncludeArchivedInSearch={setIncludeArchivedInSearch}
-                  memorySearchResults={memorySearchResults}
-                  isMemorySearching={isMemorySearching}
-                  onSearchMemories={handleSearchMemories}
-                  handleDeleteMemory={handleDeleteMemory}
-                />
-              </Suspense>
-            )}
-
-            {/* Knowledge Tab */}
-            {activeTab === 'knowledge' && (
-              <Suspense fallback={sectionFallback}>
-                <KnowledgeSettingsSection
-                  vectorStats={vectorStats}
-                  handleRebuildIndex={handleRebuildIndex}
-                  isRebuilding={isRebuilding}
-                />
-              </Suspense>
-            )}
-
             {/* Tools Tab */}
             {activeTab === 'tools' && (
-              <Suspense fallback={sectionFallback}>
               <ToolsSettingsSection
                 isSyncingMcp={isSyncingMcp}
                 handleDiscoverAndImportMcp={handleDiscoverAndImportMcp}
@@ -3571,14 +3705,19 @@ export function Settings({ isActive = true }: { isActive?: boolean }) {
                 handleSaveMcpServers={handleSaveMcpServers}
                 mcpStatusMessage={mcpStatusMessage}
                 mcpServers={mcpServers}
+                mcpRuntimeItems={mcpRuntimeItems}
+                mcpLiveSessions={mcpLiveSessions}
                 handleUpdateMcpServer={handleUpdateMcpServer}
                 handleDeleteMcpServer={handleDeleteMcpServer}
+                handleDisconnectMcpServer={handleDisconnectMcpServer}
+                handleDisconnectAllMcpSessions={handleDisconnectAllMcpSessions}
                 stringifyEnvRecord={stringifyEnvRecord}
                 parseEnvText={parseEnvText}
                 mcpOauthState={mcpOauthState}
                 handleRefreshMcpOAuth={handleRefreshMcpOAuth}
                 handleTestMcpServer={handleTestMcpServer}
                 mcpTestingId={mcpTestingId}
+                mcpInspectingId={mcpInspectingId}
                 ytdlpStatus={ytdlpStatus}
                 handleInstallYtdlp={handleInstallYtdlp}
                 handleUpdateYtdlp={handleUpdateYtdlp}
@@ -3599,6 +3738,7 @@ export function Settings({ isActive = true }: { isActive?: boolean }) {
                 handleRunAllAiToolDiagnostics={() => runAllToolDiagnostics('ai')}
                 runtimeTasks={runtimeTasks}
                 runtimeRoles={runtimeRoles}
+                runtimeDiagnosticsSummary={runtimeDiagnosticsSummary}
                 runtimeSessions={runtimeSessions}
                 backgroundTasks={backgroundTasks}
                 backgroundWorkerPool={backgroundWorkerPool}
@@ -3630,17 +3770,6 @@ export function Settings({ isActive = true }: { isActive?: boolean }) {
                 handleCancelRuntimeTask={handleCancelRuntimeTask}
                 handleCancelBackgroundTask={handleCancelBackgroundTask}
               />
-              </Suspense>
-            )}
-
-            {/* Experimental Tab */}
-            {activeTab === 'experimental' && (
-              <Suspense fallback={sectionFallback}>
-                <ExperimentalSettingsSection
-                  flags={flags}
-                  updateFlag={updateFlag}
-                />
-              </Suspense>
             )}
 
             {/* Global Save Actions (Visible on all tabs usually, but maybe better inside the form only if relevant) */}
@@ -3650,63 +3779,6 @@ export function Settings({ isActive = true }: { isActive?: boolean }) {
               status={status}
             />
           </form>
-          {isProjectDialogOpen && (
-            <div
-              className="fixed inset-0 z-[140] bg-black/45 flex items-center justify-center px-6 py-6"
-              onMouseDown={closeProjectDialog}
-            >
-              <div
-                className="w-full max-w-md rounded-2xl border border-border bg-surface-primary shadow-2xl"
-                onMouseDown={(event) => event.stopPropagation()}
-              >
-                <div className="px-5 py-4 border-b border-border">
-                  <div className="text-base font-semibold text-text-primary">
-                    {projectDialogMode === 'create' ? '新建项目' : '重命名项目'}
-                  </div>
-                  <p className="mt-1 text-xs text-text-tertiary">
-                    每个项目都会创建独立空间，知识库、草稿、任务和机器人会自动隔离。
-                  </p>
-                </div>
-                <div className="px-5 py-5 space-y-3">
-                  <input
-                    autoFocus
-                    value={projectDialogName}
-                    onChange={(event) => setProjectDialogName(event.target.value)}
-                    onKeyDown={(event) => {
-                      if (event.key === 'Enter') {
-                        event.preventDefault();
-                        void submitProjectDialog();
-                      } else if (event.key === 'Escape') {
-                        closeProjectDialog();
-                      }
-                    }}
-                    className="w-full h-11 rounded-xl border border-border bg-surface-secondary/30 px-4 text-sm text-text-primary focus:outline-none focus:border-accent-primary transition-colors"
-                    placeholder="请输入项目名称"
-                  />
-                </div>
-                <div className="px-5 py-4 border-t border-border bg-surface-secondary/10 rounded-b-2xl flex items-center justify-end gap-3">
-                  <button
-                    type="button"
-                    onClick={closeProjectDialog}
-                    disabled={isProjectDialogSubmitting}
-                    className="h-9 px-4 rounded-lg border border-border text-sm text-text-secondary hover:bg-surface-secondary hover:text-text-primary transition-colors disabled:opacity-50"
-                  >
-                    取消
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      void submitProjectDialog();
-                    }}
-                    disabled={isProjectDialogSubmitting}
-                    className="h-9 px-4 rounded-lg bg-accent-primary text-sm font-medium text-white hover:bg-accent-hover transition-colors disabled:opacity-50"
-                  >
-                    {isProjectDialogSubmitting ? '处理中...' : '确定'}
-                  </button>
-                </div>
-              </div>
-            </div>
-          )}
           {isCreateAiSourceModalOpen && (
             <div
               className="fixed inset-0 z-[140] bg-black/45 flex items-center justify-center px-6 py-6"

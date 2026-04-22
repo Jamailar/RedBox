@@ -680,7 +680,7 @@ const getBundledBrowserPluginCandidateDirs = (): string[] => {
     path.join(resourcesPath, BROWSER_PLUGIN_BUNDLE_RELATIVE_PATH),
     path.join(appPath, BROWSER_PLUGIN_BUNDLE_RELATIVE_PATH),
     path.join(process.cwd(), BROWSER_PLUGIN_BUNDLE_RELATIVE_PATH),
-    path.join(process.cwd(), 'desktop', BROWSER_PLUGIN_BUNDLE_RELATIVE_PATH),
+    path.join(process.cwd(), 'archive', 'desktop-electron', BROWSER_PLUGIN_BUNDLE_RELATIVE_PATH),
     path.join(process.cwd(), 'Plugin'),
     path.join(path.resolve(appPath, '..'), 'Plugin'),
   ];
@@ -1045,7 +1045,7 @@ async function checkForAppUpdate(force = false, forceNotify = false): Promise<Ap
 function createWindow() {
   attachWorkItemStoreListeners();
   const iconPath = path.join(app.getAppPath(), 'redbox.png');
-  const devIconPath = path.join(process.cwd(), 'desktop', 'redbox.png');
+  const devIconPath = path.join(process.cwd(), 'archive', 'desktop-electron', 'redbox.png');
   const resolvedIconPath = app.isPackaged ? iconPath : devIconPath;
 
   win = new BrowserWindow({

@@ -90,8 +90,8 @@ export class SkillManager {
     }
 
     private async discoverBuiltinSkills(): Promise<SkillDefinition[]> {
-        const cwdBuiltin = path.join(process.cwd(), 'desktop', 'electron', 'builtin-skills');
-        const cwdSystem = path.join(process.cwd(), 'desktop', 'electron', 'system-skills');
+        const cwdBuiltin = path.join(process.cwd(), 'archive', 'desktop-electron', 'electron', 'builtin-skills');
+        const cwdSystem = path.join(process.cwd(), 'archive', 'desktop-electron', 'electron', 'system-skills');
         const runtimeBuiltin = path.join(__dirname, 'builtin-skills');
         const runtimeSystem = path.join(__dirname, '..', 'system-skills');
         const packagedSystem = path.join(__dirname, '..', '..', 'electron', 'system-skills');

@@ -41,7 +41,7 @@ const getOfficialRuntimeCandidates = (): string[] => {
   return [
     path.resolve(__dirname, '..', relativeRuntimePath),
     path.resolve(process.cwd(), relativeRuntimePath),
-    path.resolve(process.cwd(), 'desktop', relativeRuntimePath),
+    path.resolve(process.cwd(), 'archive', 'desktop-electron', relativeRuntimePath),
   ];
 };
 

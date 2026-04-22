@@ -16,7 +16,7 @@ export type InternalSkillBundle = {
 
 const resolveInternalSkillRoot = (skillName: string): string => {
     const candidates = [
-        path.join(process.cwd(), 'desktop', 'electron', 'system-skills', skillName),
+        path.join(process.cwd(), 'archive', 'desktop-electron', 'electron', 'system-skills', skillName),
         path.join(app.getAppPath(), 'electron', 'system-skills', skillName),
         path.join(__dirname, '..', 'system-skills', skillName),
     ];

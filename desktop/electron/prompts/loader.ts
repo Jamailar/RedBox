@@ -9,7 +9,7 @@ export class PromptLoader {
 
     constructor() {
         const candidatePaths = [
-            path.join(process.cwd(), 'desktop/electron/prompts/library'),
+            path.join(process.cwd(), 'archive/desktop-electron/electron/prompts/library'),
             path.join(__dirname, 'library'),
             path.resolve(__dirname, '../electron/prompts/library'),
         ];

@@ -2776,8 +2776,8 @@ export class PiChatService {
     const userPath = path.join(profileRoot, 'user.md');
     const creatorProfilePath = path.join(profileRoot, 'CreatorProfile.md');
     const subjectsPath = path.join(workspacePaths.base, 'subjects');
-    const appCliPath = path.join(process.cwd(), 'desktop', 'electron', 'core', 'tools', 'appCliTool.ts');
-    const promptsLibraryPath = path.join(process.cwd(), 'desktop', 'electron', 'prompts', 'library');
+    const appCliPath = path.join(process.cwd(), 'archive', 'desktop-electron', 'electron', 'core', 'tools', 'appCliTool.ts');
+    const promptsLibraryPath = path.join(process.cwd(), 'archive', 'desktop-electron', 'electron', 'prompts', 'library');
 
     return [
       `- Main documentation: app_cli tool usage (${appCliPath})`,

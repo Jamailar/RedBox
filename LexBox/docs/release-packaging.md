@@ -13,6 +13,7 @@
 - `pnpm release:mac:setup-notary`
 - `pnpm release:win`
 - `pnpm release:all`
+- `pnpm release:oss`
 
 ## 一键执行两个平台
 
@@ -34,6 +35,39 @@ pnpm release:all
 - Windows 永远走 `ssh jamdebian` 远程构建再拉回
 - macOS notarization 上传遇到瞬时网络错误时会自动重试
 - 单个平台失败时，另一个平台的构建结果仍然会被明确输出
+
+## 一键打包并发布到开源仓库
+
+直接运行：
+
+```bash
+pnpm release:oss -- --repo <owner/name>
+```
+
+执行行为：
+
+1. 先复用 `node ./scripts/build-all-release.mjs` 完成 Windows + macOS 安装包构建
+2. 读取 `artifacts/release/mac-build-summary.json` 和 `artifacts/release/windows-build-summary.json`
+3. 默认按 `package.json.version` 生成 `vX.Y.Z` tag
+4. 将该 tag 推送到开源 remote，默认 remote 名为 `export-sanitized`
+5. 自动生成 `artifacts/release/vX.Y.Z-release-notes.md`
+6. 通过 `gh release create` 在 GitHub 开源仓库创建 release，并上传安装包
+
+默认前提：
+
+- 本机已安装并登录 `gh`
+- 开源 remote 已配置
+- 如果 `export-sanitized` 不是 GitHub URL，需要显式传 `--repo owner/name`，或者设置 `REDBOX_OPEN_SOURCE_GITHUB_REPO`
+
+常用参数：
+
+- `--repo owner/name`：GitHub release 目标仓库
+- `--remote export-sanitized`：推送 tag 的 git remote 名称
+- `--tag v1.9.3`：覆盖默认 tag
+- `--title "RedBox v1.9.3"`：覆盖 release 标题
+- `--draft`：创建草稿 release
+- `--prerelease`：标记为预发布
+- `--skip-build`：跳过打包，直接使用现有 `artifacts/release/*.json` 和安装包
 
 ## macOS
 

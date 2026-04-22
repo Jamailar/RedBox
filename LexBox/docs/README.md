@@ -13,6 +13,7 @@
 ### Architecture
 
 - [architecture/system-overview.md](/Users/Jam/LocalDev/GitHub/RedConvert/LexBox/docs/architecture/system-overview.md)
+- [architecture/product-module-breakdown.md](/Users/Jam/LocalDev/GitHub/RedConvert/LexBox/docs/architecture/product-module-breakdown.md)
 - [migration-architecture.md](/Users/Jam/LocalDev/GitHub/RedConvert/LexBox/docs/migration-architecture.md)
 - [ai-runtime-maintenance-overview.md](/Users/Jam/LocalDev/GitHub/RedConvert/LexBox/docs/ai-runtime-maintenance-overview.md)
 - [agent-collaboration-upgrade-plan.md](/Users/Jam/LocalDev/GitHub/RedConvert/LexBox/docs/agent-collaboration-upgrade-plan.md)

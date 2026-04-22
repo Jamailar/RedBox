@@ -30,18 +30,26 @@ All unified tools now go through `tools::guards::preflight_tool_call(...)`.
 Guard checks include:
 
 - tool is present in the resolved `CapabilitySet.allowedTools`
+- action is the canonical action exposed by the current runtime schema
 - path-like arguments stay relative to `currentSpaceRoot`
 - profile doc writes only run in `redclaw` or `diagnostics`
 - MCP server calls must target a known enabled server
 - MCP actions are filtered by `CapabilitySet.mcpScope`
 - automated entries (`background_task`, `subagent`) are blocked when approval reaches `explicit` or `always_hold`
 
+## Current policy rules
+
+- Capability policy is evaluated at `tool + action` granularity, not just top-level tool name.
+- Canonical tools stay small; permission and audit detail lives on action contracts.
+- `redbox_fs` should be granted and audited through canonical actions such as `workspace.read` and `knowledge.search`, not through free-form `scope + action` conventions in prompt assets.
+- Skill and prompt assets should only request canonical tool names and canonical actions. Legacy aliases may still be translated by runtime compatibility, but they should not appear in maintenance docs, prompts, or new skills.
+
 ## High-risk actions now covered
 
-- `redbox_profile_doc(action=update)`
-- `redbox_mcp(action=save|disconnect|disconnect_all|discover_local|import_local|call)`
-- `redbox_skill(action=create|save|enable|disable|market_install|test_connection|fetch_models)`
-- `redbox_runtime_control(action=runtime_query|runtime_resume|runtime_fork_session|tasks_create|tasks_resume|tasks_cancel|background_tasks_cancel)`
+- `app_cli(action="redclaw.profile.update")`
+- `app_cli(action="mcp.call" | "mcp.disconnect")` plus remaining MCP legacy-compatible management actions
+- `app_cli(action="skills.invoke")` is low-risk; legacy skill-management actions remain guarded when routed through compatibility
+- runtime/task mutation actions exposed through `app_cli(action="runtime.*")`
 
 ## Audit records
 
@@ -54,6 +62,7 @@ Each record includes:
 - entry kind
 - session id
 - tool name and action
+- compat marker when the call entered through a legacy alias or legacy command path
 - approval level
 - outcome: `allowed`, `blocked`, or `failed`
 - reason

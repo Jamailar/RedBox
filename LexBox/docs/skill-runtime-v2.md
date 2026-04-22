@@ -162,10 +162,22 @@ hooks:
 skill 运行时不只影响 prompt，还会同步影响：
 
 - tool 可见性
+- canonical action 可见性
 - capability set
 - provider 侧 model/effort 选择
 
 也就是说 skill 不再只是“提示词补丁”，而是完整参与运行时收敛。
+
+## 工具引用规则
+
+- `allowedTools` 只写 canonical top-level tool：`bash`、`redbox_fs`、`app_cli`、`redbox_editor`。
+- skill 正文、`activationHint`、`contextNote`、prompt prefix/suffix 中，默认只写 canonical 调用形式：
+  - `app_cli(action="...", payload={ ... })`
+  - `redbox_fs(action="workspace.read" | "knowledge.search", payload={ ... })`
+  - `redbox_editor(action="...", payload={ ... })`
+- 不要在新 skill 里写 `app_cli(command="...")`、`knowledge_read`、`knowledge_grep`、`redbox_runtime_control` 这类 legacy 调用。
+- 如果 runtime 仍需要兼容旧写法，应由 `tools/compat.rs` 负责翻译；skill 本身不负责教授兼容语法。
+- 选择工具时，优先挑最小 action，不要把多步任务塞进一个模糊 action 描述里。
 
 ## 维护规则
 
@@ -173,6 +185,7 @@ skill 运行时不只影响 prompt，还会同步影响：
 - 新增 hook 类型，必须在 `src-tauri/src/agent/loop.rs` 或对应执行链里接入，不要只写 frontmatter。
 - 新增 skill IPC 后，要同步更新 bridge、`src/types.d.ts` 和 `docs/ipc-inventory.md`。
 - 路径条件一律走 runtime resolver，不要在页面或命令层复制字符串启发式。
+- 若 skill 需要新增工具能力，先补 canonical action schema，再更新 skill 文本；不要先在 skill 里发明不存在的 tool 语法。
 
 ## 验证命令
 

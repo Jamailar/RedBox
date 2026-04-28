@@ -361,8 +361,46 @@ function applyBloggerNotesSettings() {
   renderBloggerNotesMode();
 }
 
+function applyBloggerNotesResumeCandidate(candidate) {
+  if (!candidate?.options) return;
+  const mode = String(candidate.options.mode || 'api') === 'tab' ? 'tab' : 'api';
+  const limit = Math.max(1, Math.round(Number(candidate.options.limit || 50) || 50));
+  const maxSeconds = Math.max(3, Math.min(
+    Math.round((Number(candidate.options.interval?.maxMs || 6000) || 6000) / 1000),
+    60,
+  ));
+  elements.bloggerNotesApiMode.checked = mode === 'api';
+  elements.bloggerNotesLimit.value = limit;
+  elements.bloggerNotesIntervalMax.value = maxSeconds;
+  renderBloggerNotesMode();
+}
+
+function getResumeBloggerNotesCandidate(nextContext) {
+  const tab = nextContext?.tab || {};
+  const identity = nextContext?.pageIdentity || {};
+  const active = nextContext?.queue?.active || null;
+  const last = nextContext?.queue?.last || null;
+  if (active?.type === 'xhs:collect-blogger-notes') return null;
+  if (last?.type !== 'xhs:collect-blogger-notes' || last?.status !== 'cancelled') return null;
+  const taskContext = last?.context || null;
+  const blogger = taskContext?.blogger || null;
+  const options = taskContext?.options || null;
+  if (!blogger?.userId || !options || String(options.mode || '') !== 'api') return null;
+  const currentUserId = String(identity?.userId || '').trim();
+  const currentUrl = String(tab?.url || identity?.url || '').trim();
+  const sameUser = currentUserId && currentUserId === String(blogger.userId || '').trim();
+  const sameUrl = currentUrl && String(blogger.source || '').trim() && currentUrl === String(blogger.source || '').trim();
+  if (!sameUser && !sameUrl) return null;
+  return {
+    savedCount: Number(last?.savedCount || 0),
+    total: Math.max(Number(last?.progress?.total || 0), Number(last?.savedCount || 0)),
+    blogger,
+    options,
+  };
+}
+
 function getBloggerNotesOptions() {
-  const limit = Math.max(1, Math.min(Number(elements.bloggerNotesLimit.value || 50), 200));
+  const limit = Math.max(1, Math.round(Number(elements.bloggerNotesLimit.value || 50) || 50));
   const intervalMaxSeconds = Math.max(3, Math.min(Number(elements.bloggerNotesIntervalMax.value || 6), 60));
   return {
     mode: elements.bloggerNotesApiMode.checked ? 'api' : 'tab',
@@ -392,11 +430,13 @@ async function startBloggerNotesCollection() {
   });
   try {
     const tab = context?.tab || {};
-    const options = getBloggerNotesOptions();
+    const resumeCandidate = getResumeBloggerNotesCandidate(context);
+    const options = resumeCandidate?.options || getBloggerNotesOptions();
     debugLog('blogger-notes-start', {
       tabId,
       tabUrl: tab.url || '',
       options,
+      resume: Boolean(resumeCandidate),
     });
     const response = await sendMessage({
       type: 'xhs:collect-blogger-notes',
@@ -415,7 +455,7 @@ async function startBloggerNotesCollection() {
       });
     }
     renderBloggerNotesProgress({
-      label: '采集任务已启动',
+      label: resumeCandidate ? '继续采集任务已启动' : '采集任务已启动',
       meta: summarizeActionResponse(response, '采集任务已加入队列'),
       status: 'success',
     });
@@ -494,6 +534,10 @@ function renderBloggerNotesPanel(nextContext) {
   }
 
   applyBloggerNotesSettings();
+  const resumeCandidate = getResumeBloggerNotesCandidate(nextContext);
+  if (resumeCandidate) {
+    applyBloggerNotesResumeCandidate(resumeCandidate);
+  }
   const active = nextContext?.queue?.active || null;
   const last = nextContext?.queue?.last || null;
   const isRunning = active?.type === 'xhs:collect-blogger-notes';
@@ -505,6 +549,7 @@ function renderBloggerNotesPanel(nextContext) {
   elements.bloggerNotesApiMode.disabled = isRunning;
   elements.bloggerNotesLimit.disabled = isRunning;
   elements.bloggerNotesIntervalMax.disabled = isRunning;
+  elements.bloggerNotesStart.textContent = resumeCandidate ? '继续上次采集' : '开始采集';
 
   elements.bloggerNotesControls.classList.toggle('hidden', !isRunning);
   elements.bloggerNotesPause.classList.toggle('hidden', !isRunning || paused);
@@ -524,6 +569,14 @@ function renderBloggerNotesPanel(nextContext) {
       label: '桌面端未连接',
       meta: '请先打开 RedBox 桌面端',
       status: 'error',
+    });
+  } else if (resumeCandidate) {
+    renderBloggerNotesProgress({
+      label: '检测到可继续的采集任务',
+      meta: `上次已保存 ${resumeCandidate.savedCount} / ${resumeCandidate.total || resumeCandidate.savedCount || 0} · 点击继续上次采集`,
+      status: 'idle',
+      current: Number(resumeCandidate.savedCount || 0),
+      total: Math.max(Number(resumeCandidate.total || 0), Number(resumeCandidate.savedCount || 0)),
     });
   } else if (last?.type === 'xhs:collect-blogger-notes' && last?.status === 'cancelled') {
     renderBloggerNotesProgress({
@@ -672,7 +725,8 @@ function summarizeActionResponse(response, fallback) {
     return response.duplicate ? '知识库中已存在' : '已保存到 RedBox';
   }
   if (response?.mode === 'xhs-blogger-notes') {
-    return `博主笔记 ${Number(response.count || 0)} 条，失败 ${Number(response.failed || 0)} 条`;
+    const skipped = Number(response.skipped || 0);
+    return `博主笔记 ${Number(response.count || 0)} 条，失败 ${Number(response.failed || 0)} 条${skipped > 0 ? `，跳过 ${skipped} 条` : ''}`;
   }
   if (response?.mode === 'xhs-download') {
     return `下载 ${Number(response.count || 0)} 个素材`;

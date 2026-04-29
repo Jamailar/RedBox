@@ -10562,6 +10562,7 @@ async function persistStructuredKnowledgeNote(input: {
     const meta: Record<string, any> = {
       id: noteId,
       type: input.kind || 'webpage',
+      captureKind: input.kind || '',
       title: input.title || existingMeta?.title || '未命名内容',
       author: input.author || existingMeta?.author || '未知',
       authorProfileUrl: input.authorProfileUrl || existingMeta?.authorProfileUrl || '',

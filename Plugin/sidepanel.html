@@ -13,6 +13,7 @@
         <img src="icons/icon48.png" alt="RedBox" class="brand-icon">
         <div>
           <h1>RedBox Capture</h1>
+          <div id="workspace-name" class="workspace-name">当前空间：读取中</div>
           <div id="server-status" class="status">正在检测桌面端...</div>
         </div>
       </div>
@@ -21,6 +22,27 @@
         <button id="refresh" class="icon-btn" title="刷新当前页面状态" aria-label="刷新">↻</button>
       </div>
     </header>
+
+    <section id="account-binding-notice" class="section account-binding-notice hidden" aria-live="polite">
+      <div>
+        <div id="account-binding-title" class="notice-title">当前空间未绑定账号</div>
+        <div id="account-binding-copy" class="notice-copy">打开账号主页后，可以绑定并学习这个账号。</div>
+      </div>
+      <button id="account-binding-action" type="button">绑定并学习这个账号</button>
+    </section>
+
+    <section class="section update-panel" aria-live="polite">
+      <div class="section-row">
+        <div class="section-title">插件更新</div>
+        <div id="update-badge" class="update-badge">读取中</div>
+      </div>
+      <div id="update-summary" class="update-summary">正在读取更新状态...</div>
+      <div id="update-meta" class="update-meta"></div>
+      <div class="update-actions">
+        <button id="check-update" type="button">检查更新</button>
+        <button id="open-update-source" type="button">打开更新页</button>
+      </div>
+    </section>
 
     <section class="section page-recognition" aria-live="polite">
       <div id="platform-logo" class="platform-logo platform-redbox">
@@ -56,7 +78,7 @@
       <div class="field-grid">
         <label class="field">
           <span>抓取数量</span>
-          <input id="blogger-notes-limit" type="number" min="1" step="1">
+          <input id="blogger-notes-limit" type="number" min="1" max="200" step="1">
         </label>
         <label class="field">
           <span>最大间隔（秒）</span>
@@ -90,6 +112,11 @@
       </div>
       <div id="task-current" class="task-current">暂无执行任务</div>
       <div id="task-queue-meta" class="task-meta">队列为空</div>
+      <div id="task-queue-controls" class="task-controls hidden">
+        <button id="task-queue-pause" type="button">暂停</button>
+        <button id="task-queue-resume" type="button" class="hidden">继续</button>
+        <button id="task-queue-cancel" type="button">停止任务</button>
+      </div>
     </section>
 
     <section class="section task-log-panel">
@@ -101,6 +128,11 @@
         <div class="log-empty">暂无执行日志</div>
       </div>
     </section>
+
+    <footer id="account-footer" class="account-footer hidden" aria-live="polite">
+      <div class="account-footer-label">当前空间账号</div>
+      <div id="bound-account-name" class="account-footer-value">等待连接 RedBox</div>
+    </footer>
   </main>
   <script src="sidepanel.js"></script>
 </body>

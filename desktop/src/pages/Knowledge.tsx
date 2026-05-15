@@ -53,7 +53,7 @@ interface YouTubeVideo {
     folderPath?: string;
 }
 
-type KnowledgeTypeFilter = 'all' | 'xhs-image' | 'xhs-video' | 'douyin-video' | 'link-article' | 'wechat-article' | 'youtube' | 'docs' | 'all-image' | 'all-video';
+type KnowledgeTypeFilter = 'all' | 'xhs-image' | 'xhs-video' | 'douyin-video' | 'link-article' | 'wechat-article' | 'youtube' | 'docs';
 
 interface DocumentKnowledgeSource {
     id: string;
@@ -713,11 +713,10 @@ export function Knowledge({ onNavigateToChat, onNavigateToRedClaw, isEmbedded = 
         void loadAllKnowledge();
     }, [loadAllKnowledge]);
 
-    // 搜索输入防抖：避免打字过程中频繁触发搜索
     useEffect(() => {
         const timeout = window.setTimeout(() => {
             void loadAllKnowledge();
-        }, 500);
+        }, 180);
         return () => window.clearTimeout(timeout);
     }, [searchQuery, selectedTypeFilter, loadAllKnowledge]);
 
@@ -844,7 +843,7 @@ export function Knowledge({ onNavigateToChat, onNavigateToRedClaw, isEmbedded = 
                     : 'link-article'
                 : note.captureKind === 'douyin-video'
                     ? 'douyin-video'
-                    : (note.captureKind === 'xhs-video' || note.video || note.hasVideo)
+                    : (note.captureKind === 'xhs-video' || note.video)
                     ? 'xhs-video'
                     : 'xhs-image';
 
@@ -910,39 +909,25 @@ export function Knowledge({ onNavigateToChat, onNavigateToRedClaw, isEmbedded = 
             }
             counts[item.kind] += 1;
         });
-        const platformFilters = [
-            { key: 'all' as const, label: '全部', count: knowledgeItems.length + youtubeVideos.length + documentSources.length, isAggregate: false },
-            { key: 'xhs-image' as const, label: '小红书图文', count: counts['xhs-image'], isAggregate: false },
-            { key: 'xhs-video' as const, label: '小红书视频', count: counts['xhs-video'], isAggregate: false },
-            { key: 'douyin-video' as const, label: '抖音视频', count: counts['douyin-video'], isAggregate: false },
-            { key: 'link-article' as const, label: '链接文章', count: counts['link-article'], isAggregate: false },
-            ...(SHOW_WECHAT_KNOWLEDGE_ACTIONS ? [{ key: 'wechat-article' as const, label: '公众号文章', count: counts['wechat-article'], isAggregate: false }] : []),
-            { key: 'youtube' as const, label: 'YouTube', count: counts.youtube, isAggregate: false },
-            { key: 'docs' as const, label: '文档', count: counts.docs, isAggregate: false },
+        return [
+            { key: 'all' as const, label: '全部', count: Number(kindCounts['redbook-note'] || 0) + counts.youtube + counts.docs },
+            { key: 'xhs-image' as const, label: '小红书图文', count: counts['xhs-image'] },
+            { key: 'xhs-video' as const, label: '小红书视频', count: counts['xhs-video'] },
+            { key: 'douyin-video' as const, label: '抖音视频', count: counts['douyin-video'] },
+            { key: 'link-article' as const, label: '链接文章', count: counts['link-article'] },
+            ...(SHOW_WECHAT_KNOWLEDGE_ACTIONS ? [{ key: 'wechat-article' as const, label: '公众号文章', count: counts['wechat-article'] }] : []),
+            { key: 'youtube' as const, label: 'YouTube', count: counts.youtube },
+            { key: 'docs' as const, label: '文档', count: counts.docs },
         ].filter((item) => item.key === 'all' || item.count > 0);
-        // 聚合快捷筛选器（无计数，始终显示）
-        const aggFilters = [
-            { key: 'all-image' as const, label: '仅图文', isAggregate: true },
-            { key: 'all-video' as const, label: '仅视频', isAggregate: true },
-        ];
-        return [...platformFilters, ...aggFilters];
     }, [kindCounts, knowledgeItems]);
 
     const youtubeSummaryPendingCount = useMemo(() => {
         return youtubeVideos.filter((video) => video.hasSubtitle && !String(video.summary || '').trim()).length;
     }, [youtubeVideos]);
 
-    // all-image: 图文笔记（跨平台纯图片/文字内容）
-    // all-video: 视频笔记（跨平台视频内容）
     const filteredKnowledgeItems = useMemo(() => {
-        const IMAGE_KINDS = new Set(['xhs-image', 'link-article', 'wechat-article']);
-        const VIDEO_KINDS = new Set(['xhs-video', 'douyin-video', 'youtube']);
         const filtered = knowledgeItems.filter((item) => {
-            if (selectedTypeFilter === 'all-image') {
-                if (!IMAGE_KINDS.has(item.kind)) return false;
-            } else if (selectedTypeFilter === 'all-video') {
-                if (!VIDEO_KINDS.has(item.kind)) return false;
-            } else if (selectedTypeFilter !== 'all' && item.kind !== selectedTypeFilter) {
+            if (selectedTypeFilter !== 'all' && item.kind !== selectedTypeFilter) {
                 return false;
             }
             if (selectedTag && !item.tags.includes(selectedTag)) {
@@ -1627,43 +1612,21 @@ export function Knowledge({ onNavigateToChat, onNavigateToRedClaw, isEmbedded = 
                                     key={item.key}
                                     onClick={() => setSelectedTypeFilter(item.key)}
                                     className={clsx(
-                                        item.isAggregate
-                                            ? 'shrink-0 px-3 py-1 text-[12px] rounded-lg border transition-all flex items-center gap-1.5 active:scale-95 font-medium'
-                                            : 'shrink-0 px-3.5 py-1.5 text-[12px] font-bold rounded-xl border transition-all flex items-center gap-2 active:scale-95',
+                                        'shrink-0 px-3.5 py-1.5 text-[12px] font-bold rounded-xl border transition-all flex items-center gap-2 active:scale-95',
                                         selectedTypeFilter === item.key
-                                            ? item.isAggregate
-                                                ? 'border-accent-primary/60 bg-accent-primary/10 text-accent-primary'
-                                                : 'border-transparent bg-accent-primary text-white shadow-lg shadow-accent-primary/20'
-                                            : item.isAggregate
-                                                ? 'border-border/50 bg-transparent text-text-tertiary hover:border-border hover:text-text-secondary'
-                                                : 'border-border/70 bg-surface-secondary/70 text-text-secondary hover:bg-surface-tertiary/70 hover:text-text-primary'
+                                            ? 'border-transparent bg-accent-primary text-white shadow-lg shadow-accent-primary/20'
+                                            : 'border-border/70 bg-surface-secondary/70 text-text-secondary hover:bg-surface-tertiary/70 hover:text-text-primary'
                                     )}
                                 >
-                                    {item.isAggregate && (
-                                        <span className={clsx(
-                                            'w-2.5 h-2.5 rounded-sm border flex items-center justify-center transition-all',
-                                            selectedTypeFilter === item.key
-                                                ? 'bg-accent-primary border-accent-primary'
-                                                : 'border-border/80 bg-transparent'
-                                        )}>
-                                            {selectedTypeFilter === item.key && (
-                                                <svg className="w-1.5 h-1.5 text-white" viewBox="0 0 10 8" fill="none">
-                                                    <path d="M1 4L3.5 6.5L9 1" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
-                                                </svg>
-                                            )}
-                                        </span>
-                                    )}
                                     <span>{item.label}</span>
-                                    {item.count !== undefined && (
-                                        <span className={clsx(
-                                            'text-[10px] px-1.5 py-0.5 rounded-lg font-bold',
-                                            selectedTypeFilter === item.key
-                                                ? 'bg-white/20 text-white'
-                                                : 'bg-surface-primary/70 text-text-tertiary'
-                                        )}>
-                                            {item.count}
-                                        </span>
-                                    )}
+                                    <span className={clsx(
+                                        'text-[10px] px-1.5 py-0.5 rounded-lg font-bold',
+                                        selectedTypeFilter === item.key
+                                            ? 'bg-white/20 text-white'
+                                            : 'bg-surface-primary/70 text-text-tertiary'
+                                    )}>
+                                        {item.count}
+                                    </span>
                                 </button>
                             ))}
                         </div>
@@ -1766,8 +1729,8 @@ export function Knowledge({ onNavigateToChat, onNavigateToRedClaw, isEmbedded = 
                                     className={clsx(
                                         'shrink-0 px-3 py-1 text-[11px] font-bold rounded-lg transition-all border uppercase tracking-wider inline-flex items-center gap-1.5',
                                         !selectedTag
-                                            ? 'bg-surface-secondary text-text-primary border-transparent shadow-sm'
-                                            : 'bg-transparent text-text-tertiary border-transparent hover:bg-surface-secondary hover:text-text-secondary'
+                                            ? 'bg-black/[0.04] text-text-primary border-transparent shadow-sm'
+                                            : 'bg-transparent text-text-tertiary border-transparent hover:bg-black/[0.03] hover:text-text-secondary'
                                     )}
                                 >
                                     <span>All Tags</span>
@@ -1775,8 +1738,8 @@ export function Knowledge({ onNavigateToChat, onNavigateToRedClaw, isEmbedded = 
                                         className={clsx(
                                             'inline-flex items-center justify-center rounded-md px-1.5 py-0.5 text-[9px] font-bold',
                                             !selectedTag
-                                                ? 'bg-surface-primary text-text-tertiary/80'
-                                                : 'bg-surface-secondary text-text-tertiary/70'
+                                                ? 'bg-black/5 text-text-tertiary/80'
+                                                : 'bg-black/[0.04] text-text-tertiary/70'
                                         )}
                                     >
                                         {allTags.length}
@@ -1798,7 +1761,7 @@ export function Knowledge({ onNavigateToChat, onNavigateToRedClaw, isEmbedded = 
                                             'shrink-0 px-3 py-1 text-[11px] rounded-lg transition-all flex items-center gap-1.5 border font-bold',
                                             selectedTag === tag
                                                 ? 'bg-accent-primary text-white border-transparent shadow-md shadow-accent-primary/20'
-                                                : 'bg-surface-secondary text-text-tertiary border-transparent hover:bg-surface-tertiary hover:text-text-primary'
+                                                : 'bg-black/[0.02] text-text-tertiary border-transparent hover:bg-black/[0.04] hover:text-text-primary'
                                         )}
                                     >
                                         <span className="opacity-40">#</span>
@@ -1808,7 +1771,7 @@ export function Knowledge({ onNavigateToChat, onNavigateToRedClaw, isEmbedded = 
                                                 'text-[9px] py-0.5 px-1.5 rounded-md font-bold',
                                                 selectedTag === tag
                                                     ? 'bg-white/20 text-white'
-                                                    : 'bg-surface-primary text-text-tertiary/60'
+                                                    : 'bg-black/5 text-text-tertiary/60'
                                             )}
                                         >
                                             {count}
@@ -1819,8 +1782,8 @@ export function Knowledge({ onNavigateToChat, onNavigateToRedClaw, isEmbedded = 
 
                             {!selectedTag && isAllTagsDrawerOpen && hasHiddenTags && (
                                 <div className="absolute left-0 right-0 top-full z-20 mt-3">
-                                    <div className="rounded-2xl border border-border/50 bg-surface-elevated shadow-xl shadow-black/[0.08] backdrop-blur-xl">
-                                    <div className="flex items-center justify-between gap-3 border-b border-border/40 px-4 py-3">
+                                    <div className="rounded-2xl border border-black/[0.05] bg-white/95 shadow-xl shadow-black/[0.08] backdrop-blur-xl">
+                                    <div className="flex items-center justify-between gap-3 border-b border-black/[0.04] px-4 py-3">
                                         <div className="min-w-0">
                                             <div className="text-[12px] font-extrabold text-text-primary tracking-tight">全部标签</div>
                                             <div className="mt-1 text-[10px] font-medium text-text-tertiary/70">
@@ -1829,7 +1792,7 @@ export function Knowledge({ onNavigateToChat, onNavigateToRedClaw, isEmbedded = 
                                         </div>
                                         <button
                                             onClick={() => setIsAllTagsDrawerOpen(false)}
-                                            className="inline-flex h-8 w-8 items-center justify-center rounded-xl text-text-tertiary hover:bg-surface-secondary hover:text-text-primary transition-all active:scale-90"
+                                            className="inline-flex h-8 w-8 items-center justify-center rounded-xl text-text-tertiary hover:bg-black/[0.04] hover:text-text-primary transition-all active:scale-90"
                                             title="收起标签抽屉"
                                         >
                                             <X className="w-3.5 h-3.5" />
@@ -1845,7 +1808,7 @@ export function Knowledge({ onNavigateToChat, onNavigateToRedClaw, isEmbedded = 
                                                         'px-3 py-1.5 text-[11px] rounded-xl transition-all flex items-center gap-1.5 border font-bold',
                                                         selectedTag === tag
                                                             ? 'bg-accent-primary text-white border-transparent shadow-md shadow-accent-primary/20'
-                                                            : 'bg-surface-secondary text-text-secondary border-border/50 hover:bg-surface-tertiary hover:text-text-primary'
+                                                            : 'bg-black/[0.02] text-text-tertiary border-transparent hover:bg-black/[0.04] hover:text-text-primary'
                                                     )}
                                                 >
                                                     <span className="opacity-40">#</span>
@@ -1855,7 +1818,7 @@ export function Knowledge({ onNavigateToChat, onNavigateToRedClaw, isEmbedded = 
                                                             'text-[9px] py-0.5 px-1.5 rounded-md font-bold',
                                                             selectedTag === tag
                                                                 ? 'bg-white/20 text-white'
-                                                                : 'bg-surface-primary/20 text-text-tertiary'
+                                                                : 'bg-black/5 text-text-tertiary/60'
                                                         )}
                                                     >
                                                         {count}

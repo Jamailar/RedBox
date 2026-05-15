@@ -23,8 +23,8 @@ const INLINE_ASSET_MAX_BYTES = 6 * 1024 * 1024;
 const UPDATE_STATE_KEY = 'pluginUpdateState';
 const UPDATE_ALARM_NAME = 'redbox-plugin-auto-update-check';
 const UPDATE_CHECK_INTERVAL_MINUTES = 360;
-const UPDATE_SOURCE_MANIFEST_URL = 'https://raw.githubusercontent.com/Jamailar/RedBox/main/Plugin/manifest.json';
-const UPDATE_SOURCE_REPO_URL = 'https://github.com/Jamailar/RedBox/tree/main/Plugin';
+const UPDATE_SOURCE_API_URL = 'https://redbox.ziz.hk/api/updates/plugin';
+const UPDATE_SOURCE_DOWNLOAD_URL = 'https://redbox.ziz.hk/download';
 const REDBOX_PLUGIN_SETTINGS_KEY = 'redboxPluginSettings';
 const XHS_TASK_HISTORY_KEY = 'xhsCollectorTaskHistory';
 const XHS_TASK_QUEUE_STATE_KEY = 'xhsCollectorTaskQueueState';
@@ -57,11 +57,14 @@ const DEFAULT_PLUGIN_SETTINGS = {
   autoUpdateCheck: true,
 };
 
+const USER_PROFILE_FEATURE_ENABLED = false;
+
 let cachedKnowledgeApi = null;
 let cachedKnowledgeApiAt = 0;
 let xhsTaskSequence = 0;
 let xhsActiveTask = null;
 let xhsLastTask = null;
+let xhsAccountImportSession = null;
 const xhsTaskQueue = [];
 let xhsTaskLogs = [];
 
@@ -275,7 +278,7 @@ async function handleMessage(message, sender) {
     case 'plugin-update:check':
       return await checkForPluginUpdates({ force: true, reason: 'manual' });
     case 'plugin-update:open-source':
-      await chrome.tabs.create({ url: UPDATE_SOURCE_REPO_URL });
+      await openPluginUpdateSource();
       return { success: true };
     case 'sidepanel:open':
       return await openSidePanelForSender(sender);
@@ -312,6 +315,13 @@ async function handleMessage(message, sender) {
         tabId,
         execute: () => downloadXhsMediaFromTab(tabId),
       });
+    case 'xhs:download-current-note-zip':
+      return await enqueueXhsTask({
+        type: message.type,
+        title: createXhsTaskTitle(message.type, message, tabId),
+        tabId,
+        execute: () => downloadXhsMediaZipFromTab(tabId),
+      });
     case 'xhs:collect-current-comments':
       return await enqueueXhsTask({
         type: message.type,
@@ -320,6 +330,9 @@ async function handleMessage(message, sender) {
         execute: () => collectXhsCommentsFromTab(tabId),
       });
     case 'xhs:collect-current-blogger':
+      if (!USER_PROFILE_FEATURE_ENABLED) {
+        throw new Error('账号档案功能暂未开放');
+      }
       return await enqueueXhsTask({
         type: message.type,
         title: createXhsTaskTitle(message.type, message, tabId),
@@ -327,17 +340,32 @@ async function handleMessage(message, sender) {
         execute: () => collectXhsBloggerFromTab(tabId),
       });
     case 'xhs:collect-blogger-notes':
+      if (!USER_PROFILE_FEATURE_ENABLED) {
+        throw new Error('账号档案功能暂未开放');
+      }
       return await enqueueXhsTask({
         type: message.type,
         title: createXhsTaskTitle(message.type, message, tabId),
         tabId,
+        capabilities: createXhsTaskCapabilities(message.type),
         execute: () => collectXhsBloggerNotesFromTab(tabId, message?.options),
+      });
+    case 'account:bind-current-platform':
+      if (!USER_PROFILE_FEATURE_ENABLED) {
+        throw new Error('账号档案功能暂未开放');
+      }
+      return await enqueueXhsTask({
+        type: message.type,
+        title: createXhsTaskTitle(message.type, message, tabId),
+        tabId,
+        execute: () => bindCurrentPlatformAccountFromTab(tabId, message?.platform, message?.options),
       });
     case 'xhs:collect-note-links':
       return await enqueueXhsTask({
         type: message.type,
         title: createXhsTaskTitle(message.type, message, tabId),
         tabId,
+        capabilities: createXhsTaskCapabilities(message.type),
         execute: () => collectXhsNoteLinks(message?.urls, message?.options),
       });
     case 'xhs:collect-visible-note-links':
@@ -345,6 +373,7 @@ async function handleMessage(message, sender) {
         type: message.type,
         title: createXhsTaskTitle(message.type, message, tabId),
         tabId,
+        capabilities: createXhsTaskCapabilities(message.type),
         execute: () => collectVisibleXhsNoteLinksFromTab(tabId, message?.options),
       });
     case 'xhs:collect-keyword':
@@ -352,6 +381,7 @@ async function handleMessage(message, sender) {
         type: message.type,
         title: createXhsTaskTitle(message.type, message, tabId),
         tabId,
+        capabilities: createXhsTaskCapabilities(message.type),
         execute: () => collectXhsKeyword(message?.keyword, message?.options),
       });
     case 'xhs:get-task-queue':
@@ -481,7 +511,7 @@ function detectCaptureTargetFromUrl(rawUrl) {
   }
 
   if (/(^|\.)xiaohongshu\.com$/i.test(hostname) || /(^|\.)rednote\.com$/i.test(hostname)) {
-    if (pathname.startsWith('/user/profile/')) {
+    if (USER_PROFILE_FEATURE_ENABLED && pathname.startsWith('/user/profile/')) {
       return {
         kind: 'xhs-profile',
         action: 'xhs:collect-current-blogger',
@@ -631,7 +661,7 @@ function createDefaultUpdateState() {
     latestVersion: currentVersion,
     hasUpdate: false,
     lastCheckedAt: null,
-    sourceUrl: UPDATE_SOURCE_REPO_URL,
+    sourceUrl: UPDATE_SOURCE_DOWNLOAD_URL,
     lastError: '',
     checkStatus: 'idle',
   };
@@ -649,7 +679,7 @@ function sanitizeUpdateState(input) {
     latestVersion,
     hasUpdate: compareVersions(latestVersion, currentVersion) > 0,
     lastCheckedAt: normalizeText(input.lastCheckedAt) || null,
-    sourceUrl: normalizeText(input.sourceUrl) || UPDATE_SOURCE_REPO_URL,
+    sourceUrl: normalizeText(input.sourceUrl) || UPDATE_SOURCE_DOWNLOAD_URL,
     lastError: normalizeText(input.lastError),
     checkStatus: normalizeText(input.checkStatus) || fallback.checkStatus,
   };
@@ -912,18 +942,6 @@ function extractSidePanelPageIdentity() {
       .replace(/\s*:\s*r\/.*$/i, '');
   }
 
-  function parseCountText(value) {
-    const text = normalizeText(value).replace(/,/g, '');
-    if (!text) return 0;
-    const matched = text.match(/([0-9]+(?:\.[0-9]+)?)(万|亿)?/);
-    if (!matched) return 0;
-    let count = Number(matched[1] || 0);
-    if (!Number.isFinite(count)) return 0;
-    if (matched[2] === '万') count *= 10000;
-    if (matched[2] === '亿') count *= 100000000;
-    return Math.round(count);
-  }
-
   function text(selector) {
     const node = document.querySelector(selector);
     return normalizeText(node?.textContent || node?.getAttribute?.('content') || '');
@@ -978,27 +996,6 @@ function extractSidePanelPageIdentity() {
     return '';
   }
 
-  function walkNumber(value, keys) {
-    const queue = [unwrapValue(value)];
-    const seen = new Set();
-    while (queue.length > 0) {
-      const item = unwrapValue(queue.shift());
-      if (!item || typeof item !== 'object' || seen.has(item)) continue;
-      seen.add(item);
-      for (const key of keys) {
-        const raw = item[key];
-        const num = Number(raw);
-        if (Number.isFinite(num) && num > 0) return num;
-        const text = normalizeText(raw);
-        if (/^\d+$/.test(text)) return Number(text);
-      }
-      for (const child of Object.values(item)) {
-        if (child && typeof child === 'object') queue.push(child);
-      }
-    }
-    return 0;
-  }
-
   const hostname = location.hostname.replace(/^www\./, '');
   const href = location.href;
   const path = location.pathname;
@@ -1008,29 +1005,7 @@ function extractSidePanelPageIdentity() {
     const state = readInitialState();
     const stateTitle = walkStrings(state, ['title', 'displayTitle', 'desc']);
     const stateUser = walkStrings(state, ['nickname', 'nickName', 'userName', 'name']);
-    const stateUserId = walkStrings(state, ['userId', 'user_id', 'id']);
     if (/\/user\/profile\//i.test(path)) {
-      const pathUserId = normalizeText(location.pathname.split('/').filter(Boolean).pop() || '');
-      const interactionNoteCount = walkNumber(state, ['noteCount', 'note_count', 'count']);
-      const loadedNoteIds = new Set();
-      const stateNotes = Array.isArray(unwrapValue(state?.user?.notes)) ? unwrapValue(state.user.notes) : [];
-      for (const group of stateNotes) {
-        const value = unwrapValue(group);
-        const items = Array.isArray(value) ? value : [value];
-        for (const item of items) {
-          const note = unwrapValue(item?.noteCard) || unwrapValue(item?.note_card) || unwrapValue(item);
-          const noteId = normalizeText(note?.note_id || note?.noteId || note?.id);
-          if (noteId) loadedNoteIds.add(noteId);
-        }
-      }
-      Array.from(document.querySelectorAll('a[href*="/explore/"], a[href*="/discovery/item/"]')).forEach((anchor) => {
-        const hrefValue = normalizeText(anchor.getAttribute('href') || anchor.href || '');
-        const match = hrefValue.match(/\/(?:explore|discovery\/item)\/([A-Za-z0-9]+)/);
-        if (match?.[1]) loadedNoteIds.add(match[1]);
-      });
-      const noteCountText = normalizeText(document.body.innerText || '');
-      const noteCountMatch = noteCountText.match(/笔记\s*([0-9.万亿]+)/);
-      const domNoteCount = parseCountText(noteCountMatch?.[1] || '');
       const username = normalizeText(
         text('.user-name') ||
         text('[class*="user-name"]') ||
@@ -1044,9 +1019,6 @@ function extractSidePanelPageIdentity() {
         pageType: 'profile',
         title: username,
         username,
-        userId: stateUserId || pathUserId,
-        loadedNoteCount: loadedNoteIds.size,
-        noteCount: interactionNoteCount || domNoteCount || 0,
         url: href,
         hostname,
       };
@@ -1192,7 +1164,6 @@ function extractSidePanelPageIdentity() {
   };
 }
 
-
 function createXhsTaskId(type) {
   xhsTaskSequence += 1;
   return `xhs-task-${Date.now()}-${xhsTaskSequence}-${hashString(type || 'task').slice(0, 6)}`;
@@ -1209,12 +1180,16 @@ function createXhsTaskTitle(type, message = {}, tabId = 0) {
       return '保存当前小红书笔记';
     case 'xhs:download-current-note':
       return '下载当前笔记素材';
+    case 'xhs:download-current-note-zip':
+      return '下载当前笔记压缩包';
     case 'xhs:collect-current-comments':
       return '采集当前笔记评论';
     case 'xhs:collect-current-blogger':
       return '采集当前博主资料';
     case 'xhs:collect-blogger-notes':
       return `采集当前博主笔记${message?.options?.limit ? `（${Number(message.options.limit)} 条）` : ''}`;
+    case 'account:bind-current-platform':
+      return '绑定当前平台账号';
     case 'xhs:collect-note-links':
       return `链接批量采集（${countMessageUrls(message?.urls)} 条）`;
     case 'xhs:collect-visible-note-links':
@@ -1238,6 +1213,27 @@ function createXhsTaskTitle(type, message = {}, tabId = 0) {
   }
 }
 
+function createXhsTaskCapabilities(type) {
+  const pauseableTypes = new Set([
+    'xhs:collect-blogger-notes',
+    'xhs:collect-note-links',
+    'xhs:collect-visible-note-links',
+    'xhs:collect-keyword',
+  ]);
+  return {
+    pause: pauseableTypes.has(normalizeText(type)),
+    cancel: true,
+  };
+}
+
+function sanitizeXhsTaskCapabilities(input) {
+  const source = input && typeof input === 'object' ? input : {};
+  return {
+    pause: source.pause === true,
+    cancel: source.cancel !== false,
+  };
+}
+
 function sanitizeXhsTaskForState(task) {
   if (!task) return null;
   return {
@@ -1255,6 +1251,7 @@ function sanitizeXhsTaskForState(task) {
     savedCount: Number(task.savedCount || 0),
     paused: task.paused === true,
     cancelRequested: task.cancelRequested === true,
+    capabilities: sanitizeXhsTaskCapabilities(task.capabilities),
     progress: task.progress && typeof task.progress === 'object'
       ? {
           current: Number(task.progress.current || 0),
@@ -1397,6 +1394,16 @@ async function syncXhsTaskStep(progressPatch = {}) {
   setActiveXhsTaskProgress(progressPatch);
 }
 
+async function sleepXhsTaskInterruptibly(ms) {
+  const waitMs = Math.max(0, Number(ms || 0));
+  const deadline = Date.now() + waitMs;
+  while (Date.now() < deadline) {
+    ensureXhsTaskNotCancelled();
+    await waitIfXhsTaskPaused();
+    await sleep(Math.min(250, Math.max(0, deadline - Date.now())));
+  }
+}
+
 function controlXhsActiveTask(actionInput) {
   const action = normalizeText(actionInput);
   if (!xhsActiveTask) {
@@ -1407,8 +1414,22 @@ function controlXhsActiveTask(actionInput) {
     };
   }
   if (action === 'pause') {
+    if (xhsActiveTask.capabilities?.pause !== true) {
+      return {
+        success: false,
+        error: '当前任务不支持暂停',
+        queue: getXhsTaskQueueState(),
+      };
+    }
     xhsActiveTask.paused = true;
   } else if (action === 'resume') {
+    if (xhsActiveTask.capabilities?.pause !== true) {
+      return {
+        success: false,
+        error: '当前任务不支持继续',
+        queue: getXhsTaskQueueState(),
+      };
+    }
     xhsActiveTask.paused = false;
   } else if (action === 'cancel') {
     xhsActiveTask.cancelRequested = true;
@@ -1441,6 +1462,9 @@ function summarizeXhsTaskResult(result) {
   if (result?.mode === 'xhs-download') {
     return `下载 ${Number(result.count || 0)} 个素材`;
   }
+  if (result?.mode === 'xhs-download-zip') {
+    return `压缩包 ${Number(result.count || 0)} 个素材`;
+  }
   if (result?.mode === 'xhs-comments') {
     return `评论 ${Number(result.count || 0)} 条`;
   }
@@ -1462,12 +1486,16 @@ function getXhsTaskActionLabel(type) {
       return '保存笔记';
     case 'xhs:download-current-note':
       return '下载素材';
+    case 'xhs:download-current-note-zip':
+      return '下载压缩包';
     case 'xhs:collect-current-comments':
       return '采集评论';
     case 'xhs:collect-current-blogger':
-      return '保存博主';
+      return '绑定账号';
     case 'xhs:collect-blogger-notes':
       return '采集博主笔记';
+    case 'account:bind-current-platform':
+      return '绑定账号';
     case 'xhs:collect-note-links':
       return '批量采集';
     case 'xhs:collect-visible-note-links':
@@ -1555,6 +1583,86 @@ async function hydrateXhsTaskState() {
   }
 }
 
+function sanitizeXhsBloggerProgressEntry(entry, userIdInput = '') {
+  const userId = normalizeText(entry?.userId || userIdInput);
+  if (!userId) return null;
+  const noteIds = Array.from(new Set(
+    (Array.isArray(entry?.noteIds) ? entry.noteIds : [])
+      .map((item) => normalizeText(item))
+      .filter(Boolean),
+  )).slice(0, XHS_BLOGGER_PROGRESS_NOTE_LIMIT);
+  return {
+    userId,
+    source: normalizeText(entry?.source),
+    nickname: normalizeText(entry?.nickname),
+    noteIds,
+    count: noteIds.length,
+    createdAt: normalizeText(entry?.createdAt) || new Date().toISOString(),
+    updatedAt: normalizeText(entry?.updatedAt) || new Date().toISOString(),
+  };
+}
+
+function sanitizeXhsBloggerProgressState(rawState) {
+  const source = rawState && typeof rawState === 'object' ? rawState : {};
+  const entries = Object.entries(source)
+    .map(([userId, value]) => sanitizeXhsBloggerProgressEntry(value, userId))
+    .filter(Boolean)
+    .sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''));
+  return entries.slice(0, XHS_BLOGGER_PROGRESS_LIMIT).reduce((acc, entry) => {
+    acc[entry.userId] = entry;
+    return acc;
+  }, {});
+}
+
+async function readXhsBloggerProgressState() {
+  const stored = await getStorageLocal([XHS_BLOGGER_PROGRESS_KEY]).catch(() => ({}));
+  return sanitizeXhsBloggerProgressState(stored?.[XHS_BLOGGER_PROGRESS_KEY]);
+}
+
+async function writeXhsBloggerProgressState(nextState) {
+  const normalized = sanitizeXhsBloggerProgressState(nextState);
+  await setStorageLocal({ [XHS_BLOGGER_PROGRESS_KEY]: normalized });
+  return normalized;
+}
+
+async function getCollectedXhsNoteIdsForBlogger(userIdInput) {
+  const userId = normalizeText(userIdInput);
+  if (!userId) return new Set();
+  const state = await readXhsBloggerProgressState();
+  const entry = sanitizeXhsBloggerProgressEntry(state?.[userId], userId);
+  return new Set(Array.isArray(entry?.noteIds) ? entry.noteIds : []);
+}
+
+async function markCollectedXhsNotesForBlogger({ userId, source, nickname, noteIds }) {
+  const normalizedUserId = normalizeText(userId);
+  const normalizedNoteIds = Array.from(new Set(
+    (Array.isArray(noteIds) ? noteIds : [])
+      .map((item) => normalizeText(item))
+      .filter(Boolean),
+  ));
+  if (!normalizedUserId || normalizedNoteIds.length === 0) return null;
+  const state = await readXhsBloggerProgressState();
+  const existing = sanitizeXhsBloggerProgressEntry(state?.[normalizedUserId], normalizedUserId);
+  const mergedNoteIds = Array.from(new Set([
+    ...(Array.isArray(existing?.noteIds) ? existing.noteIds : []),
+    ...normalizedNoteIds,
+  ])).slice(0, XHS_BLOGGER_PROGRESS_NOTE_LIMIT);
+  const nextEntry = sanitizeXhsBloggerProgressEntry({
+    ...existing,
+    userId: normalizedUserId,
+    source: normalizeText(source) || normalizeText(existing?.source),
+    nickname: normalizeText(nickname) || normalizeText(existing?.nickname),
+    noteIds: mergedNoteIds,
+    createdAt: normalizeText(existing?.createdAt) || new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  }, normalizedUserId);
+  await writeXhsBloggerProgressState({
+    ...state,
+    [normalizedUserId]: nextEntry,
+  });
+  return nextEntry;
+}
+
 function appendXhsTaskLog(entry) {
   const normalized = sanitizeXhsTaskLogForState({
     ...entry,
@@ -1583,7 +1691,7 @@ function publishXhsTaskQueueState() {
   return queue;
 }
 
-function enqueueXhsTask({ type, title, tabId, execute }) {
+function enqueueXhsTask({ type, title, tabId, capabilities, execute }) {
   return new Promise((resolve, reject) => {
     const now = new Date().toISOString();
     const task = {
@@ -1595,6 +1703,7 @@ function enqueueXhsTask({ type, title, tabId, execute }) {
       savedCount: 0,
       paused: false,
       cancelRequested: false,
+      capabilities: sanitizeXhsTaskCapabilities(capabilities || createXhsTaskCapabilities(type)),
       progress: null,
       createdAt: now,
       updatedAt: now,
@@ -1741,89 +1850,6 @@ async function clearXhsTaskHistory() {
   return { success: true, history: [] };
 }
 
-function sanitizeXhsBloggerProgressEntry(entry, userIdInput = '') {
-  const userId = normalizeText(entry?.userId || userIdInput);
-  if (!userId) return null;
-  const noteIds = Array.from(new Set(
-    (Array.isArray(entry?.noteIds) ? entry.noteIds : [])
-      .map((item) => normalizeText(item))
-      .filter(Boolean),
-  )).slice(0, XHS_BLOGGER_PROGRESS_NOTE_LIMIT);
-  return {
-    userId,
-    source: normalizeText(entry?.source),
-    nickname: normalizeText(entry?.nickname),
-    noteIds,
-    count: noteIds.length,
-    createdAt: normalizeText(entry?.createdAt) || new Date().toISOString(),
-    updatedAt: normalizeText(entry?.updatedAt) || new Date().toISOString(),
-  };
-}
-
-function sanitizeXhsBloggerProgressState(rawState) {
-  const source = rawState && typeof rawState === 'object' ? rawState : {};
-  const entries = Object.entries(source)
-    .map(([userId, value]) => sanitizeXhsBloggerProgressEntry(value, userId))
-    .filter(Boolean)
-    .sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''));
-  return entries.slice(0, XHS_BLOGGER_PROGRESS_LIMIT).reduce((acc, entry) => {
-    acc[entry.userId] = entry;
-    return acc;
-  }, {});
-}
-
-async function readXhsBloggerProgressState() {
-  const stored = await getStorageLocal([XHS_BLOGGER_PROGRESS_KEY]).catch(() => ({}));
-  return sanitizeXhsBloggerProgressState(stored?.[XHS_BLOGGER_PROGRESS_KEY]);
-}
-
-async function writeXhsBloggerProgressState(nextState) {
-  const normalized = sanitizeXhsBloggerProgressState(nextState);
-  await setStorageLocal({ [XHS_BLOGGER_PROGRESS_KEY]: normalized });
-  return normalized;
-}
-
-async function getCollectedXhsNoteIdsForBlogger(userIdInput) {
-  const userId = normalizeText(userIdInput);
-  if (!userId) return new Set();
-  const state = await readXhsBloggerProgressState();
-  const entry = sanitizeXhsBloggerProgressEntry(state?.[userId], userId);
-  return new Set(Array.isArray(entry?.noteIds) ? entry.noteIds : []);
-}
-
-async function markCollectedXhsNotesForBlogger({ userId, source, nickname, noteIds }) {
-  const normalizedUserId = normalizeText(userId);
-  const normalizedNoteIds = Array.from(new Set(
-    (Array.isArray(noteIds) ? noteIds : [])
-      .map((item) => normalizeText(item))
-      .filter(Boolean),
-  ));
-  if (!normalizedUserId || normalizedNoteIds.length === 0) {
-    return null;
-  }
-  const state = await readXhsBloggerProgressState();
-  const existing = sanitizeXhsBloggerProgressEntry(state?.[normalizedUserId], normalizedUserId);
-  const mergedNoteIds = Array.from(new Set([
-    ...(Array.isArray(existing?.noteIds) ? existing.noteIds : []),
-    ...normalizedNoteIds,
-  ])).slice(0, XHS_BLOGGER_PROGRESS_NOTE_LIMIT);
-  const nextEntry = sanitizeXhsBloggerProgressEntry({
-    ...existing,
-    userId: normalizedUserId,
-    source: normalizeText(source) || normalizeText(existing?.source),
-    nickname: normalizeText(nickname) || normalizeText(existing?.nickname),
-    noteIds: mergedNoteIds,
-    createdAt: normalizeText(existing?.createdAt) || new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-  }, normalizedUserId);
-  const nextState = {
-    ...state,
-    [normalizedUserId]: nextEntry,
-  };
-  await writeXhsBloggerProgressState(nextState);
-  return nextEntry;
-}
-
 async function readPluginUpdateState() {
   const stored = await getStorageLocal([UPDATE_STATE_KEY]).catch(() => ({}));
   return sanitizeUpdateState(stored?.[UPDATE_STATE_KEY]);
@@ -1868,20 +1894,29 @@ async function initializeUpdateChecks(forceImmediateCheck) {
 }
 
 async function fetchRemotePluginManifest() {
-  const response = await fetch(UPDATE_SOURCE_MANIFEST_URL, {
+  const currentVersion = getCurrentPluginVersion();
+  const url = new URL(UPDATE_SOURCE_API_URL);
+  url.searchParams.set('currentVersion', currentVersion);
+  const response = await fetch(url.toString(), {
     cache: 'no-store',
     headers: {
       'Accept': 'application/json, text/plain, */*',
     },
   });
-  if (!response.ok) {
+  if (response.status !== 404 && !response.ok) {
     throw new Error(`更新源请求失败：HTTP ${response.status}`);
   }
   const data = await response.json();
   if (!data || typeof data !== 'object') {
-    throw new Error('更新源返回了无效的 manifest');
+    throw new Error('更新源返回了无效响应');
   }
   return data;
+}
+
+async function openPluginUpdateSource() {
+  const state = await readPluginUpdateState();
+  const url = normalizeText(state.sourceUrl) || UPDATE_SOURCE_DOWNLOAD_URL;
+  await chrome.tabs.create({ url: isHttpUrl(url) ? url : UPDATE_SOURCE_DOWNLOAD_URL });
 }
 
 async function getPluginUpdateStatus(refresh = false) {
@@ -1915,18 +1950,21 @@ async function checkForPluginUpdates(options = {}) {
   try {
     pluginLog('plugin-update-check-start', {
       reason,
-      source: UPDATE_SOURCE_MANIFEST_URL,
+      source: UPDATE_SOURCE_API_URL,
     });
     const remoteManifest = await fetchRemotePluginManifest();
     const currentVersion = getCurrentPluginVersion();
-    const latestVersion = normalizeText(remoteManifest?.version) || currentVersion;
+    const latestVersion = normalizeText(remoteManifest?.version || remoteManifest?.tag) || currentVersion;
+    const hasUpdate = remoteManifest?.ready !== false
+      && (remoteManifest?.updateAvailable === true || compareVersions(latestVersion, currentVersion) > 0);
+    const sourceUrl = normalizeText(remoteManifest?.plugin?.url || remoteManifest?.releaseUrl) || UPDATE_SOURCE_DOWNLOAD_URL;
     const nextState = await writePluginUpdateState({
       ...checkingState,
       currentVersion,
       latestVersion,
-      hasUpdate: compareVersions(latestVersion, currentVersion) > 0,
+      hasUpdate,
       lastCheckedAt: new Date().toISOString(),
-      sourceUrl: UPDATE_SOURCE_REPO_URL,
+      sourceUrl,
       lastError: '',
       checkStatus: 'idle',
     });
@@ -1946,7 +1984,7 @@ async function checkForPluginUpdates(options = {}) {
       currentVersion: getCurrentPluginVersion(),
       latestVersion: currentState.latestVersion,
       lastCheckedAt: new Date().toISOString(),
-      sourceUrl: UPDATE_SOURCE_REPO_URL,
+      sourceUrl: currentState.sourceUrl || UPDATE_SOURCE_DOWNLOAD_URL,
       lastError: error instanceof Error ? error.message : String(error),
       checkStatus: 'idle',
     });
@@ -2669,6 +2707,183 @@ function buildXhsBloggerEntry(payload) {
   };
 }
 
+function buildXhsAccountPostFromEntry(entryPayload) {
+  const noteId = normalizeText(entryPayload?.noteId) || hashString(normalizeText(entryPayload?.source));
+  return {
+    id: noteId,
+    platform: 'xiaohongshu',
+    platformPostId: noteId,
+    title: normalizeText(entryPayload?.title),
+    content: normalizeText(entryPayload?.content || entryPayload?.text || entryPayload?.description),
+    url: normalizeText(entryPayload?.source),
+    publishedAt: normalizeText(entryPayload?.publishTime || entryPayload?.publishedAt),
+    stats: entryPayload?.stats && typeof entryPayload.stats === 'object' ? entryPayload.stats : {},
+    tags: Array.isArray(entryPayload?.tags) ? entryPayload.tags : [],
+    media: [
+      ...((Array.isArray(entryPayload?.images) ? entryPayload.images : []).map((url, index) => ({
+        kind: 'image',
+        url: normalizeText(url),
+        index,
+      }))),
+      ...(normalizeText(entryPayload?.videoUrl) ? [{
+        kind: 'video',
+        url: normalizeText(entryPayload.videoUrl),
+      }] : []),
+      ...(normalizeText(entryPayload?.cover) ? [{
+        kind: 'cover',
+        url: normalizeText(entryPayload.cover),
+      }] : []),
+    ].filter((item) => item.url),
+    raw: entryPayload || {},
+  };
+}
+
+function normalizeAccountPlatform(value) {
+  const normalized = normalizeText(value).toLowerCase();
+  if (/^(xhs|rednote|xiaohongshu|小红书)$/.test(normalized)) return 'xiaohongshu';
+  if (/^(douyin|抖音)$/.test(normalized)) return 'douyin';
+  if (/^(bilibili|b站|哔哩哔哩)$/.test(normalized)) return 'bilibili';
+  return normalized;
+}
+
+function buildAccountProfileFromSocialPayload(payload = {}, platformHint = '') {
+  const platform = normalizeAccountPlatform(payload?.platform || platformHint);
+  const source = normalizeText(payload?.authorProfileUrl)
+    || normalizeText(payload?.profileUrl)
+    || normalizeText(payload?.source)
+    || normalizeText(payload?.url);
+  const username = normalizeText(payload?.author)
+    || normalizeText(payload?.username)
+    || normalizeText(payload?.title)
+    || `${platform || 'platform'}账号`;
+  const platformUserId = normalizeText(payload?.authorId)
+    || normalizeText(payload?.uid)
+    || normalizeText(payload?.mid)
+    || extractProfileIdFromUrl(source, platform)
+    || (source ? hashString(source) : '');
+  return {
+    platform,
+    homepageUrl: source,
+    platformUserId,
+    username,
+    avatarUrl: normalizeText(payload?.avatarUrl) || normalizeText(payload?.avatar) || '',
+    bio: normalizeText(payload?.description) || normalizeText(payload?.text) || '',
+    profile: {
+      ...payload,
+      stats: payload?.stats && typeof payload.stats === 'object' ? payload.stats : {},
+    },
+  };
+}
+
+function extractProfileIdFromUrl(url, platform = '') {
+  const normalized = normalizeText(url);
+  if (!normalized) return '';
+  try {
+    const parsed = new URL(normalized);
+    if (platform === 'bilibili') {
+      const match = parsed.pathname.match(/\/(?:space\/)?(\d+)/);
+      if (match?.[1]) return match[1];
+    }
+    if (platform === 'douyin') {
+      const parts = parsed.pathname.split('/').filter(Boolean);
+      const userIndex = parts.findIndex((item) => item === 'user');
+      if (userIndex >= 0 && parts[userIndex + 1]) return parts[userIndex + 1];
+      if (parts[0]) return parts[0];
+    }
+    return parsed.pathname.replace(/^\/+|\/+$/g, '') || parsed.hostname;
+  } catch {
+    return '';
+  }
+}
+
+function buildAccountPostFromSocialPayload(payload = {}, platformHint = '') {
+  const platform = normalizeAccountPlatform(payload?.platform || platformHint);
+  const source = normalizeText(payload?.source || payload?.url);
+  const postId = normalizeText(payload?.noteId)
+    || normalizeText(payload?.externalId)
+    || hashString(`${platform}:${source}:${normalizeText(payload?.title)}`);
+  const imageUrls = Array.isArray(payload?.images)
+    ? payload.images.map(normalizeText).filter(Boolean)
+    : [];
+  const media = [
+    ...imageUrls.map((url, index) => ({ kind: 'image', url, index })),
+    ...(normalizeText(payload?.videoUrl) ? [{ kind: 'video', url: normalizeText(payload.videoUrl) }] : []),
+    ...(normalizeText(payload?.coverUrl) ? [{ kind: 'cover', url: normalizeText(payload.coverUrl) }] : []),
+  ].filter((item) => item.url);
+  return {
+    id: postId,
+    platform,
+    platformPostId: postId,
+    title: normalizeText(payload?.title),
+    content: normalizeText(payload?.text || payload?.content || payload?.description || payload?.title),
+    url: source,
+    publishedAt: normalizeText(payload?.publishedAt),
+    kind: normalizeText(payload?.contentType) || normalizeText(payload?.mode) || 'page',
+    stats: payload?.stats && typeof payload.stats === 'object' ? payload.stats : {},
+    tags: Array.isArray(payload?.tags) ? payload.tags.map(normalizeText).filter(Boolean) : [],
+    media,
+    raw: payload || {},
+  };
+}
+
+function buildAccountMediaFromPost(post = {}) {
+  const postId = normalizeText(post?.platformPostId || post?.id || post?.url);
+  const platform = normalizeAccountPlatform(post?.platform);
+  const media = Array.isArray(post?.media) ? post.media : [];
+  return media
+    .map((item, index) => {
+      const url = normalizeText(item?.url || item?.src || item?.localPath);
+      const kind = normalizeText(item?.kind) || 'media';
+      if (!url) return null;
+      return {
+        mediaId: normalizeText(item?.mediaId || item?.id) || hashString(`${postId}:${kind}:${url}:${index}`),
+        postId,
+        platform,
+        kind,
+        url,
+        index: Number.isFinite(Number(item?.index)) ? Number(item.index) : index,
+        raw: item || {},
+      };
+    })
+    .filter(Boolean);
+}
+
+function buildAccountCommentsFromPayload(payload = {}, postIdInput = '', platformHint = '') {
+  const postId = normalizeText(postIdInput)
+    || normalizeText(payload?.noteId)
+    || normalizeText(payload?.externalId)
+    || normalizeText(payload?.source)
+    || normalizeText(payload?.url);
+  const platform = normalizeAccountPlatform(payload?.platform || platformHint);
+  const comments = Array.isArray(payload?.comments)
+    ? payload.comments
+    : Array.isArray(payload?.commentsSnapshot)
+      ? payload.commentsSnapshot
+      : [];
+  return comments
+    .map((item, index) => {
+      const author = normalizeText(item?.author || item?.username || item?.userName);
+      const text = normalizeText(item?.text || item?.content || item?.comment);
+      if (!author && !text) return null;
+      const commentId = normalizeText(item?.commentId || item?.platformCommentId || item?.id)
+        || hashString(`${postId}:${author}:${text}:${index}`);
+      return {
+        commentId,
+        id: commentId,
+        postId,
+        platform,
+        author,
+        text,
+        likes: Number(item?.likes || item?.likeCount || 0),
+        replies: Number(item?.replies || item?.replyCount || 0),
+        createdAt: normalizeText(item?.createdAt || item?.publishedAt),
+        location: normalizeText(item?.location),
+        raw: item || {},
+      };
+    })
+    .filter(Boolean);
+}
+
 function buildDouyinEntry(payload) {
   function extractTagsFromText(value) {
     const tags = [];
@@ -3313,7 +3528,7 @@ function randomIntBetween(min, max) {
 
 async function sleepXhsCollectInterval(interval) {
   const waitMs = randomIntBetween(interval.minMs, interval.maxMs);
-  await sleep(waitMs);
+  await sleepXhsTaskInterruptibly(waitMs);
   return waitMs;
 }
 
@@ -3409,6 +3624,170 @@ function downloadBrowserFile(url, filename) {
   });
 }
 
+function getZipDosTimeParts(dateInput = new Date()) {
+  const date = dateInput instanceof Date ? dateInput : new Date();
+  const dosTime = (date.getHours() << 11)
+    | (date.getMinutes() << 5)
+    | Math.floor(date.getSeconds() / 2);
+  const dosDate = ((date.getFullYear() - 1980) << 9)
+    | ((date.getMonth() + 1) << 5)
+    | date.getDate();
+  return { dosTime, dosDate };
+}
+
+function createCrc32Table() {
+  const table = new Uint32Array(256);
+  for (let index = 0; index < 256; index += 1) {
+    let value = index;
+    for (let bit = 0; bit < 8; bit += 1) {
+      value = (value & 1) ? (0xedb88320 ^ (value >>> 1)) : (value >>> 1);
+    }
+    table[index] = value >>> 0;
+  }
+  return table;
+}
+
+const ZIP_CRC32_TABLE = createCrc32Table();
+
+function calculateCrc32(bytes) {
+  let crc = 0xffffffff;
+  for (let index = 0; index < bytes.length; index += 1) {
+    crc = ZIP_CRC32_TABLE[(crc ^ bytes[index]) & 0xff] ^ (crc >>> 8);
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function writeUint16LE(target, offset, value) {
+  target[offset] = value & 0xff;
+  target[offset + 1] = (value >>> 8) & 0xff;
+}
+
+function writeUint32LE(target, offset, value) {
+  target[offset] = value & 0xff;
+  target[offset + 1] = (value >>> 8) & 0xff;
+  target[offset + 2] = (value >>> 16) & 0xff;
+  target[offset + 3] = (value >>> 24) & 0xff;
+}
+
+function concatUint8Arrays(parts) {
+  const total = parts.reduce((sum, part) => sum + part.length, 0);
+  const output = new Uint8Array(total);
+  let offset = 0;
+  for (const part of parts) {
+    output.set(part, offset);
+    offset += part.length;
+  }
+  return output;
+}
+
+function buildStoredZip(entries) {
+  const encoder = new TextEncoder();
+  const localParts = [];
+  const centralParts = [];
+  let offset = 0;
+  const { dosTime, dosDate } = getZipDosTimeParts();
+
+  for (const entry of entries) {
+    const filenameBytes = encoder.encode(entry.filename);
+    const data = entry.bytes instanceof Uint8Array ? entry.bytes : new Uint8Array(entry.bytes || []);
+    const crc32 = calculateCrc32(data);
+    const localHeader = new Uint8Array(30 + filenameBytes.length);
+    writeUint32LE(localHeader, 0, 0x04034b50);
+    writeUint16LE(localHeader, 4, 20);
+    writeUint16LE(localHeader, 6, 0x0800);
+    writeUint16LE(localHeader, 8, 0);
+    writeUint16LE(localHeader, 10, dosTime);
+    writeUint16LE(localHeader, 12, dosDate);
+    writeUint32LE(localHeader, 14, crc32);
+    writeUint32LE(localHeader, 18, data.length);
+    writeUint32LE(localHeader, 22, data.length);
+    writeUint16LE(localHeader, 26, filenameBytes.length);
+    writeUint16LE(localHeader, 28, 0);
+    localHeader.set(filenameBytes, 30);
+    localParts.push(localHeader, data);
+
+    const centralHeader = new Uint8Array(46 + filenameBytes.length);
+    writeUint32LE(centralHeader, 0, 0x02014b50);
+    writeUint16LE(centralHeader, 4, 20);
+    writeUint16LE(centralHeader, 6, 20);
+    writeUint16LE(centralHeader, 8, 0x0800);
+    writeUint16LE(centralHeader, 10, 0);
+    writeUint16LE(centralHeader, 12, dosTime);
+    writeUint16LE(centralHeader, 14, dosDate);
+    writeUint32LE(centralHeader, 16, crc32);
+    writeUint32LE(centralHeader, 20, data.length);
+    writeUint32LE(centralHeader, 24, data.length);
+    writeUint16LE(centralHeader, 28, filenameBytes.length);
+    writeUint16LE(centralHeader, 30, 0);
+    writeUint16LE(centralHeader, 32, 0);
+    writeUint16LE(centralHeader, 34, 0);
+    writeUint16LE(centralHeader, 36, 0);
+    writeUint32LE(centralHeader, 38, 0);
+    writeUint32LE(centralHeader, 42, offset);
+    centralHeader.set(filenameBytes, 46);
+    centralParts.push(centralHeader);
+
+    offset += localHeader.length + data.length;
+  }
+
+  const centralDirectoryOffset = offset;
+  const centralDirectory = concatUint8Arrays(centralParts);
+  const endRecord = new Uint8Array(22);
+  writeUint32LE(endRecord, 0, 0x06054b50);
+  writeUint16LE(endRecord, 4, 0);
+  writeUint16LE(endRecord, 6, 0);
+  writeUint16LE(endRecord, 8, entries.length);
+  writeUint16LE(endRecord, 10, entries.length);
+  writeUint32LE(endRecord, 12, centralDirectory.length);
+  writeUint32LE(endRecord, 16, centralDirectoryOffset);
+  writeUint16LE(endRecord, 20, 0);
+  return concatUint8Arrays([...localParts, centralDirectory, endRecord]);
+}
+
+function arrayBufferToBase64(buffer) {
+  const bytes = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
+  let binary = '';
+  const chunkSize = 0x8000;
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize));
+  }
+  return btoa(binary);
+}
+
+function stripZipEntryPrefix(filename) {
+  return normalizeText(filename).replace(/^RedBox\/xhs\//i, '') || 'xhs-media';
+}
+
+function dataUrlToBytes(dataUrl) {
+  const match = String(dataUrl || '').match(/^data:([^,]*),(.*)$/s);
+  if (!match) throw new Error('无效的 data URL');
+  const meta = match[1] || '';
+  const body = match[2] || '';
+  if (/;base64/i.test(meta)) {
+    const binary = atob(body);
+    const bytes = new Uint8Array(binary.length);
+    for (let index = 0; index < binary.length; index += 1) {
+      bytes[index] = binary.charCodeAt(index);
+    }
+    return bytes;
+  }
+  return new TextEncoder().encode(decodeURIComponent(body));
+}
+
+async function fetchDownloadItemBytes(item) {
+  if (String(item?.url || '').startsWith('data:')) {
+    return dataUrlToBytes(item.url);
+  }
+  const response = await fetch(item.url, {
+    credentials: 'include',
+    cache: 'no-store',
+  });
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status}`);
+  }
+  return new Uint8Array(await response.arrayBuffer());
+}
+
 async function downloadXhsMediaFromTab(tabId) {
   const payload = await runExtraction(tabId, extractXhsNotePayload, { world: 'MAIN' });
   const items = buildXhsDownloadItems(payload);
@@ -3456,6 +3835,69 @@ async function downloadXhsMediaFromTab(tabId) {
   };
 }
 
+async function downloadXhsMediaZipFromTab(tabId) {
+  const payload = await runExtraction(tabId, extractXhsNotePayload, { world: 'MAIN' });
+  const items = buildXhsDownloadItems(payload);
+  if (items.length === 0) {
+    throw new Error('当前小红书页面未识别到可下载的图片或视频素材');
+  }
+
+  const entries = [];
+  const failures = [];
+  for (const item of items) {
+    try {
+      const bytes = await fetchDownloadItemBytes(item);
+      entries.push({
+        filename: stripZipEntryPrefix(item.filename),
+        bytes,
+      });
+    } catch (error) {
+      failures.push({
+        filename: item.filename,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+  if (entries.length === 0) {
+    throw new Error(failures[0]?.error || '压缩包素材下载失败');
+  }
+
+  const zipBytes = buildStoredZip(entries);
+  const title = sanitizeFilenamePart(payload?.title || payload?.noteId || 'xhs-note', 'xhs-note');
+  const noteId = sanitizeFilenamePart(payload?.noteId || hashString(payload?.source || title), 'note');
+  const filename = `RedBox/xhs/${noteId}-${title}.zip`;
+  const dataUrl = `data:application/zip;base64,${arrayBufferToBase64(zipBytes)}`;
+  const downloadId = await downloadBrowserFile(dataUrl, filename);
+  const historyItem = await appendXhsTaskHistory({
+    id: `xhs-download-zip-${hashString(`${payload?.source || ''}-${Date.now()}`)}`,
+    type: 'download-zip',
+    title: `下载压缩包：${normalizeText(payload?.title) || '小红书笔记'}`,
+    status: failures.length > 0 ? 'partial' : 'completed',
+    count: entries.length,
+    failed: failures.length,
+    summary: `已创建压缩包，包含 ${entries.length} 个素材${failures.length ? `，失败 ${failures.length} 个` : ''}`,
+    payload: {
+      source: payload?.source || '',
+      noteId: payload?.noteId || '',
+      filename,
+      downloadId,
+      failures,
+    },
+  });
+
+  return {
+    success: failures.length === 0,
+    mode: 'xhs-download-zip',
+    filename,
+    downloadId,
+    count: entries.length,
+    failed: failures.length,
+    failures,
+    task: historyItem,
+    error: failures.length > 0 ? `压缩包已生成，但有 ${failures.length} 个素材失败` : undefined,
+  };
+}
+
 async function collectXhsCommentsFromTab(tabId) {
   const payload = await runExtraction(tabId, extractXhsCommentsPayload, { world: 'MAIN' });
   const comments = Array.isArray(payload?.comments) ? payload.comments : [];
@@ -3492,6 +3934,12 @@ async function collectXhsBloggerFromTab(tabId) {
     throw new Error('当前页面未识别到小红书博主信息');
   }
   const response = await postKnowledgeEntry(buildXhsBloggerEntry(payload));
+  const accountResponse = await createAccountImportSessionFromXhs(payload).catch((error) => {
+    pluginWarn('xhs-account-import-session-failed', {
+      error: describeError(error),
+    });
+    return null;
+  });
   const historyItem = await appendXhsTaskHistory({
     id: `xhs-blogger-${hashString(`${payload?.source || ''}-${Date.now()}`)}`,
     type: 'blogger',
@@ -3510,6 +3958,8 @@ async function collectXhsBloggerFromTab(tabId) {
     mode: 'xhs-blogger',
     noteId: response.entryId || '',
     duplicate: Boolean(response.duplicate),
+    account: accountResponse?.account || null,
+    importSession: accountResponse?.session || null,
     task: historyItem,
   };
 }
@@ -3669,6 +4119,12 @@ async function collectXhsBloggerNotesByMode(tabId, payload, options = {}) {
     payloadApiError: normalizeText(payload?.apiError),
     options: describeBloggerCollectOptions(normalizedOptions),
   });
+  const accountSession = await ensureXhsAccountImportSession(payload, normalizedOptions).catch((error) => {
+    pluginWarn('xhs-account-import-session-ensure-failed', {
+      error: describeError(error),
+    });
+    return null;
+  });
   appendXhsTaskLog({
     type: 'xhs:collect-blogger-notes',
     status: 'running',
@@ -3683,9 +4139,15 @@ async function collectXhsBloggerNotesByMode(tabId, payload, options = {}) {
     throw new Error(reason || '当前博主页未识别到可采集的笔记，请确认已登录并滚动加载主页笔记');
   }
   if (normalizedOptions.mode === 'tab') {
-    return await collectXhsBloggerNotesWithTabs(payload, urls, normalizedOptions);
+    return await collectXhsBloggerNotesWithTabs(payload, urls, {
+      ...normalizedOptions,
+      accountSession,
+    });
   }
-  return await collectXhsBloggerNotesViaApi(tabId, payload, normalizedOptions);
+  return await collectXhsBloggerNotesViaApi(tabId, payload, {
+    ...normalizedOptions,
+    accountSession,
+  });
 }
 
 async function collectXhsBloggerNotesWithTabs(payload, urls, options = {}) {
@@ -3818,6 +4280,7 @@ async function collectXhsBloggerNotesViaApi(tabId, payload, options = {}) {
 
   const results = [];
   const failures = [];
+  const accountPosts = [];
   await syncXhsTaskStep({
     current: 0,
     total: pendingNotes.length,
@@ -3828,6 +4291,16 @@ async function collectXhsBloggerNotesViaApi(tabId, payload, options = {}) {
   });
 
   if (pendingNotes.length === 0) {
+    await completeAccountImportSession(options.accountSession, {
+      status: 'completed',
+      importedPostCount: 0,
+      failedPostCount: 0,
+      lastError: null,
+    }).catch((error) => {
+      pluginWarn('xhs-account-import-complete-empty-failed', {
+        error: describeError(error),
+      });
+    });
     const historyItem = await appendXhsTaskHistory({
       id: `xhs-blogger-api-${hashString(`${titleName}-${Date.now()}`)}`,
       type: 'blogger-notes',
@@ -3889,12 +4362,32 @@ async function collectXhsBloggerNotesViaApi(tabId, payload, options = {}) {
       if (index > 0) {
         intervalMs = await sleepXhsCollectInterval(options.interval);
       }
+      await syncXhsTaskStep({
+        current: results.length + failures.length,
+        total: pendingNotes.length,
+        message: `正在读取第 ${index + 1}/${pendingNotes.length} 条笔记`,
+        mode: 'api',
+      });
       const feedResult = await runExtraction(tabId, extractXhsNoteFeedByUrlFromCurrentPage, {
         world: 'MAIN',
         args: [note.urlInfo.href, note.urlInfo.id],
       });
       const entryPayload = buildXhsNotePayloadFromFeed(feedResult, note.urlInfo);
+      await syncXhsTaskStep({
+        current: results.length + failures.length,
+        total: pendingNotes.length,
+        message: `正在写入第 ${index + 1}/${pendingNotes.length} 条笔记`,
+        mode: 'api',
+      });
       const response = options.saveToRedBox !== false ? await postKnowledgeEntry(buildXhsEntry(entryPayload)) : null;
+      const accountPost = buildXhsAccountPostFromEntry(entryPayload);
+      if (response?.entryId) {
+        accountPost.knowledgeEntryId = normalizeText(response.entryId);
+      }
+      if (normalizeText(entryPayload?.videoUrl)) {
+        accountPost.transcriptionStatus = response?.entryId ? 'processing' : 'waiting';
+      }
+      accountPosts.push(accountPost);
       if (options.saveToRedBox !== false) {
         await markCollectedXhsNotesForBlogger({
           userId: payloadState?.userId,
@@ -3985,6 +4478,29 @@ async function collectXhsBloggerNotesViaApi(tabId, payload, options = {}) {
     failures: failures.slice(0, 5),
     interval: describeBloggerCollectOptions(options),
   });
+  const accountBatch = await postAccountPostsBatch(options.accountSession, accountPosts).catch((error) => {
+    pluginWarn('xhs-account-posts-batch-failed', {
+      error: describeError(error),
+    });
+    return null;
+  });
+  const accountMedia = accountPosts.flatMap((post) => buildAccountMediaFromPost(post));
+  const accountMediaBatch = await postAccountMediaBatch(options.accountSession, accountMedia).catch((error) => {
+    pluginWarn('xhs-account-media-batch-failed', {
+      error: describeError(error),
+    });
+    return null;
+  });
+  await completeAccountImportSession(options.accountSession, {
+    status: failures.length > 0 ? (results.length > 0 ? 'partial' : 'failed') : 'completed',
+    importedPostCount: accountBatch?.postCount || results.length,
+    failedPostCount: failures.length,
+    lastError: failures.length > 0 ? `有 ${failures.length} 条采集失败` : null,
+  }).catch((error) => {
+    pluginWarn('xhs-account-import-complete-failed', {
+      error: describeError(error),
+    });
+  });
 
   return {
     success: true,
@@ -4006,6 +4522,10 @@ async function collectXhsBloggerNotesViaApi(tabId, payload, options = {}) {
       collectedUrlCount: plan.scannedCount,
       apiError: normalizeText(payloadState?.apiError),
       collectionMode: 'api',
+    },
+    account: {
+      posts: accountBatch,
+      media: accountMediaBatch,
     },
     error: failures.length > 0 ? `API 模式采集完成，但有 ${failures.length} 条失败` : undefined,
   };
@@ -4095,17 +4615,35 @@ async function collectXhsNoteLinks(urlsInput, options = {}) {
       if (index > 0) {
         intervalMs = await sleepXhsCollectInterval(interval);
       }
+      await syncXhsTaskStep({
+        current: results.length + failures.length,
+        total: targetUrls.length,
+        message: `正在打开第 ${index + 1}/${targetUrls.length} 条笔记`,
+        mode: normalizeText(options?.mode) || 'tab',
+      });
       tab = await chrome.tabs.create({ url, active: false });
       await waitForTabComplete(tab.id);
       if (index === 0) {
         intervalMs = await sleepXhsCollectInterval(interval);
       } else {
-        await sleep(Math.min(1200, Math.max(600, Math.floor(interval.minMs / 2))));
+        await sleepXhsTaskInterruptibly(Math.min(1200, Math.max(600, Math.floor(interval.minMs / 2))));
       }
+      await syncXhsTaskStep({
+        current: results.length + failures.length,
+        total: targetUrls.length,
+        message: `正在读取第 ${index + 1}/${targetUrls.length} 条笔记`,
+        mode: normalizeText(options?.mode) || 'tab',
+      });
       const payload = await runExtraction(tab.id, extractXhsNotePayload, { world: 'MAIN' });
       if (!payload?.title && !payload?.content && !payload?.images?.length && !payload?.videoUrl) {
         throw new Error('未识别到笔记内容');
       }
+      await syncXhsTaskStep({
+        current: results.length + failures.length,
+        total: targetUrls.length,
+        message: `正在写入第 ${index + 1}/${targetUrls.length} 条笔记`,
+        mode: normalizeText(options?.mode) || 'tab',
+      });
       const response = shouldSave ? await postKnowledgeEntry(buildXhsEntry(payload)) : null;
       results.push({
         url,
@@ -4230,9 +4768,21 @@ async function collectXhsKeyword(keywordInput, options = {}) {
   const searchUrl = `https://www.xiaohongshu.com/search_result?keyword=${encodeURIComponent(keyword)}&source=web_explore_feed`;
   let tab = null;
   try {
+    await syncXhsTaskStep({
+      current: 0,
+      total: limit,
+      message: `正在打开关键词搜索：${keyword}`,
+      mode: 'tab',
+    });
     tab = await chrome.tabs.create({ url: searchUrl, active: false });
     await waitForTabComplete(tab.id);
-    await sleep(1600);
+    await sleepXhsTaskInterruptibly(1600);
+    await syncXhsTaskStep({
+      current: 0,
+      total: limit,
+      message: `正在加载关键词结果：${keyword}`,
+      mode: 'tab',
+    });
     await scrollXhsSearchTab(tab.id, limit);
     const payload = await runExtraction(tab.id, extractXhsVisibleNoteLinksPayload, { world: 'MAIN' });
     const urls = Array.isArray(payload?.urls) ? payload.urls.slice(0, limit) : [];
@@ -4275,6 +4825,8 @@ async function exportCurrentXhsNoteJson(tabId) {
 async function saveDouyinVideoFromTab(tabId) {
   const payload = await runExtraction(tabId, extractDouyinVideoPayload, { world: 'MAIN' });
   console.log('[redbox-plugin][douyin] payload', {
+    noteId: payload?.noteId || '',
+    source: payload?.source || '',
     title: payload?.title || '',
     hasCoverUrl: Boolean(payload?.coverUrl || payload?.coverDataUrl),
     videoUrl: String(payload?.videoUrl || ''),
@@ -4286,6 +4838,8 @@ async function saveDouyinVideoFromTab(tabId) {
     mode: 'douyin',
     noteId: response.entryId || '',
     duplicate: Boolean(response.duplicate),
+    updated: Boolean(response.updated),
+    duplicateBy: response.duplicateBy || '',
   };
 }
 
@@ -6272,6 +6826,12 @@ async function extractXhsBloggerNotesPayload(limitInput = 50, modeInput = 'auto'
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
+  function normalizePositiveInteger(value, fallback = 1) {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) return Math.max(1, Math.round(fallback || 1));
+    return Math.max(1, Math.round(parsed));
+  }
+
   function unwrapValue(value) {
     if (!value || typeof value !== 'object') return value;
     if (value._rawValue && typeof value._rawValue === 'object') return value._rawValue;
@@ -6387,6 +6947,7 @@ async function extractXhsBloggerNotesPayload(limitInput = 50, modeInput = 'auto'
       if (!note || seen.has(note.noteId)) continue;
       seen.add(note.noteId);
       target.push(note);
+      if (target.length >= limit) break;
     }
   }
 
@@ -6594,8 +7155,291 @@ async function extractXhsNoteFeedByUrlFromCurrentPage(targetUrlInput, noteIdInpu
       const noteCard = data?.items?.[0]?.note_card;
       const currentId = normalizeText(noteCard?.note_id || noteCard?.noteId);
       if (currentId && currentId === noteId) {
-        return data;
-      }
+  return data;
+}
+
+async function fetchAccountsJson(path, init = {}) {
+  const knowledgeEndpoint = await resolveKnowledgeApiEndpoint(false);
+  const endpoint = {
+    baseUrl: knowledgeEndpoint.baseUrl,
+    endpointPath: '/api/accounts',
+  };
+  const url = `${endpoint.baseUrl}${endpoint.endpointPath}${path}`;
+  const headers = new Headers(init.headers || {});
+  const method = String(init.method || 'GET').toUpperCase();
+  if (!headers.has('Content-Type') && init.method && init.method !== 'GET') {
+    headers.set('Content-Type', 'application/json');
+  }
+  pluginLog('accounts-http-request', { method, url });
+  let response;
+  try {
+    response = await fetch(url, { ...init, headers });
+  } catch (error) {
+    pluginError('accounts-http-network-failed', {
+      method,
+      url,
+      error: describeError(error),
+    });
+    throw new Error(`账号档案请求失败: ${method} ${url} -> ${error instanceof Error ? error.message : String(error)}`);
+  }
+  let data = null;
+  try {
+    data = await response.json();
+  } catch {
+    data = null;
+  }
+  if (!response.ok || data?.success === false) {
+    pluginError('accounts-http-response-failed', {
+      method,
+      url,
+      status: response.status,
+      body: data,
+    });
+    throw new Error(data?.error || `账号档案 API HTTP ${response.status}`);
+  }
+  return data;
+}
+
+async function createAccountImportSessionFromXhs(payload, options = {}) {
+  const userId = normalizeText(payload?.userId);
+  const source = normalizeText(payload?.source);
+  const nickname = normalizeText(payload?.nickname) || normalizeText(payload?.name) || userId || '小红书账号';
+  if (!userId && !source) {
+    throw new Error('当前页面未识别到可绑定的账号主页');
+  }
+  const response = await fetchAccountsJson('/import-sessions', {
+    method: 'POST',
+    body: JSON.stringify({
+      platform: 'xiaohongshu',
+      homepageUrl: source,
+      platformUserId: userId,
+      username: nickname,
+      avatarUrl: normalizeText(payload?.avatar) || '',
+      bio: normalizeText(payload?.description) || normalizeText(payload?.desc) || '',
+      profile: payload || {},
+      options: {
+        postLimit: normalizePositiveInteger(options?.limit, 0) || undefined,
+        includeComments: Boolean(options?.includeComments),
+        includeMedia: Boolean(options?.includeMedia),
+      },
+    }),
+  });
+  xhsAccountImportSession = {
+    platform: 'xiaohongshu',
+    userId,
+    source,
+    accountId: normalizeText(response?.account?.id),
+    sessionId: normalizeText(response?.session?.id),
+    username: nickname,
+  };
+  return response;
+}
+
+async function createAccountImportSessionFromSocialPayload(payload, options = {}) {
+  const profile = buildAccountProfileFromSocialPayload(payload, options?.platform);
+  if (!profile.platform || !profile.homepageUrl) {
+    throw new Error('当前页面未识别到可绑定的账号主页');
+  }
+  const response = await fetchAccountsJson('/import-sessions', {
+    method: 'POST',
+    body: JSON.stringify({
+      platform: profile.platform,
+      homepageUrl: profile.homepageUrl,
+      platformUserId: profile.platformUserId,
+      username: profile.username,
+      avatarUrl: profile.avatarUrl,
+      bio: profile.bio,
+      profile: profile.profile,
+      options: {
+        postLimit: 1,
+        includeComments: Boolean(options?.includeComments),
+        includeMedia: Boolean(options?.includeMedia),
+      },
+    }),
+  });
+  return {
+    response,
+    accountSession: {
+      platform: profile.platform,
+      userId: profile.platformUserId,
+      source: profile.homepageUrl,
+      accountId: normalizeText(response?.account?.id),
+      sessionId: normalizeText(response?.session?.id),
+      username: profile.username,
+    },
+  };
+}
+
+async function ensureXhsAccountImportSession(payload, options = {}) {
+  const userId = normalizeText(payload?.userId);
+  const source = normalizeText(payload?.source);
+  if (
+    xhsAccountImportSession?.accountId &&
+    xhsAccountImportSession?.sessionId &&
+    (
+      (userId && xhsAccountImportSession.userId === userId) ||
+      (source && xhsAccountImportSession.source === source)
+    )
+  ) {
+    return xhsAccountImportSession;
+  }
+  const response = await createAccountImportSessionFromXhs(payload, options);
+  return {
+    platform: 'xiaohongshu',
+    userId,
+    source,
+    accountId: normalizeText(response?.account?.id),
+    sessionId: normalizeText(response?.session?.id),
+    username: normalizeText(response?.account?.username),
+  };
+}
+
+async function bindCurrentPlatformAccountFromTab(tabId, platformHint = '', options = {}) {
+  const platform = normalizeAccountPlatform(platformHint);
+  let payload = null;
+  if (platform === 'douyin') {
+    payload = await runExtraction(tabId, extractDouyinVideoPayload, { world: 'MAIN' }).catch(async () => (
+      await runExtraction(tabId, extractSocialPlatformPayload, { world: 'MAIN', args: ['douyin'] })
+    ));
+  } else {
+    payload = await runExtraction(tabId, extractSocialPlatformPayload, {
+      world: 'MAIN',
+      args: [platform],
+    });
+  }
+  if (!payload || typeof payload !== 'object') {
+    throw new Error('当前页面内容提取失败，请刷新页面后重试');
+  }
+  const { response, accountSession } = await createAccountImportSessionFromSocialPayload(payload, {
+    ...options,
+    platform,
+    includeComments: true,
+    includeMedia: true,
+  });
+  const post = buildAccountPostFromSocialPayload(payload, accountSession.platform);
+  const knowledgeResponse = await saveAccountBindingPayloadToKnowledge(accountSession.platform, payload).catch((error) => {
+    pluginWarn('account-bind-knowledge-ingest-failed', {
+      platform: accountSession.platform,
+      error: describeError(error),
+    });
+    return null;
+  });
+  if (knowledgeResponse?.entryId) {
+    post.knowledgeEntryId = normalizeText(knowledgeResponse.entryId);
+  }
+  if (post.media?.some((item) => normalizeText(item?.kind).includes('video'))) {
+    post.transcriptionStatus = knowledgeResponse?.entryId ? 'processing' : 'waiting';
+  }
+  let batchResponse = null;
+  if (post.title || post.content || post.url) {
+    batchResponse = await postAccountPostsBatch(accountSession, [post]);
+  }
+  const mediaItems = buildAccountMediaFromPost(post);
+  const mediaResponse = await postAccountMediaBatch(accountSession, mediaItems).catch((error) => {
+    pluginWarn('account-bind-media-batch-failed', {
+      platform: accountSession.platform,
+      error: describeError(error),
+    });
+    return null;
+  });
+  const comments = buildAccountCommentsFromPayload(payload, post.platformPostId || post.id, accountSession.platform);
+  const commentsResponse = await postAccountCommentsBatch(accountSession, post.platformPostId || post.id, comments).catch((error) => {
+    pluginWarn('account-bind-comments-batch-failed', {
+      platform: accountSession.platform,
+      error: describeError(error),
+    });
+    return null;
+  });
+  const completeResponse = await completeAccountImportSession(accountSession, {
+    importedPostCount: Number(batchResponse?.postCount || (post.title || post.content || post.url ? 1 : 0)),
+    failedPostCount: 0,
+  });
+  return {
+    success: true,
+    mode: 'account-bind-current-platform',
+    platform: accountSession.platform,
+    account: response?.account || {
+      id: accountSession.accountId,
+      platform: accountSession.platform,
+      username: accountSession.username,
+    },
+    postCount: Number(batchResponse?.postCount || 0),
+    mediaCount: Number(mediaResponse?.mediaCount || 0),
+    commentCount: Number(commentsResponse?.commentCount || 0),
+    syncedMemoryCount: Number(completeResponse?.syncedMemoryCount || batchResponse?.syncedMemoryCount || 0),
+    summary: `${accountSession.username || '当前账号'} 已绑定${batchResponse ? '，当前内容已加入账号档案' : ''}`,
+  };
+}
+
+async function saveAccountBindingPayloadToKnowledge(platform, payload) {
+  if (platform === 'douyin') {
+    return await postKnowledgeEntry(buildDouyinEntry(payload));
+  }
+  return await postKnowledgeEntry(buildSocialPlatformEntry({
+    ...payload,
+    platform,
+  }));
+}
+
+async function postAccountPostsBatch(accountSession, posts) {
+  const accountId = normalizeText(accountSession?.accountId);
+  if (!accountId || !Array.isArray(posts) || posts.length === 0) {
+    return null;
+  }
+  return await fetchAccountsJson(`/${encodeURIComponent(accountId)}/posts/batch`, {
+    method: 'POST',
+    body: JSON.stringify({
+      sessionId: normalizeText(accountSession?.sessionId) || undefined,
+      platform: normalizeAccountPlatform(accountSession?.platform) || 'xiaohongshu',
+      posts,
+    }),
+  });
+}
+
+async function postAccountCommentsBatch(accountSession, postId, comments) {
+  const accountId = normalizeText(accountSession?.accountId);
+  if (!accountId || !Array.isArray(comments) || comments.length === 0) {
+    return null;
+  }
+  return await fetchAccountsJson(`/${encodeURIComponent(accountId)}/comments/batch`, {
+    method: 'POST',
+    body: JSON.stringify({
+      sessionId: normalizeText(accountSession?.sessionId) || undefined,
+      platform: normalizeAccountPlatform(accountSession?.platform) || 'xiaohongshu',
+      postId: normalizeText(postId) || undefined,
+      comments,
+    }),
+  });
+}
+
+async function postAccountMediaBatch(accountSession, media) {
+  const accountId = normalizeText(accountSession?.accountId);
+  if (!accountId || !Array.isArray(media) || media.length === 0) {
+    return null;
+  }
+  return await fetchAccountsJson(`/${encodeURIComponent(accountId)}/media/batch`, {
+    method: 'POST',
+    body: JSON.stringify({
+      sessionId: normalizeText(accountSession?.sessionId) || undefined,
+      platform: normalizeAccountPlatform(accountSession?.platform) || 'xiaohongshu',
+      media,
+    }),
+  });
+}
+
+async function completeAccountImportSession(accountSession, summary = {}) {
+  const sessionId = normalizeText(accountSession?.sessionId);
+  if (!sessionId) return null;
+  return await fetchAccountsJson(`/import-sessions/${encodeURIComponent(sessionId)}/complete`, {
+    method: 'POST',
+    body: JSON.stringify({
+      status: summary.status || 'completed',
+      importedPostCount: Number(summary.importedPostCount || 0),
+      failedPostCount: Number(summary.failedPostCount || 0),
+      lastError: summary.lastError || null,
+    }),
+  });
+}
     }
     return null;
   }
@@ -6900,6 +7744,33 @@ async function extractDouyinVideoPayload() {
     } catch {
       return raw;
     }
+  }
+
+  function extractDouyinVideoIdFromUrl(value) {
+    const raw = normalizeText(value);
+    if (!raw) return '';
+    try {
+      const parsed = new URL(raw, location.href);
+      for (const key of ['modal_id', 'aweme_id', 'awemeId', 'item_id', 'itemId', 'vid']) {
+        const queryValue = normalizeText(parsed.searchParams.get(key));
+        if (/^\d{8,}$/.test(queryValue)) return queryValue;
+      }
+      const pathMatch = String(parsed.pathname || '').match(/\/(?:video|note)\/(\d{8,})/i);
+      if (pathMatch?.[1]) return pathMatch[1];
+      const anyMatch = raw.match(/(?:modal_id|aweme_id|item_id|video_id|vid)[=:](\d{8,})/i);
+      if (anyMatch?.[1]) return anyMatch[1];
+    } catch {
+      const fallbackMatch = raw.match(/\/(?:video|note)\/(\d{8,})/i)
+        || raw.match(/(?:modal_id|aweme_id|item_id|video_id|vid)[=:](\d{8,})/i);
+      if (fallbackMatch?.[1]) return fallbackMatch[1];
+    }
+    return '';
+  }
+
+  function createCanonicalDouyinVideoUrl(videoId) {
+    const id = normalizeText(videoId);
+    if (!id) return location.href;
+    return `https://www.douyin.com/video/${encodeURIComponent(id)}`;
   }
 
   function pushUniqueUrl(list, value) {
@@ -7220,7 +8091,8 @@ async function extractDouyinVideoPayload() {
     }
   }
 
-  const sourceUrl = location.href;
+  const currentUrlVideoId = extractDouyinVideoIdFromUrl(location.href);
+  const sourceUrl = createCanonicalDouyinVideoUrl(currentUrlVideoId);
   const videoEl = getMainVideoElement();
   const renderData = getRenderData();
   const videoCandidates = [];
@@ -7253,12 +8125,13 @@ async function extractDouyinVideoPayload() {
     ? (await fetchBinaryAsDataUrl(blobVideoUrl))
     : '';
 
-  const pathnameSegments = String(location.pathname || '').split('/').filter(Boolean);
-  const pathId = pathnameSegments[pathnameSegments.length - 1] || '';
   const detailId = normalizeText(
     document.querySelector('[data-e2e="detail-video-info"]')?.getAttribute('data-e2e-aweme-id') || '',
   );
-  const videoId = detailId || normalizeText(pathId) || `douyin-${Date.now()}`;
+  const videoId = currentUrlVideoId
+    || extractDouyinVideoIdFromUrl(detailId)
+    || extractDouyinVideoIdFromUrl(videoUrl)
+    || normalizeText(detailId);
   const title = getTitle();
   const description = normalizeText(
     document.querySelector('meta[name="description"]')?.getAttribute('content')

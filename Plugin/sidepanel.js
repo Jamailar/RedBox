@@ -1,7 +1,19 @@
 const elements = {
   serverStatus: document.getElementById('server-status'),
+  workspaceName: document.getElementById('workspace-name'),
+  accountFooter: document.getElementById('account-footer'),
+  boundAccountName: document.getElementById('bound-account-name'),
+  accountBindingNotice: document.getElementById('account-binding-notice'),
+  accountBindingTitle: document.getElementById('account-binding-title'),
+  accountBindingCopy: document.getElementById('account-binding-copy'),
+  accountBindingAction: document.getElementById('account-binding-action'),
   refresh: document.getElementById('refresh'),
   openSettings: document.getElementById('open-settings'),
+  updateBadge: document.getElementById('update-badge'),
+  updateSummary: document.getElementById('update-summary'),
+  updateMeta: document.getElementById('update-meta'),
+  checkUpdate: document.getElementById('check-update'),
+  openUpdateSource: document.getElementById('open-update-source'),
   platformLogo: document.getElementById('platform-logo'),
   platformIcon: document.getElementById('platform-icon'),
   platformFallback: document.getElementById('platform-fallback'),
@@ -33,15 +45,21 @@ const elements = {
   taskQueueBadge: document.getElementById('task-queue-badge'),
   taskCurrent: document.getElementById('task-current'),
   taskQueueMeta: document.getElementById('task-queue-meta'),
+  taskQueueControls: document.getElementById('task-queue-controls'),
+  taskQueuePause: document.getElementById('task-queue-pause'),
+  taskQueueResume: document.getElementById('task-queue-resume'),
+  taskQueueCancel: document.getElementById('task-queue-cancel'),
   taskLogBadge: document.getElementById('task-log-badge'),
   taskLogList: document.getElementById('task-log-list'),
 };
 
+const USER_PROFILE_FEATURE_ENABLED = false;
 let context = null;
 let refreshing = false;
 let capturePendingAction = '';
 let captureFeedback = null;
 let captureSignature = '';
+let updateChecking = false;
 let currentSettings = {
   xhsBloggerNoteLimit: 50,
   xhsIntervalMaxSeconds: 6,
@@ -57,7 +75,9 @@ function debugWarn(scope, details) {
 }
 
 init().catch((error) => {
-  renderConnection(false, error instanceof Error ? error.message : String(error));
+  renderConnection({ success: false, error: error instanceof Error ? error.message : String(error) });
+  renderWorkspaceAndAccounts(null, null);
+  renderAccountBindingNotice(null, null);
   renderPageIdentity({
     platform: 'redbox',
     name: '识别失败',
@@ -69,6 +89,7 @@ init().catch((error) => {
 
 async function init() {
   bindEvents();
+  await refreshUpdateStatus(false);
   await refreshContext();
   window.setInterval(() => void refreshTaskQueue(false), 1500);
 }
@@ -76,13 +97,21 @@ async function init() {
 function bindEvents() {
   elements.refresh.addEventListener('click', () => void refreshContext());
   elements.openSettings.addEventListener('click', () => chrome.runtime.openOptionsPage());
+  elements.checkUpdate.addEventListener('click', () => void refreshUpdateStatus(true));
+  elements.openUpdateSource.addEventListener('click', () => void openUpdateSource());
   elements.bloggerNotesApiMode.addEventListener('change', () => {
     renderBloggerNotesMode();
   });
   elements.bloggerNotesStart.addEventListener('click', () => void startBloggerNotesCollection());
-  elements.bloggerNotesPause.addEventListener('click', () => void controlBloggerNotesTask('pause'));
-  elements.bloggerNotesResume.addEventListener('click', () => void controlBloggerNotesTask('resume'));
-  elements.bloggerNotesCancel.addEventListener('click', () => void controlBloggerNotesTask('cancel'));
+  elements.bloggerNotesPause.addEventListener('click', () => void controlActiveTask('pause'));
+  elements.bloggerNotesResume.addEventListener('click', () => void controlActiveTask('resume'));
+  elements.bloggerNotesCancel.addEventListener('click', () => void controlActiveTask('cancel'));
+  elements.taskQueuePause.addEventListener('click', () => void controlActiveTask('pause'));
+  elements.taskQueueResume.addEventListener('click', () => void controlActiveTask('resume'));
+  elements.taskQueueCancel.addEventListener('click', () => void controlActiveTask('cancel'));
+  if (USER_PROFILE_FEATURE_ENABLED) {
+    elements.accountBindingAction.addEventListener('click', () => void bindCurrentProfileAsAccount());
+  }
   elements.captureActions.addEventListener('click', (event) => {
     const button = event.target?.closest?.('button[data-action]');
     if (!button) return;
@@ -119,6 +148,80 @@ async function sendMessage(message) {
   return response;
 }
 
+async function sendRawMessage(message) {
+  return await chrome.runtime.sendMessage(message);
+}
+
+async function refreshUpdateStatus(forceCheck) {
+  if (updateChecking) return;
+  updateChecking = true;
+  elements.checkUpdate.disabled = true;
+  elements.updateBadge.textContent = forceCheck ? '检查中' : '读取中';
+  elements.updateBadge.className = 'update-badge';
+  try {
+    const response = await sendRawMessage({
+      type: forceCheck ? 'plugin-update:check' : 'plugin-update:get-status',
+      refresh: false,
+    });
+    renderUpdateStatus(response?.update, response?.success === false ? response.error : '');
+  } catch (error) {
+    renderUpdateStatus(null, error instanceof Error ? error.message : String(error));
+  } finally {
+    updateChecking = false;
+    elements.checkUpdate.disabled = false;
+  }
+}
+
+async function openUpdateSource() {
+  elements.openUpdateSource.disabled = true;
+  try {
+    const response = await sendRawMessage({ type: 'plugin-update:open-source' });
+    if (!response?.success) {
+      renderUpdateStatus(null, response?.error || '无法打开更新页');
+    }
+  } catch (error) {
+    renderUpdateStatus(null, error instanceof Error ? error.message : String(error));
+  } finally {
+    elements.openUpdateSource.disabled = false;
+  }
+}
+
+function renderUpdateStatus(update, errorText = '') {
+  const currentVersion = update?.currentVersion || chrome.runtime.getManifest?.()?.version || '0.0.0';
+  const latestVersion = update?.latestVersion || currentVersion;
+  const lastCheckedAt = update?.lastCheckedAt ? formatTime(update.lastCheckedAt) : '';
+  const lastError = errorText || update?.lastError || '';
+
+  if (lastError) {
+    elements.updateBadge.textContent = '检查失败';
+    elements.updateBadge.className = 'update-badge error';
+    elements.updateSummary.textContent = `当前版本 ${currentVersion}`;
+    elements.updateMeta.textContent = lastError;
+    return;
+  }
+
+  if (update?.checkStatus === 'checking') {
+    elements.updateBadge.textContent = '检查中';
+    elements.updateBadge.className = 'update-badge';
+    elements.updateSummary.textContent = `当前版本 ${currentVersion}`;
+    elements.updateMeta.textContent = '正在检查远端版本';
+    return;
+  }
+
+  if (update?.hasUpdate) {
+    elements.updateBadge.textContent = '有新版本';
+    elements.updateBadge.className = 'update-badge available';
+    elements.updateSummary.textContent = `发现 ${latestVersion}，当前 ${currentVersion}`;
+    elements.updateMeta.textContent = lastCheckedAt ? `上次检查 ${lastCheckedAt}` : '点击打开更新页获取最新版本';
+    return;
+  }
+
+  elements.updateBadge.textContent = '已是最新';
+  elements.updateBadge.className = 'update-badge';
+  elements.updateSummary.textContent = `当前版本 ${currentVersion}`;
+  elements.updateMeta.textContent = lastCheckedAt ? `上次检查 ${lastCheckedAt}` : '尚未检查远端版本';
+}
+
 async function refreshContext() {
   if (refreshing) return;
   refreshing = true;
@@ -142,7 +245,9 @@ async function refreshContext() {
     debugWarn('refresh-context-failed', {
       error: error instanceof Error ? error.message : String(error),
     });
-    renderConnection(false, error instanceof Error ? error.message : String(error));
+    renderConnection({ success: false, error: error instanceof Error ? error.message : String(error) });
+    renderWorkspaceAndAccounts(null, null);
+    renderAccountBindingNotice(null, null);
     renderPageIdentity({
       platform: 'redbox',
       name: '识别失败',
@@ -158,7 +263,10 @@ async function refreshContext() {
 
 function renderContext(nextContext) {
   const health = nextContext?.health || {};
-  renderConnection(Boolean(health.success), health.error || '');
+  const healthPayload = extractHealthPayload(health);
+  renderConnection(health);
+  renderWorkspaceAndAccounts(nextContext, healthPayload);
+  renderAccountBindingNotice(nextContext, healthPayload);
   renderPageIdentity(resolvePageIdentity(nextContext));
   renderCaptureActions(nextContext);
   renderBloggerNotesPanel(nextContext);
@@ -166,14 +274,137 @@ function renderContext(nextContext) {
   renderTaskLogs(nextContext?.logs || nextContext?.queue?.logs || []);
 }
 
-function renderConnection(isHealthy, errorText) {
-  if (isHealthy) {
-    elements.serverStatus.textContent = '本地知识库已链接';
+function renderConnection(health) {
+  if (!health?.success) {
+    elements.serverStatus.textContent = health?.error || '请先打开 RedBox 桌面端';
+    elements.serverStatus.className = 'status error';
+    return;
+  }
+
+  if (!USER_PROFILE_FEATURE_ENABLED) {
+    elements.serverStatus.textContent = '已链接';
     elements.serverStatus.className = 'status ok';
     return;
   }
-  elements.serverStatus.textContent = errorText || '请先打开 RedBox 桌面端';
-  elements.serverStatus.className = 'status error';
+
+  const payload = extractHealthPayload(health);
+  if (payload?.accountBindingStatus === 'hasAccountProfile') {
+    elements.serverStatus.textContent = '已链接 · 已有账号档案';
+    elements.serverStatus.className = 'status ok';
+    return;
+  }
+
+  elements.serverStatus.textContent = '已链接 · 当前空间无账号档案';
+  elements.serverStatus.className = 'status warn';
+}
+
+function renderWorkspaceAndAccounts(nextContext, healthPayload) {
+  elements.accountFooter?.classList.toggle('hidden', !USER_PROFILE_FEATURE_ENABLED);
+  if (!USER_PROFILE_FEATURE_ENABLED) {
+    elements.workspaceName.textContent = healthPayload?.success
+      ? `当前空间：${cleanTitle(healthPayload.workspaceName || healthPayload.spaceName || '') || '已连接'}`
+      : '当前空间：未连接';
+    elements.boundAccountName.textContent = '';
+    return;
+  }
+  if (!healthPayload?.success) {
+    elements.workspaceName.textContent = '当前空间：未连接';
+    elements.boundAccountName.textContent = '未连接 RedBox';
+    return;
+  }
+
+  const workspaceName = cleanTitle(healthPayload?.workspace?.name || healthPayload?.spaceName || healthPayload?.spaceId || '');
+  elements.workspaceName.textContent = workspaceName ? `当前空间：${workspaceName}` : '当前空间：未命名空间';
+
+  const accounts = healthPayload?.platformAccounts || {};
+  const view = resolvePageIdentity(nextContext);
+  const platformKey = healthPlatformKey(view.platform);
+  const platformLabels = {
+    xiaohongshu: '小红书',
+    douyin: '抖音',
+    bilibili: 'Bilibili',
+  };
+
+  if (platformKey && accounts[platformKey]) {
+    const account = accounts[platformKey];
+    const label = platformLabels[platformKey] || platformKey;
+    elements.boundAccountName.textContent = accountLabel(label, account);
+    return;
+  }
+
+  const boundAccounts = Object.entries(accounts)
+    .filter(([, account]) => account?.bound)
+    .map(([key, account]) => accountLabel(platformLabels[key] || key, account));
+
+  if (boundAccounts.length > 0) {
+    elements.boundAccountName.textContent = boundAccounts.join(' · ');
+    return;
+  }
+
+  elements.boundAccountName.textContent = '未绑定小红书 / 抖音 / Bilibili 账号';
+}
+
+function renderAccountBindingNotice(nextContext, healthPayload) {
+  if (!USER_PROFILE_FEATURE_ENABLED) {
+    elements.accountBindingNotice.classList.add('hidden');
+    elements.accountBindingAction.disabled = true;
+    return;
+  }
+  const hasBoundAccount = healthPayload?.accountBindingStatus === 'hasAccountProfile';
+  const isConnected = healthPayload?.success === true;
+  elements.accountBindingNotice.classList.toggle('hidden', !isConnected || hasBoundAccount);
+  if (!isConnected || hasBoundAccount) return;
+
+  const view = resolvePageIdentity(nextContext);
+  const platformKey = healthPlatformKey(view.platform);
+  const pageInfo = nextContext?.pageInfo || {};
+  const pageType = nextContext?.pageIdentity?.pageType || inferPageType(pageInfo, nextContext?.tab || {});
+  const isXhsProfile = platformKey === 'xiaohongshu' && pageType === 'profile';
+  const canBindCurrentPlatform = platformKey === 'douyin'
+    || platformKey === 'bilibili'
+    || isXhsProfile;
+  const platformLabels = {
+    xiaohongshu: '小红书',
+    douyin: '抖音',
+    bilibili: 'Bilibili',
+  };
+
+  elements.accountBindingTitle.textContent = '当前空间还没有绑定自媒体账号';
+  if (canBindCurrentPlatform) {
+    const platformLabel = platformLabels[platformKey] || '当前平台';
+    elements.accountBindingCopy.textContent = isXhsProfile
+      ? '用当前小红书主页绑定运营账号，并自动学习历史内容。'
+      : `用当前${platformLabel}页面绑定运营账号，并把当前内容加入账号档案。`;
+    elements.accountBindingAction.textContent = '绑定并学习这个账号';
+    elements.accountBindingAction.disabled = Boolean(capturePendingAction);
+    return;
+  }
+
+  const platformLabel = platformLabels[platformKey] || '平台';
+  elements.accountBindingCopy.textContent = platformKey
+    ? `请打开${platformLabel}账号主页，再绑定并学习这个账号。`
+    : '请打开小红书、抖音或 Bilibili 账号主页，再绑定并学习这个账号。';
+  elements.accountBindingAction.textContent = '等待账号主页';
+  elements.accountBindingAction.disabled = true;
+}
+
+function accountLabel(platformLabel, account) {
+  if (!account?.bound) return `${platformLabel}：未绑定`;
+  const username = cleanTitle(account.username || account.name || '');
+  const accountId = cleanTitle(account.id || account.platformUserId || '');
+  if (username && accountId) return `${platformLabel}：${username}（${accountId}）`;
+  return `${platformLabel}：${username || accountId || '已绑定账号'}`;
+}
+
+function healthPlatformKey(platform) {
+  if (platform === 'xhs' || platform === 'xiaohongshu') return 'xiaohongshu';
+  if (platform === 'douyin') return 'douyin';
+  if (platform === 'bilibili') return 'bilibili';
+  return '';
+}
+
+function extractHealthPayload(health) {
+  return health?.health || health || null;
 }
 
 function resolvePageIdentity(nextContext) {
@@ -281,6 +512,7 @@ function renderCaptureActions(nextContext) {
 
 async function runCaptureAction(action) {
   if (!action || capturePendingAction) return;
+  if (!USER_PROFILE_FEATURE_ENABLED && (action === 'blogger' || action === 'bloggerNotes')) return;
   const meta = getCaptureActionMeta(action);
   if (!meta.type) return;
   const tabId = Number(context?.tab?.id || 0);
@@ -336,6 +568,87 @@ async function runCaptureAction(action) {
   }
 }
 
+async function bindCurrentProfileAsAccount() {
+  if (!USER_PROFILE_FEATURE_ENABLED) return;
+  if (capturePendingAction) return;
+  const tabId = Number(context?.tab?.id || 0);
+  if (!tabId) {
+    captureFeedback = { status: 'error', message: '未识别到当前标签页，请刷新侧栏后重试' };
+    renderCaptureActions(context);
+    return;
+  }
+
+  capturePendingAction = 'bindProfile';
+  captureFeedback = { status: 'pending', message: '正在绑定账号并准备学习…' };
+  renderAccountBindingNotice(context, extractHealthPayload(context?.health || {}));
+  renderCaptureActions(context);
+  try {
+    const tab = context?.tab || {};
+    const view = resolvePageIdentity(context);
+    const platformKey = healthPlatformKey(view.platform);
+    const baseMessage = {
+      tabId,
+      tabUrl: tab.url || '',
+      windowId: Number(tab.windowId || 0) || undefined,
+    };
+    if (platformKey === 'douyin' || platformKey === 'bilibili') {
+      const response = await sendMessage({
+        type: 'account:bind-current-platform',
+        platform: platformKey,
+        ...baseMessage,
+      });
+      if (response.taskQueue) {
+        renderTaskQueue(response.taskQueue);
+        renderTaskLogs(response.taskQueue.logs || []);
+      }
+      captureFeedback = {
+        status: 'success',
+        message: summarizeActionResponse(response, '账号档案已绑定'),
+      };
+      await refreshTaskQueue(false);
+      await refreshContext();
+      return;
+    }
+    await sendMessage({
+      type: 'xhs:collect-current-blogger',
+      ...baseMessage,
+    });
+    const options = getBloggerNotesOptions();
+    const response = await sendMessage({
+      type: 'xhs:collect-blogger-notes',
+      ...baseMessage,
+      options,
+    });
+    if (response.taskQueue) {
+      renderTaskQueue(response.taskQueue);
+      renderTaskLogs(response.taskQueue.logs || []);
+      renderBloggerNotesPanel({
+        ...context,
+        queue: response.taskQueue,
+      });
+    }
+    captureFeedback = {
+      status: 'success',
+      message: summarizeActionResponse(response, '账号学习任务已启动'),
+    };
+    await refreshTaskQueue(false);
+    await refreshContext();
+  } catch (error) {
+    debugWarn('bind-current-profile-failed', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    captureFeedback = {
+      status: 'error',
+      message: `绑定和学习失败：${error instanceof Error ? error.message : String(error)}`,
+    };
+    await refreshTaskQueue(false);
+  } finally {
+    capturePendingAction = '';
+    renderAccountBindingNotice(context, extractHealthPayload(context?.health || {}));
+    renderCaptureActions(context);
+  }
+}
+
 function renderCaptureStatus(message, status = 'idle') {
   elements.captureStatus.textContent = message || '';
   elements.captureStatus.dataset.state = status;
@@ -361,46 +674,8 @@ function applyBloggerNotesSettings() {
   renderBloggerNotesMode();
 }
 
-function applyBloggerNotesResumeCandidate(candidate) {
-  if (!candidate?.options) return;
-  const mode = String(candidate.options.mode || 'api') === 'tab' ? 'tab' : 'api';
-  const limit = Math.max(1, Math.round(Number(candidate.options.limit || 50) || 50));
-  const maxSeconds = Math.max(3, Math.min(
-    Math.round((Number(candidate.options.interval?.maxMs || 6000) || 6000) / 1000),
-    60,
-  ));
-  elements.bloggerNotesApiMode.checked = mode === 'api';
-  elements.bloggerNotesLimit.value = limit;
-  elements.bloggerNotesIntervalMax.value = maxSeconds;
-  renderBloggerNotesMode();
-}
-
-function getResumeBloggerNotesCandidate(nextContext) {
-  const tab = nextContext?.tab || {};
-  const identity = nextContext?.pageIdentity || {};
-  const active = nextContext?.queue?.active || null;
-  const last = nextContext?.queue?.last || null;
-  if (active?.type === 'xhs:collect-blogger-notes') return null;
-  if (last?.type !== 'xhs:collect-blogger-notes' || last?.status !== 'cancelled') return null;
-  const taskContext = last?.context || null;
-  const blogger = taskContext?.blogger || null;
-  const options = taskContext?.options || null;
-  if (!blogger?.userId || !options || String(options.mode || '') !== 'api') return null;
-  const currentUserId = String(identity?.userId || '').trim();
-  const currentUrl = String(tab?.url || identity?.url || '').trim();
-  const sameUser = currentUserId && currentUserId === String(blogger.userId || '').trim();
-  const sameUrl = currentUrl && String(blogger.source || '').trim() && currentUrl === String(blogger.source || '').trim();
-  if (!sameUser && !sameUrl) return null;
-  return {
-    savedCount: Number(last?.savedCount || 0),
-    total: Math.max(Number(last?.progress?.total || 0), Number(last?.savedCount || 0)),
-    blogger,
-    options,
-  };
-}
-
 function getBloggerNotesOptions() {
-  const limit = Math.max(1, Math.round(Number(elements.bloggerNotesLimit.value || 50) || 50));
+  const limit = Math.max(1, Math.min(Number(elements.bloggerNotesLimit.value || 50), 200));
   const intervalMaxSeconds = Math.max(3, Math.min(Number(elements.bloggerNotesIntervalMax.value || 6), 60));
   return {
     mode: elements.bloggerNotesApiMode.checked ? 'api' : 'tab',
@@ -413,6 +688,7 @@ function getBloggerNotesOptions() {
 }
 
 async function startBloggerNotesCollection() {
+  if (!USER_PROFILE_FEATURE_ENABLED) return;
   const tabId = Number(context?.tab?.id || 0);
   if (!tabId) {
     renderBloggerNotesProgress({
@@ -430,13 +706,11 @@ async function startBloggerNotesCollection() {
   });
   try {
     const tab = context?.tab || {};
-    const resumeCandidate = getResumeBloggerNotesCandidate(context);
-    const options = resumeCandidate?.options || getBloggerNotesOptions();
+    const options = getBloggerNotesOptions();
     debugLog('blogger-notes-start', {
       tabId,
       tabUrl: tab.url || '',
       options,
-      resume: Boolean(resumeCandidate),
     });
     const response = await sendMessage({
       type: 'xhs:collect-blogger-notes',
@@ -455,7 +729,7 @@ async function startBloggerNotesCollection() {
       });
     }
     renderBloggerNotesProgress({
-      label: resumeCandidate ? '继续采集任务已启动' : '采集任务已启动',
+      label: '采集任务已启动',
       meta: summarizeActionResponse(response, '采集任务已加入队列'),
       status: 'success',
     });
@@ -474,7 +748,7 @@ async function startBloggerNotesCollection() {
   }
 }
 
-async function controlBloggerNotesTask(action) {
+async function controlActiveTask(action) {
   try {
     debugLog('blogger-notes-control', { action });
     const response = await sendMessage({ type: 'xhs:control-active-task', action });
@@ -518,6 +792,14 @@ function renderBloggerNotesProgress({
 }
 
 function renderBloggerNotesPanel(nextContext) {
+  if (!USER_PROFILE_FEATURE_ENABLED) {
+    elements.bloggerNotesPanel.classList.add('hidden');
+    elements.bloggerNotesControls.classList.add('hidden');
+    elements.bloggerNotesPause.classList.add('hidden');
+    elements.bloggerNotesResume.classList.add('hidden');
+    elements.bloggerNotesCancel.classList.add('hidden');
+    return;
+  }
   const tab = nextContext?.tab || {};
   const pageInfo = nextContext?.pageInfo || {};
   const identity = nextContext?.pageIdentity || {};
@@ -534,10 +816,6 @@ function renderBloggerNotesPanel(nextContext) {
   }
 
   applyBloggerNotesSettings();
-  const resumeCandidate = getResumeBloggerNotesCandidate(nextContext);
-  if (resumeCandidate) {
-    applyBloggerNotesResumeCandidate(resumeCandidate);
-  }
   const active = nextContext?.queue?.active || null;
   const last = nextContext?.queue?.last || null;
   const isRunning = active?.type === 'xhs:collect-blogger-notes';
@@ -549,7 +827,6 @@ function renderBloggerNotesPanel(nextContext) {
   elements.bloggerNotesApiMode.disabled = isRunning;
   elements.bloggerNotesLimit.disabled = isRunning;
   elements.bloggerNotesIntervalMax.disabled = isRunning;
-  elements.bloggerNotesStart.textContent = resumeCandidate ? '继续上次采集' : '开始采集';
 
   elements.bloggerNotesControls.classList.toggle('hidden', !isRunning);
   elements.bloggerNotesPause.classList.toggle('hidden', !isRunning || paused);
@@ -569,14 +846,6 @@ function renderBloggerNotesPanel(nextContext) {
       label: '桌面端未连接',
       meta: '请先打开 RedBox 桌面端',
       status: 'error',
-    });
-  } else if (resumeCandidate) {
-    renderBloggerNotesProgress({
-      label: '检测到可继续的采集任务',
-      meta: `上次已保存 ${resumeCandidate.savedCount} / ${resumeCandidate.total || resumeCandidate.savedCount || 0} · 点击继续上次采集`,
-      status: 'idle',
-      current: Number(resumeCandidate.savedCount || 0),
-      total: Math.max(Number(resumeCandidate.total || 0), Number(resumeCandidate.savedCount || 0)),
     });
   } else if (last?.type === 'xhs:collect-blogger-notes' && last?.status === 'cancelled') {
     renderBloggerNotesProgress({
@@ -610,12 +879,20 @@ function getCaptureActionConfig(nextContext) {
     };
   }
   if (platform === 'xhs' && pageType === 'profile') {
+    if (!USER_PROFILE_FEATURE_ENABLED) {
+      return {
+        variant: 'xhs-profile-hidden',
+        title: 'RedBox 博主采集',
+        subtitle: '小红书博主页',
+        actions: [],
+      };
+    }
     return {
       variant: 'xhs-profile',
       title: 'RedBox 博主采集',
       subtitle: '小红书博主页',
       actions: [
-        { label: '保存博主', action: 'blogger', primary: true, title: '保存当前博主资料到 RedBox' },
+        { label: '绑定并学习账号', action: 'blogger', primary: true, title: '绑定当前账号并学习历史内容' },
       ],
     };
   }
@@ -703,7 +980,7 @@ function getCaptureActionMeta(action) {
     save: { type: 'save-xhs', pending: '保存中...', done: '已保存到 RedBox' },
     download: { type: 'xhs:download-current-note', pending: '下载中...', done: '已创建下载任务' },
     comments: { type: 'xhs:collect-current-comments', pending: '采集中...', done: '评论已写入知识库' },
-    blogger: { type: 'xhs:collect-current-blogger', pending: '采集中...', done: '已保存博主资料' },
+    blogger: { type: 'xhs:collect-current-blogger', pending: '绑定中...', done: '已绑定账号资料' },
     bloggerNotes: { type: 'xhs:collect-blogger-notes', pending: '采集中...', done: '已采集主页笔记' },
     exportJson: { type: 'xhs:export-current-note-json', pending: '导出中...', done: '已导出 JSON' },
     savePageAuto: { type: 'save-page-auto', pending: '保存中...', done: '已保存到 RedBox' },
@@ -725,8 +1002,7 @@ function summarizeActionResponse(response, fallback) {
     return response.duplicate ? '知识库中已存在' : '已保存到 RedBox';
   }
   if (response?.mode === 'xhs-blogger-notes') {
-    const skipped = Number(response.skipped || 0);
-    return `博主笔记 ${Number(response.count || 0)} 条，失败 ${Number(response.failed || 0)} 条${skipped > 0 ? `，跳过 ${skipped} 条` : ''}`;
+    return `博主笔记 ${Number(response.count || 0)} 条，失败 ${Number(response.failed || 0)} 条`;
   }
   if (response?.mode === 'xhs-download') {
     return `下载 ${Number(response.count || 0)} 个素材`;
@@ -769,6 +1045,14 @@ function renderTaskQueue(queue) {
     elements.taskQueueBadge.textContent = queued.length > 0 ? `执行中 · 排队 ${queued.length}` : '执行中';
     elements.taskQueueBadge.className = 'task-badge running';
     elements.taskCurrent.textContent = active.title || '小红书采集任务';
+    elements.taskQueueControls.classList.remove('hidden');
+    const canPause = active?.capabilities?.pause === true;
+    elements.taskQueuePause.classList.toggle('hidden', !canPause || active.paused === true || active.cancelRequested === true);
+    elements.taskQueueResume.classList.toggle('hidden', !canPause || active.paused !== true || active.cancelRequested === true);
+    elements.taskQueuePause.disabled = active.cancelRequested === true;
+    elements.taskQueueResume.disabled = active.cancelRequested === true;
+    elements.taskQueueCancel.disabled = active.cancelRequested === true;
+    elements.taskQueueCancel.textContent = active.cancelRequested === true ? '停止中' : '停止任务';
     const progressText = active?.progress?.total
       ? `进度 ${Number(active.progress.current || 0)}/${Number(active.progress.total || 0)}`
       : '';
@@ -784,6 +1068,11 @@ function renderTaskQueue(queue) {
 
   elements.taskQueueBadge.textContent = queued.length > 0 ? `排队 ${queued.length}` : '空闲';
   elements.taskQueueBadge.className = 'task-badge';
+  elements.taskQueueControls.classList.add('hidden');
+  elements.taskQueuePause.classList.add('hidden');
+  elements.taskQueueResume.classList.add('hidden');
+  elements.taskQueueCancel.disabled = false;
+  elements.taskQueueCancel.textContent = '停止任务';
   if (queued.length > 0) {
     elements.taskCurrent.textContent = queued[0]?.title || '等待执行的小红书任务';
     elements.taskQueueMeta.textContent = queued.length > 1 ? `后续 ${queued.length - 1} 个任务` : '等待后台调度';
